@@ -9,28 +9,56 @@ use gait_platform::{NativePlatform, Platform};
 
 use crate::gait_home::{GaitHome, GaitHomeError};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.auth_store")]
 pub enum AuthError {
     #[error("io error: {0}")]
+    #[coded(code = "io", class = Infrastructure)]
     Io(#[from] std::io::Error),
     #[error("corrupt authentication file {path}: {detail}")]
+    #[coded(code = "corrupt", class = Infrastructure)]
     Corrupt { path: PathBuf, detail: String },
     #[error("timed out waiting for authentication file lock")]
+    #[coded(code = "lock_timeout", class = Transient)]
     LockTimeout,
     #[error("authentication is managed elsewhere: {0}")]
+    #[coded(code = "managed_elsewhere", class = Logical)]
     ManagedElsewhere(String),
     #[error("path has no parent: {0}")]
+    #[coded(code = "no_parent", class = Infrastructure)]
     NoParent(PathBuf),
     #[error("unsupported authentication source '{0}'")]
+    #[coded(code = "unsupported_source", class = Logical)]
     UnsupportedSource(String),
     #[error("authentication source '{source_id}' has no credentials for provider '{provider}'")]
+    #[coded(code = "external_credential_missing", class = Logical)]
     ExternalCredentialMissing { source_id: String, provider: String },
     #[error("provider '{0}' is not linked to an external authentication source")]
+    #[coded(code = "not_external_binding", class = Logical)]
     NotExternalBinding(String),
     #[error(transparent)]
+    #[coded(code = "source", class_with = source_class)]
     Source(#[from] gait_auth::AuthError),
     #[error(transparent)]
+    #[coded(transparent)]
     GaitHome(#[from] GaitHomeError),
+}
+
+/// Class of a wrapped `gait_auth` failure. `gait-auth` does not carry codes
+/// yet, so the mapping lives here; a retry is only worth it for `Retryable`.
+fn source_class(err: &AuthError) -> coded_error::ErrorClass {
+    use coded_error::ErrorClass;
+    match err {
+        AuthError::Source(gait_auth::AuthError::Retryable(_)) => ErrorClass::Transient,
+        AuthError::Source(
+            gait_auth::AuthError::MissingProviderId
+            | gait_auth::AuthError::MissingApiKey
+            | gait_auth::AuthError::UnsupportedCompletion(_)
+            | gait_auth::AuthError::IncompatibleCredential(_)
+            | gait_auth::AuthError::LoginRequired(_),
+        ) => ErrorClass::Logical,
+        _ => ErrorClass::Unknown,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1034,3 +1062,63 @@ mod tests {
         assert!(!path.exists());
     }
 }
+
+#[cfg(test)]
+mod coded_tests {
+    use super::AuthError;
+    use coded_error::{CodedError, ErrorClass};
+
+    #[test]
+    fn auth_store_error_codes_are_unique() {
+        coded_error::check_codes("gait.auth_store.", &[AuthError::ALL_CODES]).unwrap();
+        assert_eq!(
+            AuthError::ALL_CODES,
+            &[
+                "gait.auth_store.io",
+                "gait.auth_store.corrupt",
+                "gait.auth_store.lock_timeout",
+                "gait.auth_store.managed_elsewhere",
+                "gait.auth_store.no_parent",
+                "gait.auth_store.unsupported_source",
+                "gait.auth_store.external_credential_missing",
+                "gait.auth_store.not_external_binding",
+                "gait.auth_store.source",
+            ]
+        );
+    }
+
+    #[test]
+    fn auth_store_error_codes_and_classes() {
+        let io = AuthError::Io(std::io::Error::other("disk"));
+        assert_eq!((io.code(), io.class()), ("gait.auth_store.io", ErrorClass::Infrastructure));
+        let corrupt = AuthError::Corrupt { path: "a".into(), detail: "bad".into() };
+        assert_eq!((corrupt.code(), corrupt.class()), ("gait.auth_store.corrupt", ErrorClass::Infrastructure));
+        let lock = AuthError::LockTimeout;
+        assert_eq!((lock.code(), lock.class()), ("gait.auth_store.lock_timeout", ErrorClass::Transient));
+        let managed = AuthError::ManagedElsewhere("x".into());
+        assert_eq!((managed.code(), managed.class()), ("gait.auth_store.managed_elsewhere", ErrorClass::Logical));
+        let no_parent = AuthError::NoParent("/".into());
+        assert_eq!((no_parent.code(), no_parent.class()), ("gait.auth_store.no_parent", ErrorClass::Infrastructure));
+        let unsupported = AuthError::UnsupportedSource("x".into());
+        assert_eq!((unsupported.code(), unsupported.class()), ("gait.auth_store.unsupported_source", ErrorClass::Logical));
+        let missing = AuthError::ExternalCredentialMissing { source_id: "s".into(), provider: "p".into() };
+        assert_eq!(
+            (missing.code(), missing.class()),
+            ("gait.auth_store.external_credential_missing", ErrorClass::Logical)
+        );
+        let not_bound = AuthError::NotExternalBinding("p".into());
+        assert_eq!((not_bound.code(), not_bound.class()), ("gait.auth_store.not_external_binding", ErrorClass::Logical));
+        let source = AuthError::Source(gait_auth::AuthError::Retryable("later".into()));
+        assert_eq!((source.code(), source.class()), ("gait.auth_store.source", ErrorClass::Transient));
+        let source_login = AuthError::Source(gait_auth::AuthError::LoginRequired("again".into()));
+        assert_eq!(source_login.class(), ErrorClass::Logical);
+    }
+
+    #[test]
+    fn auth_store_home_errors_keep_the_gait_home_code() {
+        let err = AuthError::GaitHome(crate::gait_home::GaitHomeError::HomeUnavailable);
+        assert_eq!(err.code(), "gait.home.home_unavailable");
+        assert_eq!(err.class(), ErrorClass::Logical);
+    }
+}
+

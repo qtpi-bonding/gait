@@ -57,29 +57,29 @@ pub fn auth_method_for(provider_id: &str) -> Option<Box<dyn AuthMethod>> {
         .then(|| Box::new(ChatGptSignIn::new()) as Box<dyn AuthMethod>)
 }
 
-fn map_auth_error(error: gait_auth::AuthError) -> OpError {
+fn map_auth_error(error: gait_auth::AuthError) -> anyhow::Error {
     match error {
-        gait_auth::AuthError::Retryable(message) => OpError::Other(anyhow::anyhow!(message)),
+        gait_auth::AuthError::Retryable(message) => anyhow::anyhow!(message),
         gait_auth::AuthError::LoginRequired(message) => {
             let message = if message.contains("gait auth login") {
                 message
             } else {
                 format!("run: gait auth login openai-signin ({message})")
             };
-            OpError::Conflict(message)
+            coded_error::into_anyhow(OpError::Conflict(message))
         }
-        other => OpError::Other(anyhow::anyhow!(other)),
+        other => anyhow::anyhow!(other),
     }
 }
 
 fn write_outcome(
     provider: &str,
     credential: ResolvedCredential,
-) -> Result<AuthWriteOutcome, OpError> {
+) -> anyhow::Result<AuthWriteOutcome> {
     let ResolvedCredential::Subscription(subscription) = credential else {
-        return Err(OpError::Other(anyhow::anyhow!(
+        return Err(anyhow::anyhow!(
             "sign-in returned an API key credential"
-        )));
+        ));
     };
     let display = subscription
         .account_label
@@ -96,15 +96,15 @@ pub async fn login_begin_with(
     method: &dyn AuthMethod,
     store: &dyn CredentialStore,
     provider: &str,
-) -> Result<LoginStart, OpError> {
+) -> anyhow::Result<LoginStart> {
     let flow = method
         .begin_login_with(provider, &AuthContext { store })
         .await
         .map_err(map_auth_error)?;
     let LoginFlow::Browser { authorization_url } = flow else {
-        return Err(OpError::Other(anyhow::anyhow!(
+        return Err(anyhow::anyhow!(
             "authentication method did not start a browser login"
-        )));
+        ));
     };
     Ok(LoginStart {
         provider: provider.to_string(),
@@ -118,7 +118,7 @@ pub async fn login_complete_with(
     store: &dyn CredentialStore,
     provider: &str,
     callback_url: String,
-) -> Result<AuthWriteOutcome, OpError> {
+) -> anyhow::Result<AuthWriteOutcome> {
     let credential = method
         .complete_login_with(
             provider,
@@ -134,7 +134,7 @@ pub async fn ensure_fresh_with(
     method: &dyn AuthMethod,
     store: &dyn CredentialStore,
     provider: &str,
-) -> Result<ResolvedCredential, OpError> {
+) -> anyhow::Result<ResolvedCredential> {
     method
         .ensure_fresh(provider, &AuthContext { store })
         .await
@@ -145,7 +145,7 @@ pub async fn logout_signin_with(
     method: &dyn AuthMethod,
     store: &dyn CredentialStore,
     forget: bool,
-) -> Result<LogoutOutcome, OpError> {
+) -> anyhow::Result<LogoutOutcome> {
     let report = method
         .logout_with(SIGNIN_PROVIDER_ID, forget, &AuthContext { store })
         .await
@@ -156,34 +156,30 @@ pub async fn logout_signin_with(
     })
 }
 
-pub async fn login_begin(provider: &str) -> Result<LoginStart, OpError> {
+pub async fn login_begin(provider: &str) -> anyhow::Result<LoginStart> {
     let method = ChatGptSignIn::new();
-    let store = gait_state::auth_store::FileCredentialStore::resolve()
-        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    let store = gait_state::auth_store::FileCredentialStore::resolve()?;
     login_begin_with(&method, &store, provider).await
 }
 
 pub async fn login_complete(
     provider: &str,
     callback_url: String,
-) -> Result<AuthWriteOutcome, OpError> {
+) -> anyhow::Result<AuthWriteOutcome> {
     let method = ChatGptSignIn::new();
-    let store = gait_state::auth_store::FileCredentialStore::resolve()
-        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    let store = gait_state::auth_store::FileCredentialStore::resolve()?;
     login_complete_with(&method, &store, provider, callback_url).await
 }
 
-pub async fn ensure_fresh(provider: &str) -> Result<ResolvedCredential, OpError> {
+pub async fn ensure_fresh(provider: &str) -> anyhow::Result<ResolvedCredential> {
     let method = ChatGptSignIn::new();
-    let store = gait_state::auth_store::FileCredentialStore::resolve()
-        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    let store = gait_state::auth_store::FileCredentialStore::resolve()?;
     ensure_fresh_with(&method, &store, provider).await
 }
 
-pub async fn logout_signin(forget: bool) -> Result<LogoutOutcome, OpError> {
+pub async fn logout_signin(forget: bool) -> anyhow::Result<LogoutOutcome> {
     let method = ChatGptSignIn::new();
-    let store = gait_state::auth_store::FileCredentialStore::resolve()
-        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    let store = gait_state::auth_store::FileCredentialStore::resolve()?;
     logout_signin_with(&method, &store, forget).await
 }
 
@@ -192,25 +188,24 @@ pub fn link(
     provider: &str,
     source_id: &str,
     home: Option<PathBuf>,
-) -> Result<AuthWriteOutcome, OpError> {
+) -> anyhow::Result<AuthWriteOutcome> {
     if provider.is_empty() {
-        return Err(OpError::Conflict("provider name is required".to_string()));
+        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
     }
     let source: Box<dyn AuthSource> = match source_id {
         CODEX_SOURCE_ID => Box::new(CodexAuthSource),
         other => {
-            return Err(OpError::Conflict(format!(
+            return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                 "unsupported authentication source '{other}'"
-            )))
+            ))))
         }
     };
     if !source.supports(provider) {
-        return Err(OpError::Conflict(format!(
+        return Err(coded_error::into_anyhow(OpError::Conflict(format!(
             "authentication source '{source_id}' does not support provider '{provider}'"
-        )));
+        ))));
     }
-    gait_state::auth::write_external_binding(provider, source_id, home.as_deref())
-        .map_err(|error| OpError::Other(error.into()))?;
+    gait_state::auth::write_external_binding(provider, source_id, home.as_deref())?;
     Ok(AuthWriteOutcome {
         provider: provider.to_string(),
         display: format!("external ({source_id})"),
@@ -219,12 +214,11 @@ pub fn link(
 
 /// Remove only gait's pointer to an external source. The owning CLI's
 /// credential file/keyring entry is never changed or revoked.
-pub fn unlink(provider: &str) -> Result<AuthRemoveOutcome, OpError> {
+pub fn unlink(provider: &str) -> anyhow::Result<AuthRemoveOutcome> {
     if provider.is_empty() {
-        return Err(OpError::Conflict("provider name is required".to_string()));
+        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
     }
-    gait_state::auth::unlink_external_binding(provider)
-        .map_err(|error| OpError::Other(error.into()))?;
+    gait_state::auth::unlink_external_binding(provider)?;
     Ok(AuthRemoveOutcome {
         provider: provider.to_string(),
     })
@@ -255,14 +249,14 @@ impl ModelsOutcome {
 /// `key` is required to be non-empty — the CLI adapter also guards this,
 /// but the op keeps the invariant locally so a programmatic caller can't
 /// accidentally wipe an entry by passing `""`.
-pub fn add(provider: &str, api_key: String) -> Result<AuthWriteOutcome, OpError> {
+pub fn add(provider: &str, api_key: String) -> anyhow::Result<AuthWriteOutcome> {
     if provider.is_empty() {
-        return Err(OpError::Conflict("provider name is required".to_string()));
+        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
     }
     if api_key.is_empty() {
-        return Err(OpError::Conflict("api key is required".to_string()));
+        return Err(coded_error::into_anyhow(OpError::Conflict("api key is required".to_string())));
     }
-    gait_state::auth::write_api_key(provider, &api_key).map_err(|e| OpError::Other(e.into()))?;
+    gait_state::auth::write_api_key(provider, &api_key)?;
     let prefix: String = api_key.chars().take(8).collect();
     Ok(AuthWriteOutcome {
         provider: provider.to_string(),
@@ -275,23 +269,23 @@ pub fn add(provider: &str, api_key: String) -> Result<AuthWriteOutcome, OpError>
 /// `cmd_auth remove` behavior (it called `remove_api_key` and reported
 /// success unconditionally). A stored ChatGPT sign-in entry is owned by its
 /// login flow, so the state layer refuses it and it surfaces as a conflict.
-pub fn remove(provider: &str) -> Result<AuthRemoveOutcome, OpError> {
+pub fn remove(provider: &str) -> anyhow::Result<AuthRemoveOutcome> {
     remove_using(provider, gait_state::auth::remove_api_key)
 }
 
 fn remove_using(
     provider: &str,
     remove_entry: impl FnOnce(&str) -> Result<(), gait_state::auth::AuthError>,
-) -> Result<AuthRemoveOutcome, OpError> {
+) -> anyhow::Result<AuthRemoveOutcome> {
     if provider.is_empty() {
-        return Err(OpError::Conflict("provider name is required".to_string()));
+        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
     }
     remove_entry(provider).map_err(|error| match error {
-        gait_state::auth::AuthError::ManagedElsewhere(_) => OpError::Conflict(
+        gait_state::auth::AuthError::ManagedElsewhere(_) => coded_error::into_anyhow(OpError::Conflict(
             "openai-signin is managed by ChatGPT sign-in; run `gait auth logout openai-signin --forget`"
                 .to_string(),
-        ),
-        error => OpError::Other(error.into()),
+        )),
+        error => anyhow::Error::from(error),
     })?;
     Ok(AuthRemoveOutcome {
         provider: provider.to_string(),
@@ -301,27 +295,25 @@ fn remove_using(
 /// Run a Codex device-code login. `show_device_code` receives only the
 /// user-facing flow; the transient device state and all tokens remain inside
 /// the operation/auth method.
-pub async fn login_codex<F>(show_device_code: F) -> Result<AuthWriteOutcome, OpError>
+pub async fn login_codex<F>(show_device_code: F) -> anyhow::Result<AuthWriteOutcome>
 where
     F: FnOnce(&gait_auth::LoginFlow),
 {
     let auth = gait_auth::codex::CodexSubscriptionAuth::new();
     let flow = auth
         .begin_login(gait_auth::codex::CODEX_PROVIDER_ID)
-        .await
-        .map_err(|error| OpError::Other(error.into()))?;
+        .await?;
     show_device_code(&flow);
     let credential = auth
         .complete_login(
             gait_auth::codex::CODEX_PROVIDER_ID,
             gait_auth::LoginCompletion::DeviceCodeApproved,
         )
-        .await
-        .map_err(|error| OpError::Other(error.into()))?;
+        .await?;
     let gait_auth::ResolvedCredential::Subscription(subscription) = credential else {
-        return Err(OpError::Other(anyhow::anyhow!(
+        return Err(anyhow::anyhow!(
             "Codex login returned an API key credential"
-        )));
+        ));
     };
     let display = subscription
         .account_label
@@ -331,8 +323,7 @@ where
     gait_state::auth::write_subscription_credential(
         gait_auth::codex::CODEX_PROVIDER_ID,
         &subscription,
-    )
-    .map_err(|error| OpError::Other(error.into()))?;
+    )?;
     Ok(AuthWriteOutcome {
         provider: gait_auth::codex::CODEX_PROVIDER_ID.to_string(),
         display,
@@ -342,40 +333,34 @@ where
 /// List every provider configured in the credential store, sorted by
 /// provider name with masked-display values (`"abcd1234..."` for `api`
 /// entries, literal `"oauth"`/`"wellknown"`/`"unknown"` for the rest).
-pub fn list() -> Result<AuthListOutcome, OpError> {
-    let mut creds =
-        gait_state::auth::list_credentials().map_err(|error| OpError::Other(error.into()))?;
+pub fn list() -> anyhow::Result<AuthListOutcome> {
+    let mut creds = gait_state::auth::list_credentials()?;
     let mut sorted: Vec<(String, String)> = creds.drain().collect();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(sorted.into_iter().collect())
 }
 
 /// Non-secret status display for one configured provider.
-pub fn status(provider: &str) -> Result<Option<String>, OpError> {
+pub fn status(provider: &str) -> anyhow::Result<Option<String>> {
     Ok(list()?.remove(provider))
 }
 
 /// Revoke the Codex refresh token when possible, then remove its local
 /// credential. Local removal still proceeds when the remote revoke endpoint is
 /// unavailable so logout is reliable offline.
-pub async fn logout_codex() -> Result<AuthRemoveOutcome, OpError> {
-    if gait_state::auth::external_binding(gait_auth::codex::CODEX_PROVIDER_ID)
-        .map_err(|error| OpError::Other(error.into()))?
-        .is_some()
-    {
-        return Err(OpError::Conflict(
+pub async fn logout_codex() -> anyhow::Result<AuthRemoveOutcome> {
+    if gait_state::auth::external_binding(gait_auth::codex::CODEX_PROVIDER_ID)?.is_some() {
+        return Err(coded_error::into_anyhow(OpError::Conflict(
             "openai-codex is linked to externally owned credentials; run `gait auth unlink openai-codex` instead"
                 .into(),
-        ));
+        )));
     }
     if let Some(credential) =
-        gait_state::auth::resolve_credential_result(gait_auth::codex::CODEX_PROVIDER_ID)
-            .map_err(|error| OpError::Other(error.into()))?
+        gait_state::auth::resolve_credential_result(gait_auth::codex::CODEX_PROVIDER_ID)?
     {
         gait_auth::codex::CodexSubscriptionAuth::new()
             .logout(&credential)
-            .await
-            .map_err(|error| OpError::Other(error.into()))?;
+            .await?;
     }
     remove(gait_auth::codex::CODEX_PROVIDER_ID)
 }
@@ -385,10 +370,8 @@ pub async fn logout_codex() -> Result<AuthRemoveOutcome, OpError> {
 /// implements) and apply an optional substring filter over provider/id/name.
 /// Async because the upstream fetch is a network read; frontends should
 /// await this and render the rows.
-pub async fn models(filter: Option<&str>) -> Result<ModelsOutcome, OpError> {
-    let models = gait_state::models::get_models()
-        .await
-        .map_err(OpError::Other)?;
+pub async fn models(filter: Option<&str>) -> anyhow::Result<ModelsOutcome> {
+    let models = gait_state::models::get_models().await?;
     Ok(ModelsOutcome {
         models,
         filter: filter.map(|s| s.to_string()),
@@ -426,8 +409,11 @@ mod tests {
     use gait_state::auth_store::FileCredentialStore;
     use std::sync::Arc;
 
-    fn op_err_conflict(err: OpError) -> bool {
-        matches!(err, OpError::Conflict(_))
+    fn op_err_conflict(err: anyhow::Error) -> bool {
+        matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::Conflict(_))
+        )
     }
 
     fn test_method(server: &StubServer) -> ChatGptSignIn {
@@ -479,8 +465,8 @@ mod tests {
             "session was revoked".into(),
         ));
         assert!(matches!(
-            &error,
-            OpError::Conflict(message)
+            coded_error::downcast_ref::<OpError>(&error),
+            Some(OpError::Conflict(message))
                 if message.contains("session was revoked") && message.contains("gait auth login")
         ));
     }
@@ -690,8 +676,8 @@ mod tests {
         })
         .unwrap_err();
         assert!(matches!(
-            &error,
-            OpError::Conflict(message) if message.contains("logout openai-signin --forget")
+            coded_error::downcast_ref::<OpError>(&error),
+            Some(OpError::Conflict(message)) if message.contains("logout openai-signin --forget")
         ));
         assert!(gait_state::auth::list_credentials_from(&path).contains_key(SIGNIN_PROVIDER_ID));
     }

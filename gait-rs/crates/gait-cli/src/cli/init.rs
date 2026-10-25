@@ -70,12 +70,11 @@ pub fn cmd_init(args: InitArgs) {
                 )
             );
         }
-        Err(gait_ops::OpError::Conflict(msg)) => {
-            eprintln!("[gait] {msg}");
-            std::process::exit(1);
-        }
         Err(e) => {
-            eprintln!("[gait] {e}");
+            match gait_ops::OpError::find(&e) {
+                Some(gait_ops::OpError::Conflict(msg)) => eprintln!("[gait] {msg}"),
+                _ => eprintln!("[gait] {e}"),
+            }
             std::process::exit(1);
         }
     }

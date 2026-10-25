@@ -5,6 +5,7 @@
 //! `gait_state::session::retrace`. Mutating ops take a `SessionLock`; bulk
 //! persist/discard uses the preview→act pattern (design §4).
 use crate::OpError;
+use coded_error::ResultExt;
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------------
@@ -39,7 +40,7 @@ impl ListOutcome {
 ///
 /// `last`, if set, truncates to that many most-recently-updated sessions
 /// (`gait sessions --last <n>`).
-pub fn list(gait_dir: &Path, last: Option<usize>) -> Result<ListOutcome, OpError> {
+pub fn list(gait_dir: &Path, last: Option<usize>) -> anyhow::Result<ListOutcome> {
     let ids = gait_state::git::Repos::production()
         .traces
         .list_active_sessions(gait_dir)?;
@@ -99,7 +100,7 @@ impl PsOutcome {
 }
 
 /// Walk `.active/<id>/...`, classify each as idle / awaiting-*. Read-only.
-pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
+pub fn ps(gait_dir: &Path) -> anyhow::Result<PsOutcome> {
     use gait_state::session::log::{session_state, SessionState};
     let sessions_dir = gait_dir.join(".active");
     let entries = match std::fs::read_dir(&sessions_dir) {
@@ -168,11 +169,11 @@ impl StatsOutcome {
 }
 
 /// Cumulative token usage for a session, folded from the log.
-pub fn stats(gait_dir: &Path, session_id: &str) -> Result<StatsOutcome, OpError> {
+pub fn stats(gait_dir: &Path, session_id: &str) -> anyhow::Result<StatsOutcome> {
     use gait_state::session::log::read_events;
     use gait_state::session::retrace::total_usage;
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
-    let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
+    let events = read_events(&tx_path).coded()?;
     let u = total_usage(&events);
     let (compaction_input, compaction_output, compaction_cache_read, compaction_cache_write) =
         events
@@ -310,25 +311,25 @@ impl UndoOutcome {
 /// that run's final checkpoint and its transcript target is the newest session
 /// commit of that run. `turn 0` is the state before the first request and
 /// restores code only (see `undo_with`).
-pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
+pub fn undo(params: UndoParams) -> anyhow::Result<UndoOutcome> {
     undo_with(params, gait_state::git::Repos::production().checkpoints.as_ref())
 }
 
 fn undo_with(
     params: UndoParams,
     checkpoints: &dyn gait_state::git::checkpoint::CheckpointRepo,
-) -> Result<UndoOutcome, OpError> {
+) -> anyhow::Result<UndoOutcome> {
     use gait_state::proto::gait::log::v1::{event, payload};
     use gait_state::session::log::read_events;
 
     if params.list && params.turn.is_some() {
-        return Err(OpError::Conflict(
+        return Err(coded_error::into_anyhow(OpError::Conflict(
             "--list and --turn are mutually exclusive".to_string(),
-        ));
+        )));
     }
 
     let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
-    let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
+    let events = read_events(&tx_path).coded()?;
 
     // Join each completed run's terminal checkpoint with its final TurnResult.
     // `turns[i]` is user-facing turn i+1; `run_ids[i]` is that run's ordinal
@@ -352,7 +353,7 @@ fn undo_with(
                 }
                 Some(payload::Kind::RunComplete(complete)) => {
                     let run = e.run.ok_or_else(|| {
-                        OpError::Conflict("RunComplete event has no run ordinal".to_string())
+                        coded_error::into_anyhow(OpError::Conflict("RunComplete event has no run ordinal".to_string()))
                     })?;
                     let idx = turns.len() as u32 + 1;
                     let message = turn_done_message_before(&events, e.seq, e.run);
@@ -386,7 +387,7 @@ fn undo_with(
 
     let turn = params
         .turn
-        .ok_or_else(|| OpError::Conflict("--turn <n> is required (or use --list)".to_string()))?;
+        .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict("--turn <n> is required (or use --list)".to_string())))?;
 
     let do_code = params.code || !params.transcript;
     let do_transcript = params.transcript || !params.code;
@@ -398,24 +399,24 @@ fn undo_with(
         // the session's init commit has an empty tree, so resetting to it
         // would delete log.jsonl, which the log writer cannot recreate.
         if do_transcript {
-            return Err(OpError::Conflict(
+            return Err(coded_error::into_anyhow(OpError::Conflict(
                 "turn 0 (before the first request) restores code only: use \
                  `gait undo <session> --turn 0 --code` (REPL: /uc 0)"
                     .to_string(),
-            ));
+            )));
         }
         let sha = first_baseline.and_then(|(_, sha)| sha).ok_or_else(|| {
-            OpError::Conflict("no baseline checkpoint recorded before the first request".to_string())
+            coded_error::into_anyhow(OpError::Conflict("no baseline checkpoint recorded before the first request".to_string()))
         })?;
         let short = Some(sha[..sha.len().min(8)].to_string());
         (Some(sha), short, None)
     } else {
         let turn_idx = turn as usize - 1;
         if turn_idx >= turns.len() {
-            return Err(OpError::NotFound(format!(
+            return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                 "no turn {} in session {}",
                 turn, params.session_id
-            )));
+            ))));
         }
         let target = if do_transcript {
             let dir = gait_state::session::live::worktree_dir(&params.gait_dir, &params.session_id);
@@ -436,7 +437,7 @@ fn undo_with(
                 .codebase_path
                 .map(std::path::PathBuf::from)
                 .ok_or_else(|| {
-                    OpError::Conflict("session has no codebase_path; cannot undo code".to_string())
+                    coded_error::into_anyhow(OpError::Conflict("session has no codebase_path; cannot undo code".to_string()))
                 })?,
         ),
         _ => None,
@@ -445,7 +446,7 @@ fn undo_with(
     // Acquire the lock; refuse if a turn is in progress.
     let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &params.session_id);
     let _lock = gait_state::session::SessionLock::acquire(&session_dir).map_err(|e| {
-        OpError::SessionBusy(format!("cannot undo: {} (is a turn in progress?)", e))
+        coded_error::into_anyhow(OpError::SessionBusy(format!("cannot undo: {} (is a turn in progress?)", e)))
     })?;
 
     let mut code_undone = false;
@@ -473,7 +474,7 @@ fn undo_with(
 /// A run spans one commit per turn process (a pause and resume add another),
 /// and the newest holds the log as it stood when the run ended. The trailing
 /// space keeps run 1 from matching run 10.
-fn find_transcript_commit(dir: &Path, session_id: &str, run: u32) -> Result<git2::Oid, OpError> {
+fn find_transcript_commit(dir: &Path, session_id: &str, run: u32) -> anyhow::Result<git2::Oid> {
     let repo = git2::Repository::open(dir).map_err(anyhow::Error::from)?;
     let prefix = format!("session({session_id}): run {run} turn ");
     let mut walk = repo.revwalk().map_err(anyhow::Error::from)?;
@@ -485,12 +486,12 @@ fn find_transcript_commit(dir: &Path, session_id: &str, run: u32) -> Result<git2
             return Ok(oid);
         }
     }
-    Err(OpError::NotFound(format!(
+    Err(coded_error::into_anyhow(OpError::NotFound(format!(
         "no transcript commit for run {run} in session {session_id}"
-    )))
+    ))))
 }
 
-fn reset_transcript_to(dir: &Path, oid: git2::Oid) -> Result<(), OpError> {
+fn reset_transcript_to(dir: &Path, oid: git2::Oid) -> anyhow::Result<()> {
     let repo = git2::Repository::open(dir).map_err(anyhow::Error::from)?;
     let obj = repo.find_object(oid, None).map_err(anyhow::Error::from)?;
     repo.reset(&obj, git2::ResetType::Hard, None)
@@ -535,12 +536,12 @@ impl SessionSummaryOutcome {
 /// <session-id>` is meant as a quick "what happened" glance; `gait sessions`
 /// (per-session log path) or a direct log read is the tool for the full
 /// history.
-pub fn summary(gait_dir: &Path, session_id: &str) -> Result<SessionSummaryOutcome, OpError> {
+pub fn summary(gait_dir: &Path, session_id: &str) -> anyhow::Result<SessionSummaryOutcome> {
     use gait_state::proto::gait::log::v1::{event, payload};
     use gait_state::session::log::read_events;
 
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
-    let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
+    let events = read_events(&tx_path).coded()?;
 
     let mut turn_idx = 0u32;
     let mut last: Option<SessionSummaryOutcome> = None;
@@ -691,7 +692,7 @@ impl BulkOutcome {
 
 /// PURE preview. Classifies targets, performs NO effect. The frontend renders
 /// the plan and prompts using `eligible.len()`.
-pub fn classify_bulk(gait_dir: &Path, verb: BulkVerb) -> Result<BulkPlan, OpError> {
+pub fn classify_bulk(gait_dir: &Path, verb: BulkVerb) -> anyhow::Result<BulkPlan> {
     let (eligible, skipped) = classify_bulk_targets(gait_dir)?;
     Ok(BulkPlan {
         verb,
@@ -718,20 +719,20 @@ pub fn bulk_act(
     plan: &BulkPlan,
     confirmed: bool,
     force: bool,
-) -> Result<BulkOutcome, OpError> {
+) -> anyhow::Result<BulkOutcome> {
     if plan.verb == BulkVerb::Discard && plan.eligible.len() > 1 && !force {
-        return Err(OpError::ConfirmationRequired(format!(
+        return Err(coded_error::into_anyhow(OpError::ConfirmationRequired(format!(
             "bulk discard of {} sessions requires --force (a second, distinct flag from \
              confirmation) — review the eligible list above, then re-run with --force",
             plan.eligible.len()
-        )));
+        ))));
     }
     if !confirmed {
-        return Err(OpError::ConfirmationRequired(format!(
+        return Err(coded_error::into_anyhow(OpError::ConfirmationRequired(format!(
             "{} {} session(s) requires confirmation",
             plan.verb.label(),
             plan.eligible.len()
-        )));
+        ))));
     }
 
     let mut acted: Vec<String> = Vec::new();
@@ -774,7 +775,7 @@ pub fn bulk_act(
 /// Persist one session. `Ok(Some(msg))` means the merge succeeded but the
 /// checkpoint db could not be removed — a non-fatal warning for the caller to
 /// render, not a print here (Wall 1).
-fn persist_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
+fn persist_one(gait_dir: &Path, id: &str) -> anyhow::Result<Option<String>> {
     let repos = gait_state::git::Repos::production();
     repos.traces.finish_session(gait_dir, id)?;
     if let Err(e) = repos.checkpoints.remove(gait_dir, id) {
@@ -786,7 +787,7 @@ fn persist_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
     Ok(None)
 }
 
-fn discard_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
+fn discard_one(gait_dir: &Path, id: &str) -> anyhow::Result<Option<String>> {
     gait_state::git::Repos::production()
         .traces
         .discard_session(gait_dir, id)?;
@@ -798,7 +799,7 @@ fn discard_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
 /// `cli/session.rs` as-is for parity.
 type BulkTargets = (Vec<String>, Vec<(String, String)>);
 
-fn classify_bulk_targets(gait_dir: &Path) -> Result<BulkTargets, OpError> {
+fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
     use gait_state::session::log::{session_state, SessionState};
 
     let sessions_dir = gait_dir.join(".active");
@@ -1084,7 +1085,7 @@ mod tests {
         write_empty_log(ws.path(), "sbulk02");
         let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
         let err = bulk_act(ws.path(), &plan, false, false).unwrap_err();
-        assert!(matches!(err, OpError::ConfirmationRequired(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::ConfirmationRequired(_))));
         // Still present: the act loop never ran.
         assert!(gait_state::session::live::worktree_dir(ws.path(), "sbulk02").exists());
     }
@@ -1148,7 +1149,7 @@ mod tests {
 
         // confirmed=true, force=false: refused, nothing touched.
         let err = bulk_act(ws.path(), &plan, true, false).unwrap_err();
-        assert!(matches!(err, OpError::ConfirmationRequired(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::ConfirmationRequired(_))));
         assert!(gait_state::session::live::worktree_dir(ws.path(), "sforce01").exists());
         assert!(gait_state::session::live::worktree_dir(ws.path(), "sforce02").exists());
 
@@ -1238,7 +1239,7 @@ mod tests {
             list: true,
         })
         .unwrap_err();
-        assert!(matches!(err, OpError::Conflict(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))));
     }
 
     #[test]
@@ -1253,7 +1254,7 @@ mod tests {
             list: false,
         })
         .unwrap_err();
-        assert!(matches!(err, OpError::Conflict(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))));
     }
 
     // -- undo (real restores) --
@@ -1476,7 +1477,7 @@ mod tests {
         let cp = StubCheckpoints::default();
         let err = undo_with(undo_params(ws.path(), id, 1, false, false), &cp).unwrap_err();
 
-        assert!(matches!(err, OpError::NotFound(_)), "{err:?}");
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "{err:?}");
         assert!(
             cp.restored.lock().unwrap().is_empty(),
             "code must not be restored when the transcript target is missing"
@@ -1518,7 +1519,7 @@ mod tests {
         let cp = StubCheckpoints::default();
         for (code, transcript) in [(false, false), (false, true)] {
             let err = undo_with(undo_params(ws.path(), id, 0, code, transcript), &cp).unwrap_err();
-            assert!(matches!(err, OpError::Conflict(_)), "{err:?}");
+            assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))), "{err:?}");
         }
         assert!(cp.restored.lock().unwrap().is_empty());
     }
@@ -1536,7 +1537,7 @@ mod tests {
             &StubCheckpoints::default(),
         )
         .unwrap_err();
-        assert!(matches!(err, OpError::Conflict(_)), "{err:?}");
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))), "{err:?}");
     }
 
     #[test]
@@ -1552,7 +1553,7 @@ mod tests {
             &StubCheckpoints::default(),
         )
         .unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)), "{err:?}");
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "{err:?}");
     }
 
     // -- shared renderer (golden tests) --
@@ -1727,7 +1728,7 @@ mod tests {
             list: false,
         })
         .unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
     }
 
     // -- summary (cmd_log) --

@@ -504,15 +504,15 @@ pub async fn run_turn(
         );
         if estimate.crosses(env.context_policy) {
             if compaction::has_unmatched_tool_call(&outgoing) {
-                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                    compaction::Error::UnsafePendingToolCall
+                break 'turn finalize::StepOutcome::Fail(coded_error::into_anyhow(
+                    compaction::Error::UnsafePendingToolCall,
                 ));
             }
             let through_seq = events_before_request.last().map(|event| event.seq);
             let summary = match compaction::summarize_with_retry(&env, &outgoing).await {
                 Ok(summary) => summary,
                 Err(compaction::Error::Cancelled) => break 'turn finalize::StepOutcome::Cancelled,
-                Err(error) => break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(error)),
+                Err(error) => break 'turn finalize::StepOutcome::Fail(coded_error::into_anyhow(error)),
             };
             emitter.set_scope(crate::proto::envelope::EventScope::Session);
             emitter.record(events::summary(
@@ -542,11 +542,11 @@ pub async fn run_turn(
                 0,
             );
             if rebuilt.crosses(env.context_policy) {
-                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                break 'turn finalize::StepOutcome::Fail(coded_error::into_anyhow(
                     compaction::Error::StillTooLarge {
                         predicted: rebuilt.predicted_tokens(),
                         threshold: env.context_policy.compaction_threshold_tokens,
-                    }
+                    },
                 ));
             }
         }

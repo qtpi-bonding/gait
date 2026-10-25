@@ -9,6 +9,7 @@
 //! `agent_frontmatter::resolve_markdown_context_path(MarkdownKind::Agent, name)`)
 //! — do not flatten it.
 use crate::OpError;
+use coded_error::ResultExt;
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------------
@@ -77,7 +78,7 @@ pub fn allow(
     gait_dir: &Path,
     session_id: &str,
     params: AllowParams,
-) -> Result<AllowOutcome, OpError> {
+) -> anyhow::Result<AllowOutcome> {
     use gait_state::permissions::{
         compute_allow_decisions, AllowParams as CoreAllowParams, AllowScope as CoreAllowScope,
     };
@@ -89,9 +90,9 @@ pub fn allow(
         GrantScope::Session => CoreAllowScope::Session,
         GrantScope::Once => CoreAllowScope::Once,
         GrantScope::Agent => {
-            return Err(OpError::from(anyhow::anyhow!(
+            return Err(anyhow::anyhow!(
                 "scope 'agent' is not supported for allow; use --scope mode"
-            )));
+            ));
         }
     };
 
@@ -103,13 +104,13 @@ pub fn allow(
     };
 
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
-    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let state = session_state(&tx_path).coded()?;
     let items = match state {
         SessionState::AwaitingPermission { items } => items,
         _ => {
-            return Err(OpError::NotFound(format!(
+            return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                 "no pending permissions for session {session_id}"
-            )));
+            ))));
         }
     };
 
@@ -121,7 +122,7 @@ pub fn allow(
         mode_name.as_deref(),
     )?;
 
-    write_permissions_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
+    write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
 
     Ok(AllowOutcome {
         reply_items,
@@ -141,18 +142,18 @@ pub struct DenyOutcome {
 
 /// Deny all pending permission requests for `session_id`. Builds deny reply
 /// items and writes the `PermissionsReply` event to the session log.
-pub fn deny(gait_dir: &Path, session_id: &str) -> Result<DenyOutcome, OpError> {
+pub fn deny(gait_dir: &Path, session_id: &str) -> anyhow::Result<DenyOutcome> {
     use gait_state::proto::gait::log::v1 as pb;
     use gait_state::session::log::{session_state, write_permissions_reply, SessionState};
 
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
-    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let state = session_state(&tx_path).coded()?;
     let items = match state {
         SessionState::AwaitingPermission { items } => items,
         _ => {
-            return Err(OpError::NotFound(format!(
+            return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                 "no pending permissions for session {session_id}"
-            )));
+            ))));
         }
     };
 
@@ -170,7 +171,7 @@ pub fn deny(gait_dir: &Path, session_id: &str) -> Result<DenyOutcome, OpError> {
         return Ok(DenyOutcome { reply_items: reply });
     }
 
-    write_permissions_reply(&tx_path, "user", reply.clone()).map_err(anyhow::Error::from)?;
+    write_permissions_reply(&tx_path, "user", reply.clone()).coded()?;
     Ok(DenyOutcome { reply_items: reply })
 }
 
@@ -215,17 +216,17 @@ pub fn reply(
     gait_dir: &Path,
     session_id: &str,
     choices: Vec<ItemChoice>,
-) -> Result<ReplyOutcome, OpError> {
+) -> anyhow::Result<ReplyOutcome> {
     use gait_state::session::log::{session_state, SessionState};
 
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
-    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let state = session_state(&tx_path).coded()?;
     let items = match state {
         SessionState::AwaitingPermission { items } => items,
         _ => {
-            return Err(OpError::NotFound(format!(
+            return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                 "no pending permissions for session {session_id}"
-            )));
+            ))));
         }
     };
     reply_for_items(gait_dir, session_id, items, choices)
@@ -243,7 +244,7 @@ pub fn reply_for_items(
     session_id: &str,
     items: Vec<pb::PermissionItem>,
     choices: Vec<ItemChoice>,
-) -> Result<ReplyOutcome, OpError> {
+) -> anyhow::Result<ReplyOutcome> {
     use gait_state::permissions::{save_choice, PermissionChoice};
     use gait_state::session::log::write_permissions_reply;
 
@@ -257,10 +258,10 @@ pub fn reply_for_items(
     // (it leaves the real pending item unanswered too).
     for c in &choices {
         if !pending.contains(c.id.as_str()) {
-            return Err(OpError::NotFound(format!(
+            return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                 "no pending permission item '{}' for session {session_id}",
                 c.id
-            )));
+            ))));
         }
     }
 
@@ -269,10 +270,10 @@ pub fn reply_for_items(
     // silently denied at resume — reject rather than half-answer.
     for it in &items {
         if !answered.contains(it.id.as_str()) {
-            return Err(OpError::from(anyhow::anyhow!(
+            return Err(anyhow::anyhow!(
                 "incomplete reply: pending item '{}' for session {session_id} was not answered",
                 it.id
-            )));
+            ));
         }
     }
 
@@ -280,10 +281,10 @@ pub fn reply_for_items(
     for c in &choices {
         let item = if c.decision == pb::Decision::Allow {
             let Some(pattern) = c.pattern.clone() else {
-                return Err(OpError::from(anyhow::anyhow!(
+                return Err(anyhow::anyhow!(
                     "allow choice for item '{}' is missing a pattern",
                     c.id
-                )));
+                ));
             };
             let mode_name = resolve_active_mode_name(gait_dir, session_id);
             let (choice, scope_tag) = match c.scope {
@@ -297,9 +298,9 @@ pub fn reply_for_items(
                 ),
                 GrantScope::Once => (PermissionChoice::Once(pattern.clone()), pb::Scope::Once),
                 GrantScope::Agent => {
-                    return Err(OpError::from(anyhow::anyhow!(
+                    return Err(anyhow::anyhow!(
                         "scope 'agent' is not supported for reply/allow; use 'mode'"
-                    )));
+                    ));
                 }
             };
             save_choice(&choice, gait_dir, session_id, mode_name.as_deref())?;
@@ -315,10 +316,10 @@ pub fn reply_for_items(
             // comment), and carries the pattern in `text` so the
             // ActivePermissions fold picks it up into `deny_session`.
             let Some(pattern) = c.pattern.clone() else {
-                return Err(OpError::from(anyhow::anyhow!(
+                return Err(anyhow::anyhow!(
                     "session-scoped deny choice for item '{}' is missing a pattern",
                     c.id
-                )));
+                ));
             };
             save_choice(
                 &PermissionChoice::DenySession(pattern.clone()),
@@ -347,7 +348,7 @@ pub fn reply_for_items(
     if reply_items.is_empty() {
         return Ok(ReplyOutcome { reply_items });
     }
-    write_permissions_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
+    write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
     Ok(ReplyOutcome { reply_items })
 }
 // -----------------------------------------------------------------------------
@@ -386,21 +387,21 @@ pub struct UnlockOutcome {
 ///   `SandboxGrant` against the agent file's parent dir, then write the
 ///   reply. Without `--agent`, the grant is silently log-only (matching
 ///   the original CLI warning behavior).
-pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
+pub fn unlock(params: UnlockParams) -> anyhow::Result<UnlockOutcome> {
     use gait_state::proto::gait::log::v1 as pb;
     use gait_state::session::log::{session_state, write_unlock_reply, SessionState};
 
     let scope_pb: pb::Scope = params.scope.into();
 
     let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
-    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let state = session_state(&tx_path).coded()?;
     let items = match state {
         SessionState::AwaitingSandboxUnlock { items } => items,
         _ => {
-            return Err(OpError::NotFound(format!(
+            return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                 "no pending unlock for session {}",
                 params.session_id
-            )));
+            ))));
         }
     };
 
@@ -457,7 +458,7 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
         })
         .collect();
 
-    write_unlock_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
+    write_unlock_reply(&tx_path, "user", reply_items.clone()).coded()?;
 
     Ok(UnlockOutcome {
         reply_items,
@@ -661,7 +662,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
     }
 
     // -- deny --
@@ -699,7 +700,7 @@ mod tests {
         let ws = ws();
         let _tx = make_session(ws.path(), "sdeny02");
         let err = deny(ws.path(), "sdeny02").unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
     }
 
     // -- unlock (3 plan tests + a few extras) --
@@ -912,7 +913,7 @@ mod tests {
             agent: None,
         })
         .unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
     }
 
     #[test]
@@ -1036,7 +1037,7 @@ mod tests {
             }],
         )
         .unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)), "got {err:?}");
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "got {err:?}");
     }
 
     #[test]
@@ -1055,7 +1056,7 @@ mod tests {
             }],
         )
         .unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)), "got {err:?}");
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "got {err:?}");
     }
 
     #[test]
@@ -1098,7 +1099,10 @@ mod tests {
             }],
         )
         .unwrap_err();
-        assert!(matches!(err, OpError::Other(_)), "got {err:?}");
+        assert!(
+            coded_error::downcast_ref::<OpError>(&err).is_none(),
+            "an untyped failure must not carry an OpError variant, got {err:?}"
+        );
         // No PermissionsReply was written — the session is still AwaitingPermission.
         assert_eq!(read_events(&tx).map(|e| e.len()).unwrap_or(0), 1);
     }

@@ -515,7 +515,7 @@ pub fn cmd_deny(args: DenyArgs) {
                 )
             );
         }
-        Err(gait_ops::OpError::NotFound(_)) => {
+        Err(e) if matches!(gait_ops::OpError::find(&e), Some(gait_ops::OpError::NotFound(_))) => {
             eprintln!(
                 "[gait] no pending permissions for session {}",
                 args.session_id
@@ -578,7 +578,7 @@ pub fn cmd_unlock(args: UnlockArgs) {
                 )
             );
         }
-        Err(gait_ops::OpError::NotFound(_)) => {
+        Err(e) if matches!(gait_ops::OpError::find(&e), Some(gait_ops::OpError::NotFound(_))) => {
             eprintln!("[gait] no pending unlock for session {}", args.session_id);
             std::process::exit(1);
         }

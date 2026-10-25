@@ -1,3 +1,4 @@
+use coded_error::ErrorClass;
 use futures_util::Stream;
 use gait_types::types::{Message, Tool, Usage};
 use std::pin::Pin;
@@ -72,13 +73,31 @@ pub enum TimeoutPhase {
     Request,
 }
 
-#[derive(Debug, thiserror::Error)]
+/// Class of a provider error. The retry decision is `ProviderError::is_retryable`
+/// and is the only classification input: Transient exactly when it is true.
+/// Other 4xx responses are the request's fault (Logical); the rest are ours or
+/// the upstream's (Infrastructure).
+fn provider_class(e: &ProviderError) -> ErrorClass {
+    if e.is_retryable() {
+        return ErrorClass::Transient;
+    }
+    match e {
+        ProviderError::Http { status, .. } if (400..500).contains(status) => ErrorClass::Logical,
+        _ => ErrorClass::Infrastructure,
+    }
+}
+
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.provider")]
 pub enum ProviderError {
     #[error("connect error: {0}")]
+    #[coded(code = "connect", class_with = provider_class)]
     Connect(String),
     #[error("timeout ({phase:?})")]
+    #[coded(code = "timeout", class_with = provider_class)]
     Timeout { phase: TimeoutPhase },
     #[error("HTTP error {status}: {body}")]
+    #[coded(code = "http", class_with = provider_class)]
     Http {
         status: u16,
         body: String,
@@ -86,16 +105,22 @@ pub enum ProviderError {
         request_id: Option<String>,
     },
     #[error("server overloaded")]
+    #[coded(code = "overloaded", class_with = provider_class)]
     Overloaded,
     #[error("SSE parse error: {0}")]
+    #[coded(code = "sse", class_with = provider_class)]
     Sse(String),
     #[error("stream ended after {received_bytes} bytes with no terminal marker")]
+    #[coded(code = "stream_incomplete", class_with = provider_class)]
     StreamIncomplete { received_bytes: usize },
     #[error("JSON response exceeded the {max_bytes}-byte limit")]
+    #[coded(code = "response_too_large", class_with = provider_class)]
     ResponseTooLarge { max_bytes: usize },
     #[error("Serialization error: {0}")]
+    #[coded(code = "json", class_with = provider_class)]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
+    #[coded(code = "other", class_with = provider_class)]
     Other(String),
 }
 
@@ -234,6 +259,108 @@ mod tests {
                 assert_eq!(signature, "sig_xyz");
             }
             _ => panic!("unexpected variant"),
+        }
+    }
+
+    use coded_error::CodedError;
+
+    fn every_provider_error() -> Vec<ProviderError> {
+        vec![
+            ProviderError::Connect("refused".into()),
+            ProviderError::Timeout {
+                phase: TimeoutPhase::Connect,
+            },
+            ProviderError::Timeout {
+                phase: TimeoutPhase::Ttfb,
+            },
+            ProviderError::Timeout {
+                phase: TimeoutPhase::Idle,
+            },
+            ProviderError::Http {
+                status: 429,
+                body: String::new(),
+                retry_after: None,
+                request_id: None,
+            },
+            ProviderError::Http {
+                status: 500,
+                body: String::new(),
+                retry_after: None,
+                request_id: None,
+            },
+            ProviderError::Http {
+                status: 400,
+                body: String::new(),
+                retry_after: None,
+                request_id: None,
+            },
+            ProviderError::Http {
+                status: 505,
+                body: String::new(),
+                retry_after: None,
+                request_id: None,
+            },
+            ProviderError::Overloaded,
+            ProviderError::Sse("bad frame".into()),
+            ProviderError::StreamIncomplete { received_bytes: 12 },
+            ProviderError::ResponseTooLarge { max_bytes: 10 },
+            ProviderError::Json(serde_json::from_str::<u8>("x").unwrap_err()),
+            ProviderError::Other("boom".into()),
+        ]
+    }
+
+    #[test]
+    fn provider_error_codes_are_unique() {
+        coded_error::check_codes("gait.provider.", &[ProviderError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn provider_error_variant_codes_and_classes() {
+        let expected = [
+            ("gait.provider.connect", ErrorClass::Transient),
+            ("gait.provider.timeout", ErrorClass::Transient),
+            ("gait.provider.timeout", ErrorClass::Transient),
+            ("gait.provider.timeout", ErrorClass::Infrastructure),
+            ("gait.provider.http", ErrorClass::Transient),
+            ("gait.provider.http", ErrorClass::Transient),
+            ("gait.provider.http", ErrorClass::Logical),
+            ("gait.provider.http", ErrorClass::Infrastructure),
+            ("gait.provider.overloaded", ErrorClass::Infrastructure),
+            ("gait.provider.sse", ErrorClass::Infrastructure),
+            ("gait.provider.stream_incomplete", ErrorClass::Infrastructure),
+            ("gait.provider.response_too_large", ErrorClass::Infrastructure),
+            ("gait.provider.json", ErrorClass::Infrastructure),
+            ("gait.provider.other", ErrorClass::Infrastructure),
+        ];
+        let errors = every_provider_error();
+        assert_eq!(errors.len(), expected.len());
+        for (e, (code, class)) in errors.iter().zip(expected) {
+            assert_eq!(e.code(), code, "code of {e:?}");
+            assert_eq!(e.class(), class, "class of {e:?}");
+        }
+    }
+
+    #[test]
+    fn provider_error_class_matches_is_retryable() {
+        for e in every_provider_error() {
+            assert_eq!(
+                e.class() == ErrorClass::Transient,
+                e.is_retryable(),
+                "Transient must agree with is_retryable for {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_http_4xx_is_logical() {
+        for status in [400u16, 401, 403, 404, 422] {
+            let e = ProviderError::Http {
+                status,
+                body: String::new(),
+                retry_after: None,
+                request_id: None,
+            };
+            assert_eq!(e.class(), ErrorClass::Logical, "status {status}");
         }
     }
 }

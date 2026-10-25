@@ -119,21 +119,31 @@ pub enum LoginCompletion {
     CallbackUrl(String),
 }
 
-#[derive(Debug, thiserror::Error)]
+/// `Other` is the untyped leftover (its messages cover user-fixable and
+/// ours alike), so it reads Unknown rather than guess.
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.auth")]
 pub enum AuthError {
     #[error("provider id is required")]
+    #[coded(code = "missing_provider_id", class = Logical)]
     MissingProviderId,
     #[error("API key is required")]
+    #[coded(code = "missing_api_key", class = Logical)]
     MissingApiKey,
     #[error("unsupported login completion for auth method '{0}'")]
+    #[coded(code = "unsupported_completion", class = Logical)]
     UnsupportedCompletion(&'static str),
     #[error("credential is not compatible with auth method '{0}'")]
+    #[coded(code = "incompatible_credential", class = Logical)]
     IncompatibleCredential(&'static str),
     #[error("authentication requires login again: {0}")]
+    #[coded(code = "login_required", class = Logical)]
     LoginRequired(String),
     #[error("authentication failed: {0}")]
+    #[coded(code = "other", class = Unknown)]
     Other(String),
     #[error("authentication temporarily unavailable: {0}")]
+    #[coded(code = "retryable", class = Transient)]
     Retryable(String),
 }
 
@@ -326,5 +336,73 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, AuthError::UnsupportedCompletion("api-key")));
+    }
+
+    #[test]
+    fn auth_error_codes_are_unique() {
+        coded_error::check_codes("gait.auth.", &[AuthError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn auth_error_variant_codes_and_classes() {
+        use coded_error::{CodedError, ErrorClass};
+        let cases = [
+            (AuthError::MissingProviderId, "gait.auth.missing_provider_id", ErrorClass::Logical),
+            (AuthError::MissingApiKey, "gait.auth.missing_api_key", ErrorClass::Logical),
+            (
+                AuthError::UnsupportedCompletion("api-key"),
+                "gait.auth.unsupported_completion",
+                ErrorClass::Logical,
+            ),
+            (
+                AuthError::IncompatibleCredential("api-key"),
+                "gait.auth.incompatible_credential",
+                ErrorClass::Logical,
+            ),
+            (
+                AuthError::LoginRequired("m".into()),
+                "gait.auth.login_required",
+                ErrorClass::Logical,
+            ),
+            (AuthError::Other("m".into()), "gait.auth.other", ErrorClass::Unknown),
+            (
+                AuthError::Retryable("m".into()),
+                "gait.auth.retryable",
+                ErrorClass::Transient,
+            ),
+        ];
+        for (error, code, class) in cases {
+            assert_eq!(error.code(), code, "code of {error:?}");
+            assert_eq!(error.class(), class, "class of {error:?}");
+        }
+    }
+
+    #[test]
+    fn auth_error_display_texts_unchanged() {
+        assert_eq!(
+            AuthError::MissingProviderId.to_string(),
+            "provider id is required"
+        );
+        assert_eq!(AuthError::MissingApiKey.to_string(), "API key is required");
+        assert_eq!(
+            AuthError::UnsupportedCompletion("api-key").to_string(),
+            "unsupported login completion for auth method 'api-key'"
+        );
+        assert_eq!(
+            AuthError::IncompatibleCredential("api-key").to_string(),
+            "credential is not compatible with auth method 'api-key'"
+        );
+        assert_eq!(
+            AuthError::LoginRequired("run login".into()).to_string(),
+            "authentication requires login again: run login"
+        );
+        assert_eq!(
+            AuthError::Other("bad".into()).to_string(),
+            "authentication failed: bad"
+        );
+        assert_eq!(
+            AuthError::Retryable("later".into()).to_string(),
+            "authentication temporarily unavailable: later"
+        );
     }
 }

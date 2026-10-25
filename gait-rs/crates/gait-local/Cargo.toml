@@ -12,3 +12,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "82f3158e8ea53af5449d3614ebfa6290688cf83e", default-features = false }

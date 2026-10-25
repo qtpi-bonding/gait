@@ -53,22 +53,95 @@ impl McpInvoker for crate::mcp::McpClient {
 }
 
 #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.capability")]
 pub enum CapabilityError {
     #[error("unknown native capability `{0}`")]
+    #[coded(code = "unknown_native", class = Logical)]
     UnknownNative(String),
     #[error("unknown MCP server `{0}`")]
+    #[coded(code = "unknown_mcp_server", class = Logical)]
     UnknownMcpServer(String),
     #[error("MCP server `{0}` is disabled")]
+    #[coded(code = "disabled_mcp_server", class = Logical)]
     DisabledMcpServer(String),
     #[error("unknown MCP tool `{server}.{tool}`")]
+    #[coded(code = "unknown_mcp_tool", class = Logical)]
     UnknownMcpTool { server: String, tool: String },
     #[error("invalid arguments for `{address}`: {message}")]
+    #[coded(code = "invalid_arguments", class = Logical)]
     InvalidArguments { address: String, message: String },
     #[error("capability `{0}` is reserved")]
+    #[coded(code = "reserved", class = Logical)]
     Reserved(String),
     #[error("permission denied: `{tool}` matches deny pattern `{pattern}`")]
+    #[coded(code = "denied", class = Logical)]
     Denied { tool: String, pattern: String },
+}
+
+#[cfg(test)]
+mod coded_error_tests {
+    use super::CapabilityError;
+    use coded_error::{CodedError, ErrorClass};
+
+    #[test]
+    fn capability_error_codes_are_unique() {
+        coded_error::check_codes("gait.capability.", &[CapabilityError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn capability_error_codes_and_classes_per_variant() {
+        let cases = [
+            (CapabilityError::UnknownNative("x".into()), "gait.capability.unknown_native"),
+            (CapabilityError::UnknownMcpServer("s".into()), "gait.capability.unknown_mcp_server"),
+            (
+                CapabilityError::DisabledMcpServer("s".into()),
+                "gait.capability.disabled_mcp_server",
+            ),
+            (
+                CapabilityError::UnknownMcpTool {
+                    server: "s".into(),
+                    tool: "t".into(),
+                },
+                "gait.capability.unknown_mcp_tool",
+            ),
+            (
+                CapabilityError::InvalidArguments {
+                    address: "s.t".into(),
+                    message: "m".into(),
+                },
+                "gait.capability.invalid_arguments",
+            ),
+            (CapabilityError::Reserved("x".into()), "gait.capability.reserved"),
+            (
+                CapabilityError::Denied {
+                    tool: "t".into(),
+                    pattern: "p".into(),
+                },
+                "gait.capability.denied",
+            ),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert_eq!(error.class(), ErrorClass::Logical);
+        }
+    }
+
+    #[test]
+    fn display_texts_unchanged() {
+        assert_eq!(
+            CapabilityError::UnknownNative("x".into()).to_string(),
+            "unknown native capability `x`"
+        );
+        assert_eq!(
+            CapabilityError::Denied {
+                tool: "shell".into(),
+                pattern: "rm *".into(),
+            }
+            .to_string(),
+            "permission denied: `shell` matches deny pattern `rm *`"
+        );
+    }
 }
 
 /// Turn-scoped capability resolver. Its native tool map is a one-shot
@@ -160,12 +233,11 @@ impl CapabilityDispatcher {
                 // never be callable from guest code (doing so would create
                 // nested transcript/control events).
                 if is_reserved_native(&tool) {
-                    return Err(CapabilityError::Reserved(tool).into());
+                    return Err(coded_error::into_anyhow(CapabilityError::Reserved(tool)));
                 }
-                let t = self
-                    .native
-                    .get(&tool)
-                    .ok_or_else(|| CapabilityError::UnknownNative(tool.clone()))?;
+                let t = self.native.get(&tool).ok_or_else(|| {
+                    coded_error::into_anyhow(CapabilityError::UnknownNative(tool.clone()))
+                })?;
                 // Deny is a hard floor for outer tool calls (checked before allow,
                 // applies even in auto mode — see permissions::gate::classify) but
                 // nested Code Mode calls never pass through that gate at all, since
@@ -180,7 +252,10 @@ impl CapabilityDispatcher {
                     if let Some(pattern) = requests.iter().find_map(|req| {
                         crate::permissions::find_matched_deny_pattern(&tool, req, &self.deny)
                     }) {
-                        return Err(CapabilityError::Denied { tool, pattern }.into());
+                        return Err(coded_error::into_anyhow(CapabilityError::Denied {
+                            tool,
+                            pattern,
+                        }));
                     }
                 }
                 // CodemodeFull: the spine already materializes the full
@@ -210,34 +285,36 @@ impl CapabilityDispatcher {
                 Ok(outcome.value)
             }
             CapabilityAddress::Mcp { server, tool } => {
-                let client = self
-                    .mcp
-                    .get(&server)
-                    .ok_or_else(|| CapabilityError::UnknownMcpServer(server.clone()))?;
+                let client = self.mcp.get(&server).ok_or_else(|| {
+                    coded_error::into_anyhow(CapabilityError::UnknownMcpServer(server.clone()))
+                })?;
                 if !self.is_enabled(&server) {
-                    return Err(CapabilityError::DisabledMcpServer(server).into());
+                    return Err(coded_error::into_anyhow(CapabilityError::DisabledMcpServer(
+                        server,
+                    )));
                 }
                 let def = self
                     .registry
                     .iter()
                     .find(|d| d.server_name == server && d.name == tool)
-                    .ok_or_else(|| CapabilityError::UnknownMcpTool {
-                        server: server.clone(),
-                        tool: tool.clone(),
+                    .ok_or_else(|| {
+                        coded_error::into_anyhow(CapabilityError::UnknownMcpTool {
+                            server: server.clone(),
+                            tool: tool.clone(),
+                        })
                     })?;
                 let schema = jsonschema::JSONSchema::compile(&def.schema).map_err(|e| {
-                    CapabilityError::InvalidArguments {
+                    coded_error::into_anyhow(CapabilityError::InvalidArguments {
                         address: format!("{server}.{tool}"),
                         message: e.to_string(),
-                    }
+                    })
                 })?;
                 if let Err(errors) = schema.validate(&invocation.args) {
                     let message = errors.map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
-                    return Err(CapabilityError::InvalidArguments {
+                    return Err(coded_error::into_anyhow(CapabilityError::InvalidArguments {
                         address: format!("{server}.{tool}"),
                         message,
-                    }
-                    .into());
+                    }));
                 }
                 client
                     .call(&tool, invocation.args, def.output_schema.as_ref())

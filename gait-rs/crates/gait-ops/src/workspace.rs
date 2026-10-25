@@ -8,13 +8,13 @@ pub struct LinkOutcome {
     pub target: PathBuf,
 }
 
-pub fn link(cwd: &Path, target: &Path) -> Result<LinkOutcome, OpError> {
+pub fn link(cwd: &Path, target: &Path) -> anyhow::Result<LinkOutcome> {
     if !target.join(".git").exists() {
-        return Err(OpError::NotFound(format!(
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!(
             "{} is not a gait workspace (no .git) — run `gait init {}` first",
             target.display(),
             target.display()
-        )));
+        ))));
     }
     let gaitref = cwd.join(".gaitref");
     std::fs::write(&gaitref, format!("gaitdir: {}\n", target.display()))
@@ -245,15 +245,15 @@ fn is_global_gait_home(target: &Path, home: &gait_state::gait_home::GaitHome) ->
 
 /// Initialize a gait-dir, committing the scaffold. The CLI adapter renders
 /// success / error; this op carries no terminal I/O.
-pub fn init(params: InitParams) -> Result<InitOutcome, OpError> {
+pub fn init(params: InitParams) -> anyhow::Result<InitOutcome> {
     let gait_dir = params.path;
 
     if let Ok(home) = gait_state::gait_home::GaitHome::resolve() {
         if is_global_gait_home(&gait_dir, &home) {
-            return Err(OpError::Conflict(format!(
+            return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                 "{} is GAIT_HOME and cannot be initialized as a gait workspace",
                 gait_dir.display()
-            )));
+            ))));
         }
     }
 
@@ -263,14 +263,14 @@ pub fn init(params: InitParams) -> Result<InitOutcome, OpError> {
     let codebase_repo: Option<PathBuf> = match init_decision(&gait_dir, params.force) {
         Ok(repo) => repo,
         Err(repo) => {
-            return Err(OpError::Conflict(format!(
+            return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                 "{} would live inside git repo {} — an agent could then write \
                  to its own config there.\n       Prefer out-of-tree: `gait init \
                  ~/gait-home && gait link ~/gait-home`.\n       Or pass --force to \
                  create it here anyway (running it will also require --allow-intree).",
                 gait_dir.display(),
                 repo.display()
-            )));
+            ))));
         }
     };
 
@@ -409,7 +409,7 @@ mod tests {
         let target = t.path().join("not-a-repo");
         std::fs::create_dir_all(&target).unwrap(); // no .git
         let err = link(t.path(), &target).unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
     }
 
     // -- init helpers --------------------------------------------------------

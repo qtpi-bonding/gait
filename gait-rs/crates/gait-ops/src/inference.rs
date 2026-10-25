@@ -1,7 +1,6 @@
 //! Named inference operations shared by CLI and REPL. Selection resolution is
 //! pure: frontends submit the returned event through core's session-update
 //! port. These functions deliberately perform no terminal I/O.
-use crate::OpError;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -24,7 +23,7 @@ pub fn list(gait_dir: &Path) -> Vec<String> {
     gait_state::inferences::list_inferences(gait_dir)
 }
 
-pub fn show(gait_dir: &Path, name: &str) -> Result<InferenceInfo, OpError> {
+pub fn show(gait_dir: &Path, name: &str) -> anyhow::Result<InferenceInfo> {
     let i = gait_state::inferences::load_inference(gait_dir, name)?;
     Ok(InferenceInfo {
         name: i.name,
@@ -35,7 +34,7 @@ pub fn show(gait_dir: &Path, name: &str) -> Result<InferenceInfo, OpError> {
 pub fn resolve_selection(
     gait_dir: &Path,
     name: &str,
-) -> Result<ResolvedInferenceSelection, OpError> {
+) -> anyhow::Result<ResolvedInferenceSelection> {
     let inference = if name == "default" {
         gait_state::inferences::clear_inference()
     } else {
@@ -67,7 +66,7 @@ pub fn add(
     name: &str,
     model: &str,
     compaction_threshold_tokens: u64,
-) -> Result<InferenceInfo, OpError> {
+) -> anyhow::Result<InferenceInfo> {
     gait_state::inferences::write_inference(gait_dir, name, model, compaction_threshold_tokens)?;
     Ok(InferenceInfo {
         name: name.to_string(),
@@ -84,7 +83,7 @@ pub fn add_local_qwen(
     context_tokens: u32,
     gpu_layers: u32,
     compaction_threshold_tokens: u64,
-) -> Result<InferenceInfo, OpError> {
+) -> anyhow::Result<InferenceInfo> {
     gait_state::inferences::write_local_qwen_inference(
         gait_dir,
         name,

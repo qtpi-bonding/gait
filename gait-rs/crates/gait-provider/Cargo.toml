@@ -21,6 +21,7 @@ futures-util      = "0.3"
 eventsource-stream = "0.2"
 anyhow            = "1"
 thiserror         = "1"
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "82f3158e8ea53af5449d3614ebfa6290688cf83e" }
 async-trait       = "0.1"
 async-stream      = "0.3"
 rand              = "0.8"

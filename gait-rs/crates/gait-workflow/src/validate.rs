@@ -1,14 +1,18 @@
 use gait_core::proto::gait::workflow::v1::{node, Workflow};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, coded_error::CodedError)]
+#[coded(namespace = "gait.workflow.validation")]
 pub enum ValidationError {
+    #[coded(code = "duplicate_node_id", class = Logical)]
     DuplicateNodeId(String),
+    #[coded(code = "dangling_reference", class = Logical)]
     DanglingReference {
         from_node: String,
         reference_kind: &'static str,
         target: String,
     },
+    #[coded(code = "dependency_cycle", class = Logical)]
     DependencyCycle(Vec<String>),
 }
 
@@ -26,6 +30,58 @@ impl std::fmt::Display for ValidationError {
             ),
             Self::DependencyCycle(path) => write!(f, "depends_on cycle: {}", path.join(" -> ")),
         }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+#[cfg(test)]
+mod coded_error_tests {
+    use super::ValidationError;
+    use coded_error::{CodedError, ErrorClass};
+
+    #[test]
+    fn workflow_validation_codes_are_unique() {
+        coded_error::check_codes("gait.workflow.validation.", &[ValidationError::ALL_CODES])
+            .unwrap();
+    }
+
+    #[test]
+    fn validation_error_codes_and_classes_per_variant() {
+        let cases = [
+            (
+                ValidationError::DuplicateNodeId("a".into()),
+                "gait.workflow.validation.duplicate_node_id",
+            ),
+            (
+                ValidationError::DanglingReference {
+                    from_node: "a".into(),
+                    reference_kind: "prerequisite",
+                    target: "b".into(),
+                },
+                "gait.workflow.validation.dangling_reference",
+            ),
+            (
+                ValidationError::DependencyCycle(vec!["a".into(), "a".into()]),
+                "gait.workflow.validation.dependency_cycle",
+            ),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert_eq!(error.class(), ErrorClass::Logical);
+        }
+    }
+
+    #[test]
+    fn display_texts_unchanged() {
+        assert_eq!(
+            ValidationError::DuplicateNodeId("a".into()).to_string(),
+            "duplicate node id: 'a'"
+        );
+        assert_eq!(
+            ValidationError::DependencyCycle(vec!["a".into(), "b".into(), "a".into()]).to_string(),
+            "depends_on cycle: a -> b -> a"
+        );
     }
 }
 

@@ -29,7 +29,7 @@ use std::path::Path;
 
 /// Set `<gait_dir>/gait.jsonc`'s `key` field to `value`, preserving every
 /// other key. Comment-safe (see module doc comment).
-pub fn set(gait_dir: &Path, key: &str, value: serde_json::Value) -> Result<(), OpError> {
+pub fn set(gait_dir: &Path, key: &str, value: serde_json::Value) -> anyhow::Result<()> {
     let path = gait_dir.join("gait.jsonc");
     let mut val = read_config_object(&path)?;
     val.insert(key.to_string(), value);
@@ -38,7 +38,7 @@ pub fn set(gait_dir: &Path, key: &str, value: serde_json::Value) -> Result<(), O
 
 /// Read `<gait_dir>/gait.jsonc`'s `key` field, or `None` if the key (or the
 /// whole file) is absent. Comment-safe.
-pub fn get(gait_dir: &Path, key: &str) -> Result<Option<serde_json::Value>, OpError> {
+pub fn get(gait_dir: &Path, key: &str) -> anyhow::Result<Option<serde_json::Value>> {
     let path = gait_dir.join("gait.jsonc");
     let val = read_config_object(&path)?;
     Ok(val.get(key).cloned())
@@ -51,16 +51,16 @@ pub fn get(gait_dir: &Path, key: &str) -> Result<Option<serde_json::Value>, OpEr
 /// This intentionally does NOT build a live `Profile`/`ResolvedProfile`:
 /// that requires network provider construction and MCP handshakes, while this
 /// operation is introspection rather than a dry run.
-pub fn resolve(gait_dir: &Path, codebase: &Path) -> Result<serde_json::Value, OpError> {
+pub fn resolve(gait_dir: &Path, codebase: &Path) -> anyhow::Result<serde_json::Value> {
     let _ = codebase;
     let config = gait_state::config::load_config(gait_dir);
     let skills = gait_state::skills::scan_skills(gait_dir);
     let mcp_servers = gait_state::mcp::scan_mcp_servers(gait_dir);
     let mut value = serde_json::to_value(&config)
-        .map_err(|e| OpError::Conflict(format!("config serialize error: {e}")))?;
+        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("config serialize error: {e}"))))?;
     let obj = value
         .as_object_mut()
-        .ok_or_else(|| OpError::Conflict("resolved config is not a JSON object".to_string()))?;
+        .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict("resolved config is not a JSON object".to_string())))?;
     obj.insert("skills".to_string(), serde_json::to_value(&skills).unwrap());
     obj.insert(
         "mcp_servers".to_string(),
@@ -82,32 +82,32 @@ pub fn resolve(gait_dir: &Path, codebase: &Path) -> Result<serde_json::Value, Op
 /// hard error (caller decides whether to render the conflict or fall back)
 /// — this is the bug-fix flip: the pre-fix code dropped the file on any
 /// parse error and silently produced an empty object.
-fn read_config_object(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>, OpError> {
+fn read_config_object(path: &Path) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
     let raw = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let stripped = gait_state::config::strip_jsonc_comments(&raw);
     let val: serde_json::Value = serde_json::from_str(&stripped).map_err(|e| {
-        OpError::Conflict(format!("gait.jsonc parse error in {}: {e}", path.display()))
+        coded_error::into_anyhow(OpError::Conflict(format!("gait.jsonc parse error in {}: {e}", path.display())))
     })?;
     match val {
         serde_json::Value::Object(m) => Ok(m),
         // The file parsed but is not a JSON object — surface as Conflict.
         // The pre-fix code's `unwrap_or(json!({}))` would have happily
         // wiped the file in this case too; we refuse to do that.
-        other => Err(OpError::Conflict(format!(
+        other => Err(coded_error::into_anyhow(OpError::Conflict(format!(
             "gait.jsonc root must be a JSON object; got {}",
             json_root_kind(&other)
-        ))),
+        )))),
     }
 }
 
 fn write_config_object(
     path: &Path,
     obj: serde_json::Map<String, serde_json::Value>,
-) -> Result<(), OpError> {
+) -> anyhow::Result<()> {
     let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
-        .map_err(|e| OpError::Conflict(format!("gait.jsonc serialize error: {e}")))?;
+        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("gait.jsonc serialize error: {e}"))))?;
     std::fs::write(path, pretty + "\n")
-        .map_err(|e| OpError::Conflict(format!("write {}: {e}", path.display())))
+        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("write {}: {e}", path.display()))))
 }
 
 fn json_root_kind(v: &serde_json::Value) -> &'static str {
@@ -241,7 +241,7 @@ mod tests {
 
         let err = set(dir.path(), "max_iter", serde_json::json!(50)).unwrap_err();
         assert!(
-            matches!(err, OpError::Conflict(_)),
+            matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))),
             "malformed config must surface as Conflict, got {err:?}"
         );
 
@@ -261,7 +261,7 @@ mod tests {
 
         let err = set(dir.path(), "max_iter", serde_json::json!(50)).unwrap_err();
         assert!(
-            matches!(err, OpError::Conflict(_)),
+            matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))),
             "non-object root must surface as Conflict, got {err:?}"
         );
         let after = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();

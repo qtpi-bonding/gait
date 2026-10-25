@@ -165,11 +165,20 @@ impl std::fmt::Debug for Callback {
             .finish()
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.auth.callback")]
 pub enum CallbackError {
+    #[error("{0}")]
+    #[coded(code = "typo", class = Logical)]
     Typo(String),
+    #[error("callback state mismatch")]
+    #[coded(code = "state_mismatch", class = Logical)]
     StateMismatch,
+    #[error("{0}")]
+    #[coded(code = "denied", class = Logical)]
     Denied(String),
+    #[error("{0}")]
+    #[coded(code = "malformed", class = Logical)]
     Malformed(String),
 }
 pub fn parse_callback(
@@ -2710,6 +2719,26 @@ mod tests {
             "email@example.com",
         ] {
             assert!(!x.contains(v));
+        }
+    }
+
+    #[test]
+    fn callback_error_codes_are_unique() {
+        coded_error::check_codes("gait.auth.callback.", &[CallbackError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn callback_error_variant_codes_and_classes() {
+        use coded_error::{CodedError, ErrorClass};
+        let cases = [
+            (CallbackError::Typo("t".into()), "gait.auth.callback.typo"),
+            (CallbackError::StateMismatch, "gait.auth.callback.state_mismatch"),
+            (CallbackError::Denied("d".into()), "gait.auth.callback.denied"),
+            (CallbackError::Malformed("m".into()), "gait.auth.callback.malformed"),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), code, "code of {error:?}");
+            assert_eq!(error.class(), ErrorClass::Logical, "class of {error:?}");
         }
     }
 }

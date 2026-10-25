@@ -11,9 +11,9 @@ pub fn list(gait_dir: &Path) -> Vec<String> {
     gait_state::modes::list_modes(gait_dir)
 }
 
-pub fn show(gait_dir: &Path, name: &str) -> Result<ModeInfo, OpError> {
+pub fn show(gait_dir: &Path, name: &str) -> anyhow::Result<ModeInfo> {
     let m = gait_state::modes::load_mode(gait_dir, name)
-        .map_err(|e| OpError::NotFound(format!("mode '{name}' not found: {e}")))?;
+        .map_err(|e| coded_error::into_anyhow(OpError::NotFound(format!("mode '{name}' not found: {e}"))))?;
     Ok(ModeInfo {
         name: m.name,
         allow: m.allow,
@@ -27,9 +27,9 @@ pub fn show(gait_dir: &Path, name: &str) -> Result<ModeInfo, OpError> {
 pub fn resolve_selection(
     gait_dir: &Path,
     name: &str,
-) -> Result<gait_state::modes::ResolvedModeSelection, OpError> {
+) -> anyhow::Result<gait_state::modes::ResolvedModeSelection> {
     gait_state::modes::resolve_selection(gait_dir, name)
-        .map_err(|e| OpError::NotFound(format!("mode '{name}' not found: {e}")))
+        .map_err(|e| coded_error::into_anyhow(OpError::NotFound(format!("mode '{name}' not found: {e}"))))
 }
 
 /// Author a new mode at `<gait_dir>/modes/<name>/MODE.md`. Refuses overwrite
@@ -41,7 +41,7 @@ pub fn add(
     deny: &[String],
     steer: &str,
     description: &str,
-) -> Result<ModeInfo, OpError> {
+) -> anyhow::Result<ModeInfo> {
     gait_state::modes::write_mode(gait_dir, name, allow, deny, steer, description, None)?;
     Ok(ModeInfo {
         name: name.to_string(),
@@ -96,7 +96,7 @@ mod tests {
     fn show_missing_mode_is_not_found() {
         let t = TempDir::new().unwrap();
         let err = show(t.path(), "nope").unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)), "got {err:?}");
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "got {err:?}");
     }
 
     #[test]

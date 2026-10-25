@@ -5,6 +5,7 @@
 //! never implemented (`crates/gait-cli/src/cli/session.rs::cmd_reply` was a
 //! stub printing "reply not yet implemented").
 use crate::OpError;
+use coded_error::ResultExt;
 use std::path::Path;
 
 /// Which pending-interaction kind `reply` answered.
@@ -35,28 +36,28 @@ pub struct ReplyOutcome {
 /// Errors if the session has no pending Clarify/Inform (including if it's
 /// pending a `Permission` instead — that's `gait allow`/`deny`/`unlock`'s
 /// job, not this one).
-pub fn reply(gait_dir: &Path, session_id: &str, message: String) -> Result<ReplyOutcome, OpError> {
+pub fn reply(gait_dir: &Path, session_id: &str, message: String) -> anyhow::Result<ReplyOutcome> {
     use gait_state::session::log::{
         session_state, write_clarify_reply, write_inform_reply, SessionState,
     };
 
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
-    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let state = session_state(&tx_path).coded()?;
 
     match state {
         SessionState::AwaitingClarify { items } => {
             if items.is_empty() {
-                return Err(OpError::NotFound(format!(
+                return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                     "no pending clarify for session {session_id}"
-                )));
+                ))));
             }
             if items.len() > 1 {
                 let ids: Vec<String> = items.iter().map(|it| it.id.clone()).collect();
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "session {session_id} has {} pending clarify items ({}); `gait reply` only answers a single pending item",
                     items.len(),
                     ids.join(", ")
-                )));
+                ))));
             }
             let id = items[0].id.clone();
             write_clarify_reply(
@@ -66,8 +67,7 @@ pub fn reply(gait_dir: &Path, session_id: &str, message: String) -> Result<Reply
                     content: message,
                     reasoning: None,
                 }],
-            )
-            .map_err(anyhow::Error::from)?;
+            ).coded()?;
             Ok(ReplyOutcome {
                 kind: ReplyKind::Clarify,
                 id,
@@ -75,17 +75,17 @@ pub fn reply(gait_dir: &Path, session_id: &str, message: String) -> Result<Reply
         }
         SessionState::AwaitingInform { items } => {
             if items.is_empty() {
-                return Err(OpError::NotFound(format!(
+                return Err(coded_error::into_anyhow(OpError::NotFound(format!(
                     "no pending inform for session {session_id}"
-                )));
+                ))));
             }
             if items.len() > 1 {
                 let ids: Vec<String> = items.iter().map(|it| it.id.clone()).collect();
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "session {session_id} has {} pending inform items ({}); `gait reply` only answers a single pending item",
                     items.len(),
                     ids.join(", ")
-                )));
+                ))));
             }
             let id = items[0].id.clone();
             write_inform_reply(
@@ -95,18 +95,18 @@ pub fn reply(gait_dir: &Path, session_id: &str, message: String) -> Result<Reply
                     content: message,
                 }],
             )
-            .map_err(anyhow::Error::from)?;
+            .coded()?;
             Ok(ReplyOutcome {
                 kind: ReplyKind::Inform,
                 id,
             })
         }
-        SessionState::AwaitingPermission { .. } => Err(OpError::Conflict(format!(
+        SessionState::AwaitingPermission { .. } => Err(coded_error::into_anyhow(OpError::Conflict(format!(
             "session {session_id} is awaiting a permission decision, not clarify/inform — use `gait allow`/`gait deny`/`gait unlock` instead"
-        ))),
-        _ => Err(OpError::NotFound(format!(
+        )))),
+        _ => Err(coded_error::into_anyhow(OpError::NotFound(format!(
             "no pending clarify/inform for session {session_id}"
-        ))),
+        )))),
     }
 }
 
@@ -177,7 +177,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         let _tx = make_session(ws.path(), "sreply03");
         let err = reply(ws.path(), "sreply03", "hi".into()).unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)));
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
     }
 
     #[test]
@@ -204,12 +204,12 @@ mod tests {
             ],
         );
         let err = reply(ws.path(), "sreply04", "postgres".into()).unwrap_err();
-        match err {
-            OpError::Conflict(msg) => {
+        match coded_error::downcast_ref::<OpError>(&err) {
+            Some(OpError::Conflict(msg)) => {
                 assert!(msg.contains("c1"));
                 assert!(msg.contains("c2"));
             }
-            other => panic!("expected Conflict, got {other:?}"),
+            _ => panic!("expected Conflict, got {err:?}"),
         }
     }
 
@@ -230,9 +230,9 @@ mod tests {
         ]);
         gait_state::proto::wire::append(&tx, body).unwrap();
         let err = reply(ws.path(), "sreply05", "hi".into()).unwrap_err();
-        match err {
-            OpError::Conflict(msg) => assert!(msg.contains("gait allow")),
-            other => panic!("expected Conflict, got {other:?}"),
+        match coded_error::downcast_ref::<OpError>(&err) {
+            Some(OpError::Conflict(msg)) => assert!(msg.contains("gait allow")),
+            _ => panic!("expected Conflict, got {err:?}"),
         }
     }
 }

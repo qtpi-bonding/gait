@@ -63,10 +63,10 @@ impl DaemonListOutcome {
 /// code -9, classified `"killed"`). That keeps the registry an append-only
 /// log of true observations: the entry is healed on the very call that
 /// notices it, so it never needs re-discovering by a later session.
-pub fn list(gait_dir: &Path, all: bool) -> Result<DaemonListOutcome, OpError> {
+pub fn list(gait_dir: &Path, all: bool) -> anyhow::Result<DaemonListOutcome> {
     use gait_state::session::daemons::{append_stop, classify_exit, history, is_alive};
 
-    let recs = history(gait_dir).map_err(|e| OpError::Other(anyhow::Error::from(e)))?;
+    let recs = history(gait_dir)?;
     let rows = recs
         .into_iter()
         .filter_map(|(rec, stop_exit_code)| {
@@ -138,27 +138,29 @@ fn signal_pgid(pgid: i32) -> io::Result<()> {
 ///
 /// If the daemon is not found in the registry, returns `OpError::NotFound`.
 /// If the daemon is already dead, skips the signal and records the stop cleanly.
-pub fn stop(gait_dir: &Path, name: &str) -> Result<StopOutcome, OpError> {
+pub fn stop(gait_dir: &Path, name: &str) -> anyhow::Result<StopOutcome> {
     use gait_state::session::daemons::{active, append_stop, is_alive};
 
-    let recs = active(gait_dir).map_err(|e| OpError::Other(anyhow::Error::from(e)))?;
+    let recs = active(gait_dir)?;
     let rec = recs
         .iter()
         .find(|r| r.name == name)
-        .ok_or_else(|| OpError::NotFound(format!("no daemon named '{}'", name)))?;
+        .ok_or_else(|| {
+            coded_error::into_anyhow(OpError::NotFound(format!("no daemon named '{}'", name)))
+        })?;
 
     let was_alive = is_alive(rec);
     let pid = rec.pid;
 
     if was_alive {
         // SAFETY: is_alive performed the identity check (proc_start_time comparison).
-        signal_pgid(rec.pgid).map_err(|e| OpError::Other(anyhow::Error::from(e)))?;
+        signal_pgid(rec.pgid)?;
     }
 
     // Record the stop in the append-only log. CLI stop is SIGTERM (graceful).
     // We don't observe the exit code; record 0 to mean "cleanly stopped until
     // the daemon-exit hook writes the real one.
-    append_stop(gait_dir, name, 0).map_err(|e| OpError::Other(anyhow::Error::from(e)))?;
+    append_stop(gait_dir, name, 0)?;
 
     Ok(StopOutcome {
         id: name.to_string(),
@@ -368,7 +370,10 @@ mod tests {
         append_start(dir.path(), &rec).unwrap();
 
         let err = stop(dir.path(), "nonexistent").unwrap_err();
-        assert!(matches!(err, OpError::NotFound(_)));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::NotFound(_))
+        ));
     }
 
     // -- JSON rendering (golden) --

@@ -60,13 +60,20 @@ pub enum GenerationChunk {
     Done,
 }
 
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, thiserror::Error, coded_error::CodedError, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+#[coded(namespace = "gait.local")]
 pub enum GenerationError {
+    /// Model not found or unloadable from its configuration: fixable by the operator.
     #[error("local model is unavailable: {0}")]
+    #[coded(code = "unavailable", class = Logical)]
     Unavailable(String),
     #[error("local model request is invalid: {0}")]
+    #[coded(code = "invalid_request", class = Logical)]
     InvalidRequest(String),
     #[error("local model failed: {0}")]
+    #[coded(code = "engine", class = Infrastructure)]
     Engine(String),
 }
 
@@ -145,6 +152,44 @@ mod runner_protocol_tests {
         assert_eq!(
             runner_key("model=a;ctx=8192;gpu=0"),
             runner_key("model=a;ctx=8192;gpu=0")
+        );
+    }
+}
+
+#[cfg(test)]
+mod coded_error_tests {
+    use super::GenerationError;
+    use coded_error::{CodedError, ErrorClass};
+
+    #[test]
+    fn local_generation_codes_are_unique() {
+        coded_error::check_codes("gait.local.", &[GenerationError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn generation_error_codes_and_classes_per_variant() {
+        let unavailable = GenerationError::Unavailable("x".into());
+        assert_eq!(unavailable.code(), "gait.local.unavailable");
+        assert_eq!(unavailable.class(), ErrorClass::Logical);
+
+        let invalid = GenerationError::InvalidRequest("x".into());
+        assert_eq!(invalid.code(), "gait.local.invalid_request");
+        assert_eq!(invalid.class(), ErrorClass::Logical);
+
+        let engine = GenerationError::Engine("x".into());
+        assert_eq!(engine.code(), "gait.local.engine");
+        assert_eq!(engine.class(), ErrorClass::Infrastructure);
+    }
+
+    #[test]
+    fn display_texts_unchanged() {
+        assert_eq!(
+            GenerationError::Unavailable("model.gguf".into()).to_string(),
+            "local model is unavailable: model.gguf"
+        );
+        assert_eq!(
+            GenerationError::Engine("detokenize: bad".into()).to_string(),
+            "local model failed: detokenize: bad"
         );
     }
 }

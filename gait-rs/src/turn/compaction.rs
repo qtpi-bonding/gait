@@ -131,13 +131,20 @@ pub fn has_unmatched_tool_call(messages: &[Message]) -> bool {
     calls != results
 }
 
-#[derive(Debug)]
+#[derive(Debug, coded_error::CodedError)]
+#[coded(namespace = "gait.compaction")]
 pub enum Error {
+    #[coded(code = "unsafe_pending_tool_call", class = Infrastructure)]
     UnsafePendingToolCall,
+    #[coded(code = "cancelled", class = Infrastructure)]
     Cancelled,
+    #[coded(code = "provider", class = Infrastructure)]
     Provider(anyhow::Error),
+    #[coded(code = "empty_response", class = Infrastructure)]
     EmptyResponse,
+    #[coded(code = "summary_too_large", class = Infrastructure)]
     SummaryTooLarge,
+    #[coded(code = "still_too_large", class = Infrastructure)]
     StillTooLarge { predicted: u64, threshold: u64 },
 }
 
@@ -157,6 +164,58 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod coded_error_tests {
+    use super::Error;
+    use coded_error::{CodedError, ErrorClass};
+
+    #[test]
+    fn compaction_error_codes_are_unique() {
+        coded_error::check_codes("gait.compaction.", &[Error::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn compaction_error_codes_and_classes_per_variant() {
+        let cases = [
+            (Error::UnsafePendingToolCall, "gait.compaction.unsafe_pending_tool_call"),
+            (Error::Cancelled, "gait.compaction.cancelled"),
+            (
+                Error::Provider(anyhow::anyhow!("boom")),
+                "gait.compaction.provider",
+            ),
+            (Error::EmptyResponse, "gait.compaction.empty_response"),
+            (Error::SummaryTooLarge, "gait.compaction.summary_too_large"),
+            (
+                Error::StillTooLarge {
+                    predicted: 2,
+                    threshold: 1,
+                },
+                "gait.compaction.still_too_large",
+            ),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert_eq!(error.class(), ErrorClass::Infrastructure);
+        }
+    }
+
+    #[test]
+    fn display_texts_unchanged() {
+        assert_eq!(
+            Error::UnsafePendingToolCall.to_string(),
+            "compaction unsafe: unmatched tool call"
+        );
+        assert_eq!(
+            Error::StillTooLarge {
+                predicted: 9,
+                threshold: 4,
+            }
+            .to_string(),
+            "compacted context still too large: predicted 9 tokens, threshold 4"
+        );
+    }
+}
 
 pub struct SummaryResponse {
     pub summary: String,

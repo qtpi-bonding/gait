@@ -14,25 +14,35 @@ pub(crate) fn transport_config_for(wire: Wire) -> crate::transport::TransportCon
     config
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.provider.factory")]
 pub enum FactoryError {
     #[error("invalid model string '{0}': expected 'provider/model-id'")]
+    #[coded(code = "invalid_format", class = Logical)]
     InvalidFormat(String),
     #[error("unknown provider '{0}'")]
+    #[coded(code = "unknown_provider", class = Logical)]
     UnknownProvider(String),
     #[error("missing API key for provider '{0}': set {1} env var")]
+    #[coded(code = "missing_api_key", class = Logical)]
     MissingApiKey(String, String),
     #[error("missing credential for provider '{0}': run `gait auth login {0}`")]
+    #[coded(code = "missing_subscription", class = Logical)]
     MissingSubscription(String),
     #[error("invalid credential: {0}")]
+    #[coded(code = "invalid_credential", class = Logical)]
     InvalidCredential(String),
     #[error("transport setup failed: {0}")]
+    #[coded(code = "transport", class = Infrastructure)]
     Transport(#[source] crate::provider::ProviderError),
     #[error("local inference is not included in this gait build; install a build with the 'local' feature")]
+    #[coded(code = "local_not_built", class = Logical)]
     LocalNotBuilt,
     #[error("local inference requires llm_params.local.model_path")]
+    #[coded(code = "local_model_path_missing", class = Logical)]
     LocalModelPathMissing,
     #[error("local inference initialization failed: {0}")]
+    #[coded(code = "local_init", class = Infrastructure)]
     LocalInit(String),
 }
 
@@ -445,6 +455,56 @@ mod tests {
         };
         assert!(
             matches!(error, FactoryError::MissingSubscription(provider) if provider == "openai-signin")
+        );
+    }
+
+    #[test]
+    fn factory_error_codes_are_unique() {
+        coded_error::check_codes("gait.provider.factory.", &[FactoryError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn factory_error_variant_classes() {
+        use coded_error::{CodedError, ErrorClass};
+        assert_eq!(
+            FactoryError::InvalidFormat("x".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            FactoryError::UnknownProvider("x".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            FactoryError::MissingApiKey("p".into(), "K".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            FactoryError::MissingSubscription("p".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            FactoryError::InvalidCredential("x".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            FactoryError::LocalNotBuilt.class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            FactoryError::LocalModelPathMissing.class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            FactoryError::Transport(crate::provider::ProviderError::Other("x".into())).class(),
+            ErrorClass::Infrastructure
+        );
+        assert_eq!(
+            FactoryError::LocalInit("x".into()).class(),
+            ErrorClass::Infrastructure
+        );
+        assert_eq!(
+            FactoryError::MissingApiKey("p".into(), "K".into()).code(),
+            "gait.provider.factory.missing_api_key"
         );
     }
 }

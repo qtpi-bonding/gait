@@ -10,11 +10,14 @@ use std::path::{Path, PathBuf};
 pub const GAIT_HOME_ENV: &str = "GAIT_HOME";
 const DEFAULT_GAIT_HOME_DIR: &str = ".gait-home";
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, coded_error::CodedError, PartialEq, Eq)]
+#[coded(namespace = "gait.home")]
 pub enum GaitHomeError {
     #[error("cannot resolve GAIT_HOME: user home directory is unavailable")]
+    #[coded(code = "home_unavailable", class = Logical)]
     HomeUnavailable,
     #[error("GAIT_HOME must be an absolute path: {0}")]
+    #[coded(code = "relative_path", class = Logical)]
     RelativePath(PathBuf),
 }
 
@@ -68,6 +71,35 @@ impl GaitHome {
 
     pub fn models_cache_file(&self) -> PathBuf {
         self.root.join("cache").join("models.json")
+    }
+}
+
+#[cfg(test)]
+mod coded_tests {
+    use super::GaitHomeError;
+    use coded_error::{CodedError, ErrorClass};
+
+    #[test]
+    fn gait_home_error_codes_are_unique() {
+        coded_error::check_codes("gait.home.", &[GaitHomeError::ALL_CODES]).unwrap();
+        assert_eq!(
+            GaitHomeError::ALL_CODES,
+            &["gait.home.home_unavailable", "gait.home.relative_path"]
+        );
+    }
+
+    #[test]
+    fn gait_home_error_codes_and_classes() {
+        let unavailable = GaitHomeError::HomeUnavailable;
+        assert_eq!(
+            (unavailable.code(), unavailable.class()),
+            ("gait.home.home_unavailable", ErrorClass::Logical)
+        );
+        let relative = GaitHomeError::RelativePath("relative".into());
+        assert_eq!(
+            (relative.code(), relative.class()),
+            ("gait.home.relative_path", ErrorClass::Logical)
+        );
     }
 }
 

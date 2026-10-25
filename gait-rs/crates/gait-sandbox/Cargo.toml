@@ -14,6 +14,7 @@ serde_json     = "1"
 libc           = "0.2"
 anyhow         = "1"
 thiserror      = "1"
+coded-error    = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "82f3158e8ea53af5449d3614ebfa6290688cf83e" }
 glob           = "0.3"
 
 [dev-dependencies]

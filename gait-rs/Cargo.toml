@@ -40,6 +40,7 @@ rand               = "0.8"
 tokio-stream       = "0.1"
 tokio-util         = "0.7"
 thiserror          = "1"
+coded-error        = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "82f3158e8ea53af5449d3614ebfa6290688cf83e" }
 eventsource-stream = "0.2"
 async-stream       = "0.3"
 async-trait        = "0.1"

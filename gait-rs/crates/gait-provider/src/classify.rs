@@ -8,20 +8,35 @@
 //! noul scale: 1 = confident risk detected on that axis, 0 = confident safe.
 //! See docs/superpowers/specs/2026-09-19-classify-policy-design.md.
 
+use coded_error::{CodedError, ErrorClass};
 use reqwest::header::{HeaderMap, AUTHORIZATION};
 use std::collections::HashMap;
 
-#[derive(Debug, thiserror::Error)]
+/// The transport failure keeps the inner `ProviderError`'s class.
+fn transport_class(e: &ClassifyError) -> ErrorClass {
+    match e {
+        ClassifyError::Transport(inner) => CodedError::class(inner),
+        _ => ErrorClass::Infrastructure,
+    }
+}
+
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.classify")]
 pub enum ClassifyError {
     #[error("model string '{0}' has no '/' separator")]
+    #[coded(code = "bad_model_string", class = Logical)]
     BadModelString(String),
     #[error("unknown provider '{0}'")]
+    #[coded(code = "unknown_provider", class = Logical)]
     UnknownProvider(String),
     #[error("missing API key: set {0}")]
+    #[coded(code = "missing_api_key", class = Logical)]
     MissingApiKey(String),
     #[error("classifier transport failed: {0}")]
+    #[coded(code = "transport", class_with = transport_class)]
     Transport(#[from] crate::provider::ProviderError),
     #[error("classify response missing question '{0}'")]
+    #[coded(code = "missing_answer", class = Infrastructure)]
     MissingAnswer(String),
 }
 
@@ -184,5 +199,47 @@ mod tests {
         assert!((resp.answers["confidentiality_risk"].noul - 0.02).abs() < 1e-9);
         assert!((resp.answers["integrity_risk"].noul - 0.87).abs() < 1e-9);
         assert!((resp.answers["availability_risk"].noul - 0.01).abs() < 1e-9);
+    }
+
+    #[test]
+    fn classify_error_codes_are_unique() {
+        coded_error::check_codes("gait.classify.", &[ClassifyError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn classify_transport_class_follows_inner() {
+        let transient = ClassifyError::Transport(crate::provider::ProviderError::Timeout {
+            phase: crate::provider::TimeoutPhase::Connect,
+        });
+        assert_eq!(transient.class(), ErrorClass::Transient);
+        assert_eq!(transient.code(), "gait.classify.transport");
+
+        let logical = ClassifyError::Transport(crate::provider::ProviderError::Http {
+            status: 401,
+            body: String::new(),
+            retry_after: None,
+            request_id: None,
+        });
+        assert_eq!(logical.class(), ErrorClass::Logical);
+
+        let infra = ClassifyError::Transport(crate::provider::ProviderError::Other("x".into()));
+        assert_eq!(infra.class(), ErrorClass::Infrastructure);
+
+        assert_eq!(
+            ClassifyError::BadModelString("m".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            ClassifyError::UnknownProvider("p".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            ClassifyError::MissingApiKey("K".into()).class(),
+            ErrorClass::Logical
+        );
+        assert_eq!(
+            ClassifyError::MissingAnswer("q".into()).class(),
+            ErrorClass::Infrastructure
+        );
     }
 }

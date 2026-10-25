@@ -12,6 +12,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "1"
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "82f3158e8ea53af5449d3614ebfa6290688cf83e", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

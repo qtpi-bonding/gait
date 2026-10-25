@@ -77,7 +77,7 @@ fn resolve_load_targets(
     name: &str,
     gait_dir: &Path,
     session_id: &str,
-) -> Result<(PathBuf, PathBuf), OpError> {
+) -> anyhow::Result<(PathBuf, PathBuf)> {
     // `gait_state::mcp` / `gait_state::wasm_plugins` are `pub(crate)` (not
     // reachable from this crate), so mcp/plugin existence is checked the same
     // way admin.rs's own disk-first branches did: by the canonical disk path,
@@ -90,13 +90,13 @@ fn resolve_load_targets(
         ExtKind::Plugin => gait_dir.join("plugins").join(name).exists(),
     };
     if !in_global_registry {
-        return Err(OpError::NotFound(format!(
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!(
             "{} '{}' is not registered; run `gait register {} {}` first",
             kind.as_str(),
             name,
             kind.as_str(),
             name
-        )));
+        ))));
     }
 
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
@@ -109,7 +109,7 @@ fn resolve_load_targets(
 /// append when the session is live (concurrency contract — see
 /// `src/session/log/mod.rs`); that refusal surfaces as `OpError::Conflict`
 /// here.
-pub fn load(params: LoadParams) -> Result<ToggleOutcome, OpError> {
+pub fn load(params: LoadParams) -> anyhow::Result<ToggleOutcome> {
     let (tx_path, session_dir) = resolve_load_targets(
         params.kind,
         &params.name,
@@ -123,7 +123,7 @@ pub fn load(params: LoadParams) -> Result<ToggleOutcome, OpError> {
         &params.name,
         true,
     )
-    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     Ok(ToggleOutcome {
         tx_path,
         enabled: true,
@@ -132,7 +132,7 @@ pub fn load(params: LoadParams) -> Result<ToggleOutcome, OpError> {
 
 /// Append a `Toggle(enabled=false)` event to `session_id`'s log outside a
 /// running turn. Same live-session guard as [`load`].
-pub fn unload(params: LoadParams) -> Result<ToggleOutcome, OpError> {
+pub fn unload(params: LoadParams) -> anyhow::Result<ToggleOutcome> {
     let (tx_path, session_dir) = resolve_load_targets(
         params.kind,
         &params.name,
@@ -146,7 +146,7 @@ pub fn unload(params: LoadParams) -> Result<ToggleOutcome, OpError> {
         &params.name,
         false,
     )
-    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     Ok(ToggleOutcome {
         tx_path,
         enabled: false,
@@ -225,9 +225,9 @@ pub struct UnregisterOutcome {
 /// appends a `Registry(listed=true)` event to one session's log; the
 /// remaining branches write the canonical disk entry (MCPs → `mcp/<name>.json`,
 /// skills → `skills/<name>/SKILL.md`, plugins → `plugins/<name>/`). The op
-/// returns `Result<RegisterOutcome, OpError>`; the adapter renders the
+/// returns `anyhow::Result<RegisterOutcome>`; the adapter renders the
 /// per-scope success message.
-pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
+pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
     let kind = params.kind.as_str();
     let name = params.name.as_str();
 
@@ -235,34 +235,34 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
     // It never falls through to the global content-store branch below.
     if params.scope.as_deref() == Some("agent") {
         let agent_path = params.agent.clone().ok_or_else(|| {
-            OpError::Conflict("--scope agent requires --agent <path>".to_string())
+            coded_error::into_anyhow(OpError::Conflict("--scope agent requires --agent <path>".to_string()))
         })?;
         let list_key = match kind {
             "skill" => "skills",
             "mcp" => "mcp",
             "plugin" => "plugins",
             other => {
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "unknown kind '{}': use mcp, skill, or plugin",
                     other
-                )))
+                ))))
             }
         };
         let content = std::fs::read_to_string(&agent_path).map_err(|e| {
-            OpError::Conflict(format!(
+            coded_error::into_anyhow(OpError::Conflict(format!(
                 "failed to read agent file '{}': {}",
                 agent_path.display(),
                 e
-            ))
+            )))
         })?;
         let new_content = append_frontmatter_list(&content, list_key, name)
-            .map_err(|e| OpError::Conflict(format!("{e}")))?;
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
         std::fs::write(&agent_path, new_content).map_err(|e| {
-            OpError::Conflict(format!(
+            coded_error::into_anyhow(OpError::Conflict(format!(
                 "failed to write agent file '{}': {}",
                 agent_path.display(),
                 e
-            ))
+            )))
         })?;
         return Ok(RegisterOutcome {
             scope: "agent",
@@ -275,12 +275,12 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
     // log. Never falls through to the global content-store branch below.
     if params.scope.as_deref() == Some("session") {
         let session_id = params.session.clone().ok_or_else(|| {
-            OpError::Conflict("--scope session requires --session <id>".to_string())
+            coded_error::into_anyhow(OpError::Conflict("--scope session requires --session <id>".to_string()))
         })?;
         let tx_path = gait_state::session::live::log_path(&params.gait_dir, &session_id);
         let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &session_id);
         gait_state::session::log::write_registry(&tx_path, &session_dir, kind, name, true)
-            .map_err(|e| OpError::Conflict(format!("{e}")))?;
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
         return Ok(RegisterOutcome {
             scope: "session",
             written_to: tx_path,
@@ -293,15 +293,15 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
         "mcp" => {
             let mcp_dir = params.gait_dir.join("mcp");
             std::fs::create_dir_all(&mcp_dir)
-                .map_err(|e| OpError::Conflict(format!("could not create mcp/ dir: {e}")))?;
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("could not create mcp/ dir: {e}"))))?;
             let disk_path = mcp_dir.join(format!("{}.json", name));
             if disk_path.exists() {
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "mcp '{}' already registered at {}. Use 'gait unregister mcp {}' first.",
                     name,
                     disk_path.display(),
                     name
-                )));
+                ))));
             }
             let entry = if let Some(cmd) = &params.command {
                 let cmd_args: Vec<serde_json::Value> = params
@@ -324,10 +324,10 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
             } else if let Some(url) = params.url.as_ref().or(params.connect.as_ref()) {
                 serde_json::json!({ "url": url, "enabled": false })
             } else {
-                return Err(OpError::Conflict(
+                return Err(coded_error::into_anyhow(OpError::Conflict(
                     "gait register mcp: requires --command <prog> [--args \"<args>\"], --spawn <cmd>, or --url <url>"
                         .to_string(),
-                ));
+                )));
             };
             let final_entry = if let Some(desc) = &params.description {
                 let mut obj = entry.as_object().unwrap().clone();
@@ -342,9 +342,9 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
             std::fs::write(
                 &disk_path,
                 serde_json::to_string_pretty(&final_entry)
-                    .map_err(|e| OpError::Conflict(format!("{e}")))?,
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
             )
-            .map_err(|e| OpError::Conflict(format!("{e}")))?;
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: disk_path,
@@ -354,32 +354,32 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
         "skill" => {
             let skills_root = params.gait_dir.join("skills");
             std::fs::create_dir_all(&skills_root)
-                .map_err(|e| OpError::Conflict(format!("could not create skills/ dir: {e}")))?;
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("could not create skills/ dir: {e}"))))?;
             let skill_dir = skills_root.join(name);
             if skill_dir.exists() {
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "skill '{}' already registered at {}. Use 'gait unregister skill {}' first.",
                     name,
                     skill_dir.display(),
                     name
-                )));
+                ))));
             }
             let description = params.description.as_deref().ok_or_else(|| {
-                OpError::Conflict("gait register skill: requires --description <text>".to_string())
+                coded_error::into_anyhow(OpError::Conflict("gait register skill: requires --description <text>".to_string()))
             })?;
             let content = if let Some(path) = &params.path {
                 std::fs::read_to_string(path).map_err(|e| {
-                    OpError::Conflict(format!("failed to read skill file '{}': {}", path, e))
+                    coded_error::into_anyhow(OpError::Conflict(format!("failed to read skill file '{}': {}", path, e)))
                 })?
             } else if let Some(content) = &params.content {
                 content.clone()
             } else {
-                return Err(OpError::Conflict(
+                return Err(coded_error::into_anyhow(OpError::Conflict(
                     "gait register skill: requires --path <file> or --content <text>".to_string(),
-                ));
+                )));
             };
             std::fs::create_dir_all(&skill_dir).map_err(|e| {
-                OpError::Conflict(format!("could not create skills/{} dir: {e}", name))
+                coded_error::into_anyhow(OpError::Conflict(format!("could not create skills/{} dir: {e}", name)))
             })?;
             let skill_md = skill_dir.join("SKILL.md");
             std::fs::write(
@@ -389,7 +389,7 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
                     name, description, content
                 ),
             )
-            .map_err(|e| OpError::Conflict(format!("{e}")))?;
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: skill_md,
@@ -398,33 +398,33 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
         }
         "plugin" => {
             let wasm_src = params.wasm.as_deref().ok_or_else(|| {
-                OpError::Conflict("gait register plugin: requires --wasm <path>".to_string())
+                coded_error::into_anyhow(OpError::Conflict("gait register plugin: requires --wasm <path>".to_string()))
             })?;
             let wasm_src_path = Path::new(wasm_src);
             if !wasm_src_path.exists() {
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "wasm file not found: {}",
                     wasm_src
-                )));
+                ))));
             }
             let plugin_dir = params.gait_dir.join("plugins").join(name);
             if plugin_dir.exists() {
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "plugin '{}' already registered at {}. Use 'gait unregister plugin {}' first.",
                     name,
                     plugin_dir.display(),
                     name
-                )));
+                ))));
             }
             std::fs::create_dir_all(&plugin_dir).map_err(|e| {
-                OpError::Conflict(format!("could not create plugins/{} dir: {e}", name))
+                coded_error::into_anyhow(OpError::Conflict(format!("could not create plugins/{} dir: {e}", name)))
             })?;
             let wasm_filename = wasm_src_path
                 .file_name()
-                .ok_or_else(|| OpError::Conflict(format!("invalid wasm path: {}", wasm_src)))?;
+                .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict(format!("invalid wasm path: {}", wasm_src))))?;
             let wasm_dest = plugin_dir.join(wasm_filename);
             std::fs::copy(wasm_src_path, &wasm_dest)
-                .map_err(|e| OpError::Conflict(format!("could not copy wasm file: {e}")))?;
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("could not copy wasm file: {e}"))))?;
             let wasm_rel = wasm_filename.to_string_lossy();
             let description = params.description.as_deref().unwrap_or("No description.");
             let plugin_md = plugin_dir.join("PLUGIN.md");
@@ -435,17 +435,17 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
                     name, wasm_rel, name, description
                 ),
             )
-            .map_err(|e| OpError::Conflict(format!("{e}")))?;
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: plugin_md,
                 hint: format!("Run `gait enable plugin {}` to activate it.", name),
             })
         }
-        other => Err(OpError::Conflict(format!(
+        other => Err(coded_error::into_anyhow(OpError::Conflict(format!(
             "unknown kind '{}': use mcp, skill, or plugin",
             other
-        ))),
+        )))),
     }
 }
 
@@ -454,41 +454,41 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
 /// appends a `Registry(listed=false)` event; the remaining branches remove
 /// the disk entry (MCP file, skill dir, plugin dir) or fall through to
 /// `gait.jsonc` for legacy entries.
-pub fn unregister(params: UnregisterParams) -> Result<UnregisterOutcome, OpError> {
+pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome> {
     let kind = params.kind.as_str();
     let name = params.name.as_str();
 
     // Phase 1: --scope agent only touches the agent file's frontmatter list.
     if params.scope.as_deref() == Some("agent") {
         let agent_path = params.agent.clone().ok_or_else(|| {
-            OpError::Conflict("--scope agent requires --agent <path>".to_string())
+            coded_error::into_anyhow(OpError::Conflict("--scope agent requires --agent <path>".to_string()))
         })?;
         let list_key = match kind {
             "skill" => "skills",
             "mcp" => "mcp",
             "plugin" => "plugins",
             other => {
-                return Err(OpError::Conflict(format!(
+                return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                     "unknown kind '{}': use mcp, skill, or plugin",
                     other
-                )))
+                ))))
             }
         };
         let content = std::fs::read_to_string(&agent_path).map_err(|e| {
-            OpError::Conflict(format!(
+            coded_error::into_anyhow(OpError::Conflict(format!(
                 "failed to read agent file '{}': {}",
                 agent_path.display(),
                 e
-            ))
+            )))
         })?;
         let new_content = remove_frontmatter_list(&content, list_key, name)
-            .map_err(|e| OpError::Conflict(format!("{e}")))?;
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
         std::fs::write(&agent_path, new_content).map_err(|e| {
-            OpError::Conflict(format!(
+            coded_error::into_anyhow(OpError::Conflict(format!(
                 "failed to write agent file '{}': {}",
                 agent_path.display(),
                 e
-            ))
+            )))
         })?;
         return Ok(UnregisterOutcome {
             scope: "agent",
@@ -500,12 +500,12 @@ pub fn unregister(params: UnregisterParams) -> Result<UnregisterOutcome, OpError
     // session's own log.
     if params.scope.as_deref() == Some("session") {
         let session_id = params.session.clone().ok_or_else(|| {
-            OpError::Conflict("--scope session requires --session <id>".to_string())
+            coded_error::into_anyhow(OpError::Conflict("--scope session requires --session <id>".to_string()))
         })?;
         let tx_path = gait_state::session::live::log_path(&params.gait_dir, &session_id);
         let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &session_id);
         gait_state::session::log::write_registry(&tx_path, &session_dir, kind, name, false)
-            .map_err(|e| OpError::Conflict(format!("{e}")))?;
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
         return Ok(UnregisterOutcome {
             scope: "session",
             written_to: tx_path,
@@ -516,7 +516,7 @@ pub fn unregister(params: UnregisterParams) -> Result<UnregisterOutcome, OpError
     if kind == "mcp" {
         let disk_path = params.gait_dir.join("mcp").join(format!("{}.json", name));
         if disk_path.exists() {
-            std::fs::remove_file(&disk_path).map_err(|e| OpError::Conflict(format!("{e}")))?;
+            std::fs::remove_file(&disk_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             return Ok(UnregisterOutcome {
                 scope: "global",
                 written_to: disk_path,
@@ -526,24 +526,24 @@ pub fn unregister(params: UnregisterParams) -> Result<UnregisterOutcome, OpError
     if kind == "plugin" {
         let plugin_dir = params.gait_dir.join("plugins").join(name);
         if plugin_dir.exists() {
-            std::fs::remove_dir_all(&plugin_dir).map_err(|e| OpError::Conflict(format!("{e}")))?;
+            std::fs::remove_dir_all(&plugin_dir).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             return Ok(UnregisterOutcome {
                 scope: "global",
                 written_to: plugin_dir,
             });
         }
-        return Err(OpError::NotFound(format!("plugin '{}' not found", name)));
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!("plugin '{}' not found", name))));
     }
     if kind == "skill" {
         let skill_dir = params.gait_dir.join("skills").join(name);
         if skill_dir.exists() {
-            std::fs::remove_dir_all(&skill_dir).map_err(|e| OpError::Conflict(format!("{e}")))?;
+            std::fs::remove_dir_all(&skill_dir).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             return Ok(UnregisterOutcome {
                 scope: "global",
                 written_to: skill_dir,
             });
         }
-        return Err(OpError::NotFound(format!("skill '{}' not found", name)));
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!("skill '{}' not found", name))));
     }
 
     // Fall back to gait.jsonc for legacy entries.
@@ -551,23 +551,23 @@ pub fn unregister(params: UnregisterParams) -> Result<UnregisterOutcome, OpError
         "mcp" => "mcp_servers",
         "skill" => "skills",
         other => {
-            return Err(OpError::Conflict(format!(
+            return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                 "unknown kind '{}': use mcp, skill, or plugin",
                 other
-            )))
+            ))))
         }
     };
     let config_path = params.gait_dir.join("gait.jsonc");
     let mut val =
-        read_config_as_value(&config_path).map_err(|e| OpError::Conflict(format!("{e}")))?;
+        read_config_as_value(&config_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     if let Some(arr) = val[array_key].as_array_mut() {
         arr.retain(|v| v.get("name").and_then(|n| n.as_str()) != Some(name));
     }
     std::fs::write(
         &config_path,
-        serde_json::to_string_pretty(&val).map_err(|e| OpError::Conflict(format!("{e}")))?,
+        serde_json::to_string_pretty(&val).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
     )
-    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     Ok(UnregisterOutcome {
         scope: "config",
         written_to: config_path,
@@ -601,7 +601,7 @@ pub struct EnableParams {
 /// `gait.jsonc` legacy `mcp_servers` / `skills` arrays when the disk file
 /// doesn't exist. `pub(crate)` — the public entry points for toggling
 /// extensions are `enable`/`disable`; this is just the shared backing impl.
-pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> Result<EnableOutcome, OpError> {
+pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> anyhow::Result<EnableOutcome> {
     // Disk-file path for mcp, plugin, and skill kinds.
     let disk_path: Option<PathBuf> = match params.kind.as_str() {
         "mcp" => {
@@ -647,32 +647,32 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> Result<EnableO
             "mcp" => {
                 let mut val: serde_json::Value = serde_json::from_str(
                     &std::fs::read_to_string(&path)
-                        .map_err(|e| OpError::Conflict(format!("{e}")))?,
+                        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
                 )
-                .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
                 val["enabled"] = serde_json::Value::Bool(enabled);
                 std::fs::write(
                     &path,
                     serde_json::to_string_pretty(&val)
-                        .map_err(|e| OpError::Conflict(format!("{e}")))?,
+                        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
                 )
-                .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             }
             "plugin" => {
                 let content = std::fs::read_to_string(&path)
-                    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
                 let new_content = set_frontmatter_bool(&content, "enabled", enabled)
-                    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
                 std::fs::write(&path, new_content)
-                    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             }
             "skill" => {
                 let content = std::fs::read_to_string(&path)
-                    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
                 let new_content = set_frontmatter_bool(&content, "enabled", enabled)
-                    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
                 std::fs::write(&path, new_content)
-                    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             }
             _ => unreachable!(),
         }
@@ -687,33 +687,33 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> Result<EnableO
         "mcp" => "mcp_servers",
         "skill" => "skills",
         other => {
-            return Err(OpError::Conflict(format!(
+            return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                 "unknown kind '{}': use mcp, skill, or plugin",
                 other
-            )))
+            ))))
         }
     };
     let config_path = params.gait_dir.join("gait.jsonc");
     let mut val =
-        read_config_as_value(&config_path).map_err(|e| OpError::Conflict(format!("{e}")))?;
+        read_config_as_value(&config_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     let arr = val[array_key]
         .as_array_mut()
-        .ok_or_else(|| OpError::Conflict(format!("{} is not an array", array_key)))?;
+        .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict(format!("{} is not an array", array_key))))?;
     let entry = arr
         .iter_mut()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(params.name.as_str()))
         .ok_or_else(|| {
-            OpError::NotFound(format!(
+            coded_error::into_anyhow(OpError::NotFound(format!(
                 "{} '{}' not found; run `gait register {} {}` first",
                 params.kind, params.name, params.kind, params.name
-            ))
+            )))
         })?;
     entry["enabled"] = serde_json::Value::Bool(enabled);
     std::fs::write(
         &config_path,
-        serde_json::to_string_pretty(&val).map_err(|e| OpError::Conflict(format!("{e}")))?,
+        serde_json::to_string_pretty(&val).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
     )
-    .map_err(|e| OpError::Conflict(format!("{e}")))?;
+    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     Ok(EnableOutcome {
         written_to: config_path,
         target: "config",
@@ -721,12 +721,12 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> Result<EnableO
 }
 
 /// Thin wrapper around [`set_enabled`] passing `enabled=true`.
-pub fn enable(params: EnableParams) -> Result<EnableOutcome, OpError> {
+pub fn enable(params: EnableParams) -> anyhow::Result<EnableOutcome> {
     set_enabled(params, true)
 }
 
 /// Thin wrapper around [`set_enabled`] passing `enabled=false`.
-pub fn disable(params: EnableParams) -> Result<EnableOutcome, OpError> {
+pub fn disable(params: EnableParams) -> anyhow::Result<EnableOutcome> {
     set_enabled(params, false)
 }
 

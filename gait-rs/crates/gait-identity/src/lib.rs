@@ -4,10 +4,57 @@ use identity_crypto::{
     mint_session, message_nonce, verify_signed_message_trusted_devices, AcceptedAt, AuthorDevices,
     PrincipalId, PublicKey, When,
 };
+use identity_keyfile::KeyfileError;
 use prost::Message;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const DIRECT_BODY_TYPE: &str = "type.googleapis.com/gait.log.v1.DirectEventDigest";
+
+/// Why an agent directory could not supply its identity. Every variant reads
+/// `load agent identity from <dir>`; the keyfile failure is the `source`, so an
+/// anyhow chain prints the same text as before the coding.
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.identity")]
+pub enum IdentityError {
+    #[error("load agent identity from {}", .dir.display())]
+    #[coded(code = "agent_dir_unloadable", class = Logical)]
+    AgentDirUnloadable { dir: PathBuf, #[source] source: KeyfileError },
+    #[error("load agent identity from {}", .dir.display())]
+    #[coded(code = "missing_keyfile", class = Logical)]
+    MissingKeyfile { dir: PathBuf, #[source] source: KeyfileError },
+    #[error("load agent identity from {}", .dir.display())]
+    #[coded(code = "device_key_unreadable", class = Logical)]
+    DeviceKeyUnreadable { dir: PathBuf, #[source] source: KeyfileError },
+    #[error("load agent identity from {}", .dir.display())]
+    #[coded(code = "delegation_expired", class = Logical)]
+    DelegationExpired { dir: PathBuf, #[source] source: KeyfileError },
+}
+
+impl IdentityError {
+    fn from_keyfile(dir: &Path, source: KeyfileError) -> Self {
+        let dir = dir.to_path_buf();
+        match &source {
+            KeyfileError::Missing(path) if path != &dir => Self::MissingKeyfile { dir, source },
+            KeyfileError::Io { path, .. } if path != &dir => {
+                Self::DeviceKeyUnreadable { dir, source }
+            }
+            KeyfileError::Parse { .. } | KeyfileError::Crypto(_) => {
+                Self::DeviceKeyUnreadable { dir, source }
+            }
+            KeyfileError::DelegationMismatch => Self::DelegationExpired { dir, source },
+            KeyfileError::Missing(_)
+            | KeyfileError::Io { .. }
+            | KeyfileError::InsecureDir(_)
+            | KeyfileError::AlreadyInitialised(_) => Self::AgentDirUnloadable { dir, source },
+        }
+    }
+}
+
+/// Load the device keys in `agent_dir`, typing any failure as an `IdentityError`.
+fn load_keys(agent_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
+    identity_keyfile::DeviceKeys::load(agent_dir)
+        .map_err(|source| coded_error::into_anyhow(IdentityError::from_keyfile(agent_dir, source)))
+}
 
 /// Identity material is deliberately represented by its directory, not cached keys.
 pub struct IdentityContext {
@@ -25,8 +72,7 @@ impl IdentityContext {
 
     pub fn new(agent_dir: impl Into<PathBuf>) -> Result<Self> {
         let agent_dir = agent_dir.into();
-        let keys = identity_keyfile::DeviceKeys::load(&agent_dir)
-            .with_context(|| format!("load agent identity from {}", agent_dir.display()))?;
+        let keys = load_keys(&agent_dir)?;
         Ok(Self { agent_dir, agent_id: keys.agent_id })
     }
 
@@ -39,8 +85,7 @@ impl IdentityContext {
     }
 
     fn keys(&self) -> Result<identity_keyfile::DeviceKeys> {
-        identity_keyfile::DeviceKeys::load(&self.agent_dir)
-            .with_context(|| format!("load agent identity from {}", self.agent_dir.display()))
+        load_keys(&self.agent_dir)
     }
 }
 
@@ -133,6 +178,52 @@ pub fn verify_direct_provenance(
 mod tests {
     use super::*;
     use identity_keyfile::testkit::TempAgentDir;
+
+    #[test]
+    fn identity_error_codes_are_unique() {
+        coded_error::check_codes("gait.identity.", &[IdentityError::ALL_CODES]).unwrap();
+        assert_eq!(
+            IdentityError::ALL_CODES,
+            &[
+                "gait.identity.agent_dir_unloadable",
+                "gait.identity.missing_keyfile",
+                "gait.identity.device_key_unreadable",
+                "gait.identity.delegation_expired",
+            ]
+        );
+    }
+
+    #[test]
+    fn identity_error_display_texts_unchanged() {
+        use coded_error::CodedError;
+        let dir = PathBuf::from("/agents/one");
+        let keyfile = || KeyfileError::Parse { path: dir.clone(), msg: "bad".into() };
+        let texts = [
+            IdentityError::AgentDirUnloadable { dir: dir.clone(), source: keyfile() },
+            IdentityError::MissingKeyfile { dir: dir.clone(), source: keyfile() },
+            IdentityError::DeviceKeyUnreadable { dir: dir.clone(), source: keyfile() },
+            IdentityError::DelegationExpired { dir: dir.clone(), source: keyfile() },
+        ];
+        for err in &texts {
+            assert_eq!(err.to_string(), "load agent identity from /agents/one");
+        }
+        assert_eq!(texts[0].class(), coded_error::ErrorClass::Logical);
+    }
+
+    #[test]
+    fn identity_context_missing_keyfile_is_coded() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let err = match IdentityContext::new(dir.path()) {
+            Ok(_) => panic!("an empty agent dir must not load"),
+            Err(err) => err,
+        };
+        let typed = coded_error::downcast_ref::<IdentityError>(&err).expect("typed IdentityError");
+        assert!(matches!(typed, IdentityError::MissingKeyfile { .. }), "got {typed:?}");
+        assert_eq!(coded_error::facts_anyhow(&err).code, "gait.identity.missing_keyfile");
+        assert!(format!("{err:#}").starts_with("load agent identity from "));
+    }
 
     fn signed(
         ctx: &IdentityContext,

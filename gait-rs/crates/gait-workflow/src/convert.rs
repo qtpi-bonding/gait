@@ -51,13 +51,59 @@ pub struct ResolvedRun {
     pub run_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.workflow.continue")]
 pub enum ContinueError {
+    #[error("run log has no workflow_start")]
+    #[coded(code = "no_start", class = Logical)]
     NoStart,
+    #[error("workflow definition changed since the run started (logged {logged_hash}, disk {disk_hash})")]
+    #[coded(code = "drift", class = Logical)]
     Drift {
         logged_hash: String,
         disk_hash: String,
     },
+}
+
+#[cfg(test)]
+mod coded_error_tests {
+    use super::ContinueError;
+    use coded_error::{CodedError, ErrorClass};
+
+    #[test]
+    fn workflow_continue_codes_are_unique() {
+        coded_error::check_codes("gait.workflow.continue.", &[ContinueError::ALL_CODES]).unwrap();
+    }
+
+    #[test]
+    fn continue_error_codes_and_classes_per_variant() {
+        let no_start = ContinueError::NoStart;
+        assert_eq!(no_start.code(), "gait.workflow.continue.no_start");
+        assert_eq!(no_start.class(), ErrorClass::Logical);
+
+        let drift = ContinueError::Drift {
+            logged_hash: "a".into(),
+            disk_hash: "b".into(),
+        };
+        assert_eq!(drift.code(), "gait.workflow.continue.drift");
+        assert_eq!(drift.class(), ErrorClass::Logical);
+    }
+
+    #[test]
+    fn display_texts_unchanged() {
+        assert_eq!(
+            ContinueError::NoStart.to_string(),
+            "run log has no workflow_start"
+        );
+        assert_eq!(
+            ContinueError::Drift {
+                logged_hash: "a".into(),
+                disk_hash: "b".into(),
+            }
+            .to_string(),
+            "workflow definition changed since the run started (logged a, disk b)"
+        );
+    }
 }
 
 /// Decide the graph to resume from the run log's `WorkflowStart`. ALWAYS returns

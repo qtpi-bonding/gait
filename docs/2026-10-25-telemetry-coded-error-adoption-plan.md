@@ -190,22 +190,23 @@ for genuine uncoded leftovers.
 
 - **2a** (no boundary change): the enums, raise sites, `check_codes`. Existing
   `Display` texts are kept; tests that assert error text keep passing.
-- **2b ACP boundary.** `wire_error(&anyhow::Error, method) -> acp::Error`
-  (G1): Logical maps to JSON-RPC invalid-params (-32602), Infrastructure and
-  Unknown to internal (-32603), Transient to **-32002** (never -32001: multimatrix's
-  `is_already_seen_error`, `multimatrix-ops/src/delivery_receipt.rs:42-50`, treats
-  the numeric -32001 as already-seen as a fallback), `already_seen` keeps -32001
-  **and** `data.reason = "already_seen_by_agent"` literally (the coded variant
-  name `already_seen` does not replace it). A test pins both. `data` carries `{code,
-  class, fingerprint}` plus the existing keys for `already_seen`. It calls
-  `coded_error::...` for the facts and
+- **2b ACP boundary.** the mapping lives in coded-error's `acp` feature (the orchestrator
+  writes it, G1 resolved): `acp::AcpError { code: i32, message: String, data:
+  serde_json::Value }` with `to_acp_error`, `to_acp_error_anyhow` and
+  `to_acp_error_anyhow_redacted(err, source, fixed)`. Defaults: Logical -32602;
+  Infrastructure, Unknown and Transient -32603 (clients tell Transient apart by
+  `data.class`; -32002 is ACP's ResourceNotFound, so it is not used). A variant
+  overrides the code with `#[coded(acp = -32001)]` (standard code or
+  -32000..=-32099). `data` is always `{"code","class","fingerprint"}` (the same
+  object MCP uses). gait-acp converts with
+  `agent_client_protocol::Error::new(code, message).data(data)` and, for
+  `already_seen`, inserts `reason: "already_seen_by_agent"` and `idempotency_key`
+  into `data` at the call site (multimatrix's `is_already_seen_error` reads
+  `data.reason` or the code -32001). The record side calls
   `concord_telemetry::error_anyhow!(&err, source = method, rpc.method = method)`
   with the same `method`, so the response fingerprint equals the record's.
-  No redaction of the code, class and fingerprint: the only caller is the
-  launching bridge, inside the same trust boundary, and attestation already
-  gates ingress (D3). The JSON-RPC `message` is the Display text for Logical
-  errors and a fixed `"request failed"` for every other class, because the
-  bridge relays to room members and Infrastructure text carries paths. Delete the ~20
+  Message: the redacted form, Logical keeps its Display and every other class
+  gets the fixed `"request failed"` (D3). Delete the ~20
   `respond_with_internal_error` calls. Tests: per variant, code/class/wire
   code; one `error` record per rejected prompt carrying no Display text.
 - **2c CLI.** Commands in `gait-cli` return `Result<(), anyhow::Error>` (or
