@@ -1,0 +1,18 @@
+[fields]
+turn = { type = "int", meaning = "Turn number" }
+iterations = { type = "int", meaning = "Turn iterations" }
+outcome = { type = "str", meaning = "Turn outcome" }
+message_count = { type = "int", meaning = "Accepted message count" }
+message_ids = { type = "str", meaning = "Accepted message ids" }
+source = { type = "str", meaning = "Event source" }
+key_id = { type = "str", meaning = "Attestation key id" }
+parent_session_id = { type = "str", meaning = "Parent session id" }
+child_session_id = { type = "str", meaning = "Child session id" }
+signed = { type = "bool", meaning = "Whether report was signed" }
+provider = { type = "str", meaning = "Model provider" }
+model = { type = "str", meaning = "Model name" }
+attempt = { type = "int", meaning = "Attempt number" }
+phase = { type = "str", meaning = "Operation phase" }
+status_code = { type = "int", meaning = "Status code" }
+agent_name = { type = "str", meaning = "Spawned agent name" }
+status = { type = "str", meaning = "Agent report status" }

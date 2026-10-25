@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package gait.events.v1;
+
+import "concord_telemetry/v1/principal.proto";
+
+enum PromptSource {
+  PROMPT_SOURCE_UNSPECIFIED = 0;
+  PROMPT_SOURCE_DIRECT = 1;
+  PROMPT_SOURCE_ATTESTED = 2;
+}
+
+enum TurnOutcome {
+  TURN_OUTCOME_UNSPECIFIED = 0;
+  TURN_OUTCOME_DONE = 1;
+  TURN_OUTCOME_CLARIFY = 2;
+  TURN_OUTCOME_INFORM = 3;
+  TURN_OUTCOME_PERMISSIONS = 4;
+  TURN_OUTCOME_SANDBOX_UNLOCK = 5;
+  TURN_OUTCOME_CANCELLED = 6;
+  TURN_OUTCOME_FAILED = 7;
+}
+
+enum NotifyOutcome {
+  NOTIFY_OUTCOME_UNSPECIFIED = 0;
+  NOTIFY_OUTCOME_WOKE = 1;
+  NOTIFY_OUTCOME_BUSY = 2;
+  NOTIFY_OUTCOME_ALREADY_SURFACED = 3;
+  NOTIFY_OUTCOME_NO_PARENT = 4;
+}
+
+message PromptAccepted {
+  string source_record_id = 1;
+  string session_id = 2;
+  uint32 message_count = 3;
+  repeated string message_ids = 4;
+  PromptSource source = 5;
+  concord_telemetry.v1.Principal author = 6;
+}
+
+message TurnCompleted {
+  string source_record_id = 1;
+  string session_id = 2;
+  TurnOutcome outcome = 3;
+  uint64 elapsed_ms = 4;
+}
+
+message AgentSpawned {
+  string source_record_id = 1;
+  string session_id = 2;
+  string child_session_id = 3;
+  string agent_name = 4;
+}
+
+message AgentReported {
+  string source_record_id = 1;
+  string parent_session_id = 2;
+  string child_session_id = 3;
+  string status = 4;
+  bool signed = 5;
+  NotifyOutcome outcome = 6;
+}

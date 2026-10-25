@@ -23,7 +23,7 @@ pub(crate) fn finalized_turn(
     use crate::proto::gait::sandbox::v1::FinalizedTurnOutcome as Outcome;
     use crate::turn::TurnResult;
 
-    let (outcome, message, value, failure_reason) = match result {
+    let (outcome, message, value, failure_reason, error_code, error_class) = match result {
         TurnResult::Done {
             message,
             result,
@@ -38,16 +38,18 @@ pub(crate) fn finalized_turn(
             message.clone(),
             crate::proto::events::to_value_opt(result),
             String::new(),
+            None,
+            None,
         ),
-        TurnResult::Clarify { .. } => (Outcome::Clarify, String::new(), None, String::new()),
-        TurnResult::Inform { .. } => (Outcome::Inform, String::new(), None, String::new()),
-        TurnResult::Permissions => (Outcome::Permissions, String::new(), None, String::new()),
+        TurnResult::Clarify { .. } => (Outcome::Clarify, String::new(), None, String::new(), None, None),
+        TurnResult::Inform { .. } => (Outcome::Inform, String::new(), None, String::new(), None, None),
+        TurnResult::Permissions => (Outcome::Permissions, String::new(), None, String::new(), None, None),
         TurnResult::SandboxUnlock { .. } => {
-            (Outcome::SandboxUnlock, String::new(), None, String::new())
+            (Outcome::SandboxUnlock, String::new(), None, String::new(), None, None)
         }
-        TurnResult::Cancelled => (Outcome::Cancelled, String::new(), None, String::new()),
-        TurnResult::Failed { ended, message } => {
-            (Outcome::Failed, message.clone(), None, ended.clone())
+        TurnResult::Cancelled => (Outcome::Cancelled, String::new(), None, String::new(), None, None),
+        TurnResult::Failed { ended, message, code, class } => {
+            (Outcome::Failed, message.clone(), None, ended.clone(), code.clone(), class.clone())
         }
     };
     crate::proto::gait::sandbox::v1::FinalizedTurn {
@@ -55,6 +57,8 @@ pub(crate) fn finalized_turn(
         message,
         result: value,
         failure_reason,
+        error_code,
+        error_class,
         ..Default::default()
     }
 }
@@ -82,6 +86,8 @@ mod tests {
         let draft = finalized_turn(&crate::turn::TurnResult::Failed {
             ended: "max_steps".into(),
             message: "limit reached".into(),
+            code: None,
+            class: None,
         });
         assert_eq!(draft.outcome, Outcome::Failed as i32);
         assert_eq!(draft.failure_reason, "max_steps");

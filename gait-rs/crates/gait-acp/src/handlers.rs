@@ -20,13 +20,43 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
 use std::path::Path;
 use std::sync::Arc;
+use tracing::Instrument;
 
 use crate::attestation::Attestor;
+use crate::error::{self, PromptError};
 use crate::lifecycle;
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
     AcpTurnSink, AcpTurnSource, content_blocks_to_text, turn_result_to_stop_reason,
 };
+
+fn emit_prompt_accepted(
+    source_record_id: String,
+    session_id: String,
+    message_ids: Vec<String>,
+    source: gait_events::gait::events::v1::PromptSource,
+    author: Option<gait_events::Principal>,
+) {
+    concord_telemetry::event!(gait_events::gait::events::v1::PromptAccepted {
+        source_record_id,
+        session_id,
+        message_count: message_ids.len() as u32,
+        message_ids,
+        source: source as i32,
+        author,
+    });
+}
+
+fn meta_getter(
+    meta: &Option<serde_json::Map<String, serde_json::Value>>,
+) -> impl Fn(&str) -> Option<String> + '_ {
+    move |key| {
+        meta.as_ref()
+            .and_then(|values| values.get(key))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+    }
+}
 
 /// Build the gait-acp agent: registers `initialize` and `session/new` against
 /// the given `SessionMap`. Returns the concrete `Builder` (not just an opaque
@@ -139,7 +169,7 @@ pub fn build_agent_with_attestation(
                     async move {
                         let gait_dir = match discover_gait_dir_for_cwd(&req.cwd) {
                             Ok(dir) => dir,
-                            Err(e) => return responder.respond_with_internal_error(e.to_string()),
+                            Err(e) => return responder.respond_with_error(error::acp_error(&anyhow::anyhow!(e), error::NEW_SESSION)),
                         };
                         let session_id = gait_core::session::new_session_id();
                         let modes = advertise_modes(&gait_dir);
@@ -165,9 +195,10 @@ pub fn build_agent_with_attestation(
                         let session_id = req.session_id.clone();
                         let sid = session_id.0.to_string();
                         let Some((gait_dir, codebase)) = map.resolve(&sid) else {
-                            return responder
-                                .respond_with_internal_error(format!("unknown session: {sid}"));
+                            return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::PROMPT));
                         };
+                        let span = tracing::info_span!("acp.prompt", session_id = %sid);
+                        concord_telemetry::propagation::set_parent(&span, meta_getter(&req.meta));
                         // Reject a resend of an already-admitted idempotency
                         // key immediately, before every other admission check
                         // below -- this must run FIRST so the key is never
@@ -181,9 +212,7 @@ pub fn build_agent_with_attestation(
                             crate::idempotency::idempotency_key_from_meta(&req.meta);
                         if let Some(key) = &idempotency_key {
                             if map.has_seen_idempotency_key(&sid, key) {
-                                return responder.respond_with_error(
-                                    crate::idempotency::already_seen_error(key),
-                                );
+                                return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::AlreadySeen { key: key.clone() }), error::PROMPT));
                             }
                         }
                         // Reject BEFORE touching any session_map bookkeeping. A
@@ -194,9 +223,7 @@ pub fn build_agent_with_attestation(
                         // turn's live tracking in the window before that
                         // rejection lands (see the 2026-08-30 follow-up doc).
                         if map.has_live_turn(&sid) {
-                            return responder.respond_with_internal_error(format!(
-                                "session already has an in-flight turn: {sid}"
-                            ));
+                            return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionBusy(sid.clone())), error::PROMPT));
                         }
                         // Verification records nothing; the replay-sequence
                         // confirmation travels with the batch as its
@@ -269,6 +296,18 @@ pub fn build_agent_with_attestation(
                             // text executed.
                             Ok(Some(batch)) => {
                                 let (messages, confirm) = batch.into_parts();
+                                let message_ids: Vec<String> = messages
+                                    .iter()
+                                    .map(|message| message.message_id.clone())
+                                    .collect();
+                                let source_record_id = message_ids
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let author = messages.first().and_then(|message| {
+                                    message.provenance.verified_author_id.clone()
+                                });
+                                let accepted_session = sid.clone();
                                 let durable_flag = batch_durable.clone();
                                 let on_durable: gait_core::port::input::OnDurable =
                                     Box::new(move || {
@@ -276,6 +315,23 @@ pub fn build_agent_with_attestation(
                                         // idempotency key must stay recorded.
                                         durable_flag
                                             .store(true, std::sync::atomic::Ordering::SeqCst);
+                                        let author = author.map(|id| {
+                                            gait_events::Principal::new(
+                                                gait_events::PrincipalKind::Agent,
+                                                id,
+                                            )
+                                            .with_verified_by([
+                                                gait_events::Verification::DeliveryAttestation,
+                                                gait_events::Verification::DelegationCert,
+                                            ])
+                                        });
+                                        emit_prompt_accepted(
+                                            source_record_id.clone(),
+                                            accepted_session.clone(),
+                                            message_ids.clone(),
+                                            gait_events::gait::events::v1::PromptSource::Attested,
+                                            author,
+                                        );
                                         confirm()
                                     });
                                 TurnInput::AttestedMessages {
@@ -377,7 +433,8 @@ pub fn build_agent_with_attestation(
                                     opts,
                                     Box::new(source),
                                     &mut sink,
-                                ),
+                                )
+                                .instrument(span),
                             );
                             map_thread.take_cascade(&sid_thread);
                             // A failed turn whose trigger never became durable did not
@@ -396,7 +453,7 @@ pub fn build_agent_with_attestation(
                                 Ok(StopReason::Cancelled)
                             } else {
                                 match outcome {
-                                    Err(e) if map_thread.was_cancelled(&sid_thread) => {
+                                    Err(_e) if map_thread.was_cancelled(&sid_thread) => {
                                         Ok(StopReason::Cancelled)
                                     }
                                     Err(e) => Err(e.to_string()),
@@ -410,7 +467,7 @@ pub fn build_agent_with_attestation(
                             // connection already closed (drain will reap this thread).
                             let _ = match stop {
                                 Ok(reason) => responder.respond(PromptResponse::new(reason)),
-                                Err(msg) => responder.respond_with_internal_error(msg),
+                                Err(msg) => responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(msg)), error::PROMPT)),
                             };
                         });
                         // Track the thread so a connection-teardown drain can reap it
@@ -434,8 +491,7 @@ pub fn build_agent_with_attestation(
                         let session_id = req.session_id.clone();
                         let sid = session_id.0.to_string();
                         let Some((gait_dir, _codebase)) = map.resolve(&sid) else {
-                            return responder
-                                .respond_with_internal_error(format!("unknown session: {sid}"));
+                            return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::SET_SESSION_MODE));
                         };
                         let mode_id = req.mode_id.clone();
                         let log_path = gait_core::session::live::log_path(&gait_dir, &sid);
@@ -457,7 +513,7 @@ pub fn build_agent_with_attestation(
                                 ));
                                 responder.respond(SetSessionModeResponse::new())
                             }
-                            Err(e) => responder.respond_with_internal_error(e.to_string()),
+                            Err(e) => responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e.to_string())), error::SET_SESSION_MODE)),
                         }
                     }
                 }
@@ -516,6 +572,82 @@ pub fn build_agent_with_attestation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meta_getter_reads_string_values_only() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("traceparent".into(), serde_json::json!("00-abc-def-01"));
+        meta.insert("number".into(), serde_json::json!(7));
+        let meta = Some(meta);
+        let getter = meta_getter(&meta);
+        assert_eq!(getter("traceparent"), Some("00-abc-def-01".into()));
+        assert_eq!(getter("missing"), None);
+        assert_eq!(getter("number"), None);
+    }
+
+    #[test]
+    fn prompt_accepted_emits_once_for_a_direct_prompt() {
+        let cap = concord_telemetry::testing::capture_exclusive();
+        let id = format!("direct-{}", std::process::id());
+        emit_prompt_accepted(
+            id.clone(),
+            "session-direct".into(),
+            vec![id.clone()],
+            gait_events::gait::events::v1::PromptSource::Direct,
+            None,
+        );
+        let event = cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(
+            |value| value.source_record_id == id,
+        );
+        assert_eq!(event.source, gait_events::gait::events::v1::PromptSource::Direct as i32);
+        assert_eq!(event.message_count, 1);
+        assert!(event.author.is_none());
+    }
+
+    #[test]
+    fn prompt_accepted_emits_once_for_an_attested_batch_with_author() {
+        let cap = concord_telemetry::testing::capture_exclusive();
+        let id = format!("attested-{}", std::process::id());
+        let author = gait_events::Principal::new(gait_events::PrincipalKind::Agent, "agent-1")
+            .with_verified_by([
+                gait_events::Verification::DeliveryAttestation,
+                gait_events::Verification::DelegationCert,
+            ]);
+        emit_prompt_accepted(
+            id.clone(),
+            "session-attested".into(),
+            vec![id.clone(), "second-message".into()],
+            gait_events::gait::events::v1::PromptSource::Attested,
+            Some(author),
+        );
+        let event = cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(
+            |value| value.source_record_id == id,
+        );
+        assert_eq!(event.source, gait_events::gait::events::v1::PromptSource::Attested as i32);
+        assert_eq!(event.message_count, 2);
+        assert_eq!(event.message_ids.len(), 2);
+        assert!(event.author.is_some());
+    }
+
+    #[test]
+    fn rejected_prompt_emits_no_prompt_accepted() {
+        let cap = concord_telemetry::testing::capture_exclusive();
+        let id = format!("rejected-{}", std::process::id());
+        let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(
+            |value| value.source_record_id == id,
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn already_seen_prompt_emits_no_prompt_accepted() {
+        let cap = concord_telemetry::testing::capture_exclusive();
+        let id = format!("replayed-{}", std::process::id());
+        let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(
+            |value| value.source_record_id == id,
+        );
+        assert!(events.is_empty());
+    }
 
     #[test]
     fn advertise_lists_default_first_then_authored_with_descriptions() {

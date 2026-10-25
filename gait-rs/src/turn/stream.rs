@@ -95,7 +95,7 @@ pub(crate) async fn run_step(
         let Some(chunk_result) = chunk_opt else { break };
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(gait_provider::provider::ProviderError::StreamIncomplete { received_bytes }) => {
+            Err(e @ gait_provider::provider::ProviderError::StreamIncomplete { received_bytes }) => {
                 // Task 6: transport_error observability — v1 uses log::warn!
                 // A structured recorder event can follow once transport errors
                 // are promoted to first-class proto events.
@@ -106,27 +106,33 @@ pub(crate) async fn run_step(
                         "[gait] transport_error kind=stream_incomplete received_bytes={received_bytes}"
                     );
                 }
-                return Err(anyhow::anyhow!(
-                    "stream incomplete after {received_bytes} bytes"
+                return Err(coded_error::attach(
+                    anyhow::anyhow!("stream incomplete after {received_bytes} bytes"),
+                    &e,
                 ));
             }
-            Err(gait_provider::provider::ProviderError::Timeout { phase }) => {
+            Err(e @ gait_provider::provider::ProviderError::Timeout { phase }) => {
                 #[allow(clippy::print_stderr)]
                 // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
                 {
                     eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
                 }
-                return Err(anyhow::anyhow!("stream timeout in phase {phase:?}"));
+                return Err(coded_error::attach(
+                    anyhow::anyhow!("stream timeout in phase {phase:?}"),
+                    &e,
+                ));
             }
-            Err(gait_provider::provider::ProviderError::Overloaded) => {
+            Err(e @ gait_provider::provider::ProviderError::Overloaded) => {
                 #[allow(clippy::print_stderr)]
                 // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
                 {
                     eprintln!("[gait] transport_error kind=overloaded");
                 }
-                return Err(anyhow::anyhow!("provider overloaded"));
+                return Err(coded_error::attach(anyhow::anyhow!("provider overloaded"), &e));
             }
-            Err(e) => return Err(anyhow::anyhow!("stream error: {}", e)),
+            Err(e) => {
+                return Err(coded_error::attach(anyhow::anyhow!("stream error: {}", e), &e))
+            }
         };
         match chunk {
             StreamChunk::Text(t) => {
@@ -182,4 +188,33 @@ pub(crate) async fn run_step(
         step_thinking_text,
         step_thinking_signature,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use gait_provider::provider::{ProviderError, TimeoutPhase};
+
+    #[test]
+    fn stream_error_keeps_its_display_text() {
+        let cases = [
+            (
+                ProviderError::StreamIncomplete { received_bytes: 7 },
+                "stream incomplete after 7 bytes",
+            ),
+            (
+                ProviderError::Timeout {
+                    phase: TimeoutPhase::Ttfb,
+                },
+                "stream timeout in phase Ttfb",
+            ),
+            (ProviderError::Overloaded, "provider overloaded"),
+        ];
+        for (provider_error, display) in cases {
+            let err = coded_error::attach(anyhow::anyhow!(display), &provider_error);
+            assert_eq!(err.to_string(), display);
+            let facts = coded_error::facts_anyhow(&err);
+            assert_eq!(facts.code, coded_error::CodedError::code(&provider_error));
+            assert_eq!(facts.class, coded_error::CodedError::class(&provider_error));
+        }
+    }
 }

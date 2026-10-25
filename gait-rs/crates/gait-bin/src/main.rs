@@ -13,9 +13,19 @@ fn main() -> ExitCode {
     if let Ok(cli) = Cli::try_parse_from(&raw) {
         gait_bin::apply_agent_dir_flag(&cli);
     }
-    if let Err(error) = gait_bin::install_agent_identity(IdentityContext::from_env()) {
+    let identity = IdentityContext::from_env();
+    let agent_id = identity.as_ref().ok().and_then(|value| value.as_ref())
+        .map(|ctx| ctx.agent_id().to_string());
+    if let Err(error) = gait_bin::install_agent_identity(identity) {
         return gait_cli::cli::error::report(&error);
     }
+    let is_role = raw.get(1).map(String::as_str) == Some("__local-runner")
+        || (raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]));
+    let _guard = if !is_role {
+        Some(gait_bin::init_telemetry("gait", env!("CARGO_PKG_VERSION"), agent_id))
+    } else {
+        None
+    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -44,7 +54,19 @@ async fn run(raw: Vec<String>) -> ExitCode {
         return ExitCode::from(1);
     }
     if raw.len() >= 2 && gait_core::is_run_argv(&raw[1..]) {
-        return gait_bin::finish(gait_cli::cli::args::cmd_run(&raw[2..]).await);
+        #[cfg(feature = "telemetry")]
+        {
+            use tracing::Instrument;
+            let span = tracing::info_span!("gait.run");
+            concord_telemetry::propagation::set_parent_from_env(&span);
+            return gait_bin::finish(
+                gait_cli::cli::args::cmd_run(&raw[2..]).instrument(span).await,
+            );
+        }
+        #[cfg(not(feature = "telemetry"))]
+        {
+            return gait_bin::finish(gait_cli::cli::args::cmd_run(&raw[2..]).await);
+        }
     }
 
     let cli = Cli::parse();

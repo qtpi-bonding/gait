@@ -43,6 +43,31 @@ crate = "message-attestation"
 expression = "LicenseRef-qtpi-unlicensed"
 license-files = []
 
+[[licenses.clarify]]
+crate = "coded-error"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.clarify]]
+crate = "coded-error-derive"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.clarify]]
+crate = "concord-telemetry"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.clarify]]
+crate = "concord-telemetry-derive"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.clarify]]
+crate = "concord-telemetry-proto"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
 [[licenses.exceptions]]
 crate = "identity-crypto"
 allow = ["LicenseRef-qtpi-unlicensed"]
@@ -53,4 +78,24 @@ allow = ["LicenseRef-qtpi-unlicensed"]
 
 [[licenses.exceptions]]
 crate = "message-attestation"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "coded-error"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "coded-error-derive"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "concord-telemetry"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "concord-telemetry-derive"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "concord-telemetry-proto"
 allow = ["LicenseRef-qtpi-unlicensed"]

@@ -6,6 +6,16 @@ use crate::proto::gait::sandbox::v1::{Feedback, Impulse};
 use super::{feedback_result, TurnCtx};
 use crate::turn::spine::handlers::{error_feedback, SpawnAgentArgs};
 
+#[cfg(feature = "telemetry")]
+fn emit_agent_spawned(session_id: &str, parent_session_id: &str, agent_name: &str) {
+    concord_telemetry::event!(gait_events::gait::events::v1::AgentSpawned {
+        source_record_id: session_id.to_owned(),
+        session_id: parent_session_id.to_owned(),
+        child_session_id: session_id.to_owned(),
+        agent_name: agent_name.to_owned(),
+    });
+}
+
 /// Parse a proto `Struct` from an Impulse into `SpawnAgentArgs`.
 pub(crate) fn parse_spawn_args(impulse: &Impulse) -> SpawnAgentArgs {
     let s = impulse.args.as_ref();
@@ -67,11 +77,16 @@ pub(crate) fn launch_child(
     .to_process_argv();
     if detached {
         let mut cmd = std::process::Command::new(&ctx.exe);
+        crate::launch::with_trace_env(&mut cmd);
         cmd.args(&argv)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let result = ctx.group.spawn_detached(cmd);
+        if result.is_ok() {
+            #[cfg(feature = "telemetry")]
+            emit_agent_spawned(session_id, &ctx.session_id, "spawn_agent");
+        }
         let rec = crate::diagnostic::DiagRecord::lifecycle(
             &ctx.session_id,
             crate::diagnostic::Phase::AwaitFeedback,
@@ -90,11 +105,16 @@ pub(crate) fn launch_child(
         result.map(|_| None).map_err(Into::into)
     } else {
         let mut cmd = std::process::Command::new(&ctx.exe);
+        crate::launch::with_trace_env(&mut cmd);
         cmd.args(&argv)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let result = ctx.group.spawn_enrolled(cmd);
+        if result.is_ok() {
+            #[cfg(feature = "telemetry")]
+            emit_agent_spawned(session_id, &ctx.session_id, "spawn_agent");
+        }
         let rec = crate::diagnostic::DiagRecord::lifecycle(
             &ctx.session_id,
             crate::diagnostic::Phase::AwaitFeedback,
@@ -277,6 +297,25 @@ pub(crate) fn build_subagent_feedback(
             "status": "failed",
             "summary": format!("subagent exited (code {exit_code}) without completing"),
         })),
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod telemetry_tests {
+    use super::emit_agent_spawned;
+
+    #[test]
+    fn agent_spawned_emits_once() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let child = format!("child-{}", std::process::id());
+        emit_agent_spawned(&child, "parent", "researcher");
+        let event = capture
+            .single_event_where::<gait_events::gait::events::v1::AgentSpawned>(
+                |value| value.source_record_id == child,
+            );
+        assert_eq!(event.session_id, "parent");
+        assert_eq!(event.child_session_id, child);
+        assert_eq!(event.agent_name, "researcher");
     }
 }
 

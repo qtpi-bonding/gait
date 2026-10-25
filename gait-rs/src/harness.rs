@@ -107,14 +107,23 @@ impl HarnessBackend for NativeHarnessBackend {
                         idempotency_key: idempotency_key.clone(),
                     };
                     let repos = crate::git::Repos::production();
-                    match crate::session::completion::notify_parent(
+                    let notify_result = crate::session::completion::notify_parent(
                         &self.gait_dir,
                         &repos,
                         target_session,
                         &c,
                         self.identity.as_deref(),
                         &crate::tools::spawn_agent::wall_clock_secs,
-                    ) {
+                    );
+                    #[cfg(feature = "telemetry")]
+                    crate::turn::spine::emit_agent_reported(
+                        &idempotency_key,
+                        target_session,
+                        &from_session,
+                        &status,
+                        &notify_result,
+                    );
+                    match notify_result {
                         crate::session::completion::NotifyOutcome::Woke(req) => {
                             crate::launch::spawn_wake(&req);
                         }

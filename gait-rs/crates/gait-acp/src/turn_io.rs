@@ -327,13 +327,30 @@ impl AcpTurnSource {
                 .into_iter()
                 .map(|b| (b, None).into())
                 .collect();
+        let direct_prompt = matches!(&claim, gait_core::port::input::ProvenanceClaim::Absent);
         if let Some(first) = bodies.first_mut() {
             *first = gait_core::port::input::InputEnvelope::with_claim(message_body, claim);
         }
+        let on_durable = if direct_prompt {
+            let event_session = sid.clone();
+            Some(Box::new(move || {
+                concord_telemetry::event!(gait_events::gait::events::v1::PromptAccepted {
+                    source_record_id: event_session.clone(),
+                    session_id: event_session.clone(),
+                    message_count: 1,
+                    message_ids: vec![event_session.clone()],
+                    source: gait_events::gait::events::v1::PromptSource::Direct as i32,
+                    author: None,
+                });
+                Ok(())
+            }) as gait_core::port::input::OnDurable)
+        } else {
+            None
+        };
         Self {
             first: Some(TurnStart::Input {
                 bodies,
-                on_durable: None,
+                on_durable,
             }),
             cx,
             session_id,

@@ -2664,7 +2664,7 @@ async fn schema_bound_plain_text_always_errors_after_nudges() {
     .await;
 
     assert!(
-        matches!(&result, Ok(crate::turn::TurnResult::Failed { ended, message })
+        matches!(&result, Ok(crate::turn::TurnResult::Failed { ended, message, .. })
             if ended == "error" && message.contains("structured_done")),
         "expected Ok(Failed{{error}}) after nudges exhausted, got: {result:?}"
     );

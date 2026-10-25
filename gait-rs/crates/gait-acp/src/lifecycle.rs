@@ -21,6 +21,7 @@ use gait_ops::session::BulkVerb;
 
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::replay_updates;
+use crate::error::{self, PromptError};
 
 /// Resolve a persisted session against the request's claimed workspace.
 ///
@@ -87,22 +88,22 @@ pub fn load_session(
         req.mcp_servers.is_empty(),
         req.additional_directories.is_empty(),
     ) {
-        return responder.respond_with_internal_error(e);
+        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e)), error::LOAD_SESSION));
     }
     let gait_dir = match persisted_session_for_cwd(&sid, &req.cwd) {
         Ok(dir) => dir,
-        Err(e) => return responder.respond_with_internal_error(e),
+        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e)), error::LOAD_SESSION)),
     };
     let events = match gait_state::session::log::read_events(&gait_state::session::live::log_path(
         &gait_dir, &sid,
     )) {
         Ok(events) => events,
-        Err(e) => return responder.respond_with_internal_error(e.to_string()),
+        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e.to_string())), error::LOAD_SESSION)),
     };
     let updates = replay_updates(&events);
     let inserted = match map.attach_existing(gait_dir.clone(), sid.clone(), req.cwd.clone()) {
         Ok(inserted) => inserted,
-        Err(e) => return responder.respond_with_internal_error(e),
+        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e)), error::LOAD_SESSION)),
     };
     for update in updates {
         if let Err(e) =
@@ -111,7 +112,7 @@ pub fn load_session(
             if inserted {
                 map.remove(&sid);
             }
-            return responder.respond_with_internal_error(format!("failed to replay session: {e}"));
+            return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::ReplayFailed(e.to_string())), error::LOAD_SESSION));
         }
     }
     responder.respond(LoadSessionResponse::new().modes(Some(restored_modes(&gait_dir, &events))))
@@ -128,20 +129,20 @@ pub fn resume_session(
         req.mcp_servers.is_empty(),
         req.additional_directories.is_empty(),
     ) {
-        return responder.respond_with_internal_error(e);
+        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e)), error::RESUME_SESSION));
     }
     let gait_dir = match persisted_session_for_cwd(&sid, &req.cwd) {
         Ok(dir) => dir,
-        Err(e) => return responder.respond_with_internal_error(e),
+        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e)), error::RESUME_SESSION)),
     };
     let events = match gait_state::session::log::read_events(&gait_state::session::live::log_path(
         &gait_dir, &sid,
     )) {
         Ok(events) => events,
-        Err(e) => return responder.respond_with_internal_error(e.to_string()),
+        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e.to_string())), error::RESUME_SESSION)),
     };
     if let Err(e) = map.attach_existing(gait_dir.clone(), sid, req.cwd) {
-        return responder.respond_with_internal_error(e);
+        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e)), error::RESUME_SESSION));
     }
     responder.respond(ResumeSessionResponse::new().modes(Some(restored_modes(&gait_dir, &events))))
 }
@@ -211,7 +212,7 @@ pub fn close_session(
 ) -> Result<(), agent_client_protocol::Error> {
     let sid = req.session_id.0.to_string();
     let Some(gait_dir) = gait_dir_for_session(map, &sid) else {
-        return responder.respond_with_internal_error(format!("unknown session: {sid}"));
+        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::CLOSE_SESSION));
     };
 
     // Cancel + join any live turn on this connection FIRST — bulk_act takes
@@ -221,7 +222,7 @@ pub fn close_session(
 
     let plan = match gait_ops::session::classify_bulk(&gait_dir, BulkVerb::Persist) {
         Ok(p) => p,
-        Err(e) => return responder.respond_with_internal_error(e.to_string()),
+        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e.to_string())), error::CLOSE_SESSION)),
     };
     if !plan.eligible.iter().any(|s| s == &sid) {
         let why = plan
@@ -230,7 +231,7 @@ pub fn close_session(
             .find(|(id, _)| id == &sid)
             .map(|(_, r)| r.clone())
             .unwrap_or_else(|| "session is not eligible to persist".to_string());
-        return responder.respond_with_internal_error(format!("cannot close {sid}: {why}"));
+        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::CannotClose { sid: sid.clone(), why }), error::CLOSE_SESSION));
     }
     let one = gait_ops::session::BulkPlan {
         verb: BulkVerb::Persist,
@@ -239,7 +240,7 @@ pub fn close_session(
     };
     match gait_ops::session::bulk_act(&gait_dir, &one, /* confirmed */ true, /* force */ true) {
         Ok(_) => responder.respond(CloseSessionResponse::new()),
-        Err(e) => responder.respond_with_internal_error(e.to_string()),
+        Err(e) => responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e.to_string())), error::CLOSE_SESSION)),
     }
 }
 
@@ -252,7 +253,7 @@ pub fn delete_session(
 ) -> Result<(), agent_client_protocol::Error> {
     let sid = req.session_id.0.to_string();
     let Some(gait_dir) = gait_dir_for_session(map, &sid) else {
-        return responder.respond_with_internal_error(format!("unknown session: {sid}"));
+        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::DELETE_SESSION));
     };
 
     map.remove(&sid); // cancel + join any live turn
@@ -266,7 +267,7 @@ pub fn delete_session(
     // eligible.len() <= 1 exemption.
     match gait_ops::session::bulk_act(&gait_dir, &plan, true, true) {
         Ok(_) => responder.respond(DeleteSessionResponse::new()),
-        Err(e) => responder.respond_with_internal_error(e.to_string()),
+        Err(e) => responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e.to_string())), error::DELETE_SESSION)),
     }
 }
 

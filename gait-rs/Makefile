@@ -37,6 +37,7 @@ manual:
 
 # Run the same checks the pre-commit hook enforces.
 check: lint test
+	./scripts/check.sh
 
 # gait-min composition check: formatting, Min feature tests, a Min binary
 # build, and a hard dependency-absence assertion. Uses an explicit `if`
@@ -49,7 +50,7 @@ check-min:
 	cargo clippy -p gait-bin --no-default-features --features min --all-targets -- -D warnings
 	cargo test -p gait-bin --no-default-features --features min
 	cargo build -p gait-bin --no-default-features --features min --bin gait-min
-	@if cargo tree -p gait-bin -e normal --no-default-features --features min | rg -q 'gait-workflow|gait-acp|termimad|syntect|termbg|rmcp|wasmtime'; then \
+	@if cargo tree -p gait-bin -e normal --no-default-features --features min | rg -q 'gait-workflow|gait-acp|termimad|syntect|termbg|rmcp|wasmtime|concord-telemetry|opentelemetry'; then \
 		echo "min composition pulled in an excluded dependency" >&2; \
 		exit 1; \
 	fi

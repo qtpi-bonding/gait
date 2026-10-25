@@ -43,6 +43,8 @@ pub(crate) use handlers::tool::delegated_target;
 
 mod relay;
 pub use relay::{relay_brain_turn, SignalSlot};
+#[cfg(feature = "telemetry")]
+pub(crate) use relay::emit_agent_reported;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

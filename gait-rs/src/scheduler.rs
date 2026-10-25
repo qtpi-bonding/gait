@@ -59,7 +59,7 @@ fn summarize(result: &TurnResult) -> (String, String) {
             "cancelled".to_string(),
             "turn cancelled by user".to_string(),
         ),
-        TurnResult::Failed { ended, message } => (ended.clone(), message.clone()),
+        TurnResult::Failed { ended, message, .. } => (ended.clone(), message.clone()),
     }
 }
 

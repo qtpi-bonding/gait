@@ -1,0 +1,21 @@
+[package]
+name = "gait-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668" }
+prost = "0.13"
+pbjson = "0.7"
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668" }
+prost-build = "0.13"
+pbjson-build = "0.7"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", features = ["testing"] }

@@ -212,12 +212,7 @@ impl Tool for ShellTool {
             cmd.args(["-c", &wrapped])
                 .current_dir(&cwd)
                 .env_clear()
-                .envs(std::env::vars().filter(|(k, _)| {
-                    matches!(
-                        k.as_str(),
-                        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
-                    )
-                }));
+                .envs(std::env::vars().filter(|(k, _)| crate::env_passes_to_children(k)));
 
             let (child, pid, started_at) =
                 crate::process::spawn_detached_to_file(cmd, &log_path)
@@ -279,7 +274,7 @@ impl Tool for ShellTool {
             .envs(std::env::vars().filter(|(k, _)| {
                 matches!(
                     k.as_str(),
-                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR"
+                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT"
                 )
             }))
             // Suppress colour output: programs check TERM and NO_COLOR before emitting ANSI.
@@ -465,7 +460,7 @@ impl ShellTool {
             .envs(std::env::vars().filter(|(k, _)| {
                 matches!(
                     k.as_str(),
-                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR"
+                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT"
                 )
             }))
             .env("TERM", "dumb")

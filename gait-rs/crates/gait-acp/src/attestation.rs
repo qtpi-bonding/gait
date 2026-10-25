@@ -31,6 +31,7 @@ use message_attestation::{
     AttestationError, AttestationPolicy, DEFAULT_META_KEY, FileReplayStore, PendingSequence,
     ReplayStore, Verified, confirm, verify_attestation,
 };
+use crate::error::PromptError;
 
 /// The per-agent replay store, inside the agent directory. One file per agent,
 /// shared by every session this process serves.
@@ -259,9 +260,24 @@ pub fn verify_prompt(
         return Ok(None);
     }
     let attestor = attestor.ok_or_else(|| {
-        anyhow!("attestation present but this process has no agent identity to verify it against")
+        coded_error::into_anyhow(PromptError::AttestationMissingOwnDevices)
     })?;
-    attestor.verify(meta)
+    attestor.verify(meta).map_err(|error| {
+        let text = error.to_string();
+        let typed = match coded_error::downcast_ref::<AttestationError>(&error) {
+            Some(AttestationError::UnknownKeyId(key)) =>
+                PromptError::AttestationUnknownKey(key.clone()),
+            Some(AttestationError::BadSignature) => PromptError::AttestationBadSignature,
+            Some(AttestationError::NotARecipient) => PromptError::AttestationNotRecipient,
+            Some(AttestationError::Replay { key_id, last, got }) =>
+                PromptError::AttestationReplay(format!("replay for {key_id}: last {last}, got {got}")),
+            Some(AttestationError::EmptyMessages) => PromptError::AttestationEmpty,
+            Some(AttestationError::OwnDevicesMissing) =>
+                PromptError::AttestationMissingOwnDevices,
+            _ => PromptError::Internal(text),
+        };
+        coded_error::into_anyhow(typed)
+    })
 }
 
 /// Reads a `--trusted-multimatrix-key` file: the PUBLIC key-duo JWK of a

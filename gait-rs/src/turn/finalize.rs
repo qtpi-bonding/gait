@@ -183,9 +183,17 @@ pub(crate) async fn finalize(
             // No event, no commit, no post_turn — preserved.
             // Now a typed outcome instead of a bare Err: the turn still counts
             // as failed (exit 1), but `ended` carries the reason on stdout.
+            let facts = coded_error::facts_anyhow(&err);
+            let (code, class) = if facts.code == coded_error::UNKNOWN_CODE {
+                (None, None)
+            } else {
+                (Some(facts.code.to_string()), Some(facts.class.as_str().to_string()))
+            };
             Ok(TurnResult::Failed {
                 ended: "error".into(),
                 message: err.to_string(),
+                code,
+                class,
             })
         }
 
@@ -224,6 +232,8 @@ pub(crate) async fn finalize(
             Ok(TurnResult::Failed {
                 ended: "max_steps".into(),
                 message: format!("reached max steps ({max_iter}) without completion"),
+                code: None,
+                class: None,
             })
         }
     }
@@ -720,7 +730,7 @@ mod tests {
         .await
         .expect("Fail now returns Ok(Failed), not Err");
         assert!(
-            matches!(&result, TurnResult::Failed { ended, message }
+            matches!(&result, TurnResult::Failed { ended, message, .. }
                 if ended == "error" && message.contains("boom")),
             "expected Ok(Failed{{error, message contains boom}}), got: {result:?}"
         );
@@ -749,12 +759,59 @@ mod tests {
         .await
         .expect("MaxSteps now returns Ok(Failed), not Err");
         assert!(
-            matches!(&result, TurnResult::Failed { ended, message }
+            matches!(&result, TurnResult::Failed { ended, message, .. }
                 if ended == "max_steps" && message.contains("max steps (100)")),
             "expected Ok(Failed{{max_steps, max steps (100)}}), got: {result:?}"
         );
         assert!(fx.spy_hook.outcomes().is_empty());
         // No pending daemon/agent completions in this fixture (empty ingestor,
         // no daemons.jsonl) — the drain body is a no-op, so no commit either.
+    }
+
+    #[tokio::test]
+    async fn provider_failure_keeps_code_and_class_in_failed_result() {
+        let fx = fixture();
+        let env = env_from(&fx);
+        let persist = unsealed(&fx);
+        let mut state = TurnState::new(&crate::profile::ResolvedProfile::for_test(
+            fx.provider.clone(), vec![], vec![], vec![],
+        ));
+        let typed = ProviderError::Overloaded;
+        let error = coded_error::attach(anyhow::anyhow!("provider overloaded"), &typed);
+        let result = finalize(&env, &mut state, &persist, StepOutcome::Fail(error))
+            .await
+            .unwrap();
+        match result {
+            TurnResult::Failed { code, class, .. } => {
+                assert_eq!(code.as_deref(), Some("gait.provider.overloaded"));
+                assert_eq!(class.as_deref(), Some("infrastructure"));
+            }
+            other => panic!("expected failed result, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn uncoded_failure_has_no_code() {
+        let fx = fixture();
+        let env = env_from(&fx);
+        let persist = unsealed(&fx);
+        let mut state = TurnState::new(&crate::profile::ResolvedProfile::for_test(
+            fx.provider.clone(), vec![], vec![], vec![],
+        ));
+        let result = finalize(
+            &env,
+            &mut state,
+            &persist,
+            StepOutcome::Fail(anyhow::anyhow!("plain failure")),
+        )
+        .await
+        .unwrap();
+        match result {
+            TurnResult::Failed { code, class, .. } => {
+                assert_eq!(code, None);
+                assert_eq!(class, None);
+            }
+            other => panic!("expected failed result, got {other:?}"),
+        }
     }
 }

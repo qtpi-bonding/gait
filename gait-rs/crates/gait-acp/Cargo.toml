@@ -5,14 +5,19 @@ edition = "2024"
 rust-version = "1.89"
 
 [dependencies]
-gait-core = { path = "../..", features = ["mcp", "code-mode"] }
+gait-core = { path = "../..", features = ["mcp", "code-mode", "telemetry"] }
 gait-turn-runner = { path = "../gait-turn-runner" }
 gait-ops = { path = "../gait-ops" }
 gait-state = { path = "../gait-state" }
 gait-identity = { path = "../gait-identity" }
 gait-proto = { path = "../gait-proto" }
+gait-events = { path = "../gait-events" }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668" }
+tracing = "0.1"
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "be55165013f5d557ecf8e1b1cf784fb3d07e9753", features = ["cli", "acp"] }
+thiserror = "1"
 agent-client-protocol = { version = "1.1", features = ["unstable_elicitation"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "signal"] }
 tokio-util = "0.7"
 anyhow = "1"
 identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "c6a5e8da1ccc6500abd9b22171a06f36da5a1da8" }
@@ -30,6 +35,7 @@ name = "mock_brain_acp"
 path = "src/bin/mock_brain_acp.rs"
 
 [dev-dependencies]
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", features = ["testing"] }
 tempfile = "3"
 gait-proto = { path = "../gait-proto" }
 git2 = "0.20"

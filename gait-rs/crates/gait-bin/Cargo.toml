@@ -27,7 +27,7 @@ default = ["full"]
 # / code-mode surfaces. Deliberately does NOT include `local` — see the
 # round-7 correction below.
 full = [
-    "workflow", "rich-tui",
+    "workflow", "rich-tui", "telemetry",
     "gait-core/mcp", "gait-core/code-mode",
 ]
 # `gait-min`'s composition: no rich-TUI renderer, no `gait-workflow`
@@ -35,6 +35,7 @@ full = [
 # comes from what is *not* enabled elsewhere, not from anything this feature
 # itself turns on.
 min = []
+telemetry = ["dep:concord-telemetry", "dep:tracing", "gait-core/telemetry"]
 # `gait workflow` / REPL `/workflow` (real YAML DAG runs). Forwards into
 # `gait-cli`'s and `gait-repl`'s own `workflow` features, which gate
 # `dep:gait-workflow` there.
@@ -75,9 +76,12 @@ gait-proto = { path = "../gait-proto" }
 gait-state = { path = "../gait-state" }
 gait-identity = { path = "../gait-identity" }
 uuid = { version = "1", features = ["v4"] }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", optional = true }
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
 prost        = "0.13"
 pbjson-types = "0.7"
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", features = ["testing"] }

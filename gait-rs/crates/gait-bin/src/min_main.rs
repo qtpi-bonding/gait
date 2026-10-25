@@ -7,19 +7,34 @@ fn cwd_or_dot() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    let raw: Vec<String> = std::env::args().collect();
+    let identity = gait_identity::IdentityContext::from_env();
+    let agent_id = identity.as_ref().ok().and_then(|value| value.as_ref())
+        .map(|ctx| ctx.agent_id().to_string());
+    if let Err(error) = gait_bin::install_agent_identity(identity) {
+        return gait_cli::cli::error::report(&error);
+    }
+    let is_role = raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]);
+    let _guard = if !is_role {
+        Some(gait_bin::init_telemetry("gait-min", env!("CARGO_PKG_VERSION"), agent_id))
+    } else {
+        None
+    };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to start the tokio runtime")
+        .block_on(run(raw))
+}
+
+async fn run(raw: Vec<String>) -> ExitCode {
     // Pre-check for IPC subcommands (__brain / __run-tool) before clap
     // parsing, same DAG reason as full `gait`'s main.rs (gait-core can't
     // import from gait-bin). `__local-runner` is intentionally absent here:
     // `gait-min` has no `local` feature wiring.
     // Installed before any dispatch so role children (brain, daemon-exit) verify
     // direct provenance the same way `gait` does.
-    let identity = gait_identity::IdentityContext::from_env();
-    if let Err(error) = gait_bin::install_agent_identity(identity) {
-        return gait_cli::cli::error::report(&error);
-    }
-    let raw: Vec<String> = std::env::args().collect();
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
         gait_core::__dispatch_role(&raw[1..]).await;
         return ExitCode::from(1);

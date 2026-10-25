@@ -200,6 +200,8 @@ message FinalizedTurn {
   repeated string blocks = 6;
   uint64 started_ms = 7;
   google.protobuf.Duration active_duration = 8;
+  optional string error_code = 9;
+  optional string error_class = 10;
 }
 
 // Brain → spine: the current turn draft is ready for spine-side finalization.

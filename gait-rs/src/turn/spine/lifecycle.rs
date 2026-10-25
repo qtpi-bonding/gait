@@ -365,6 +365,8 @@ pub(crate) async fn teardown(
         message: "brain exited without a finalized turn".into(),
         ..Default::default()
     });
+    #[cfg(feature = "telemetry")]
+    let draft_for_event = draft.clone();
     let turn = durable_turn_result(log, started, draft, brain_failed);
     let turn_event = log.append_body(
         crate::proto::events::turn_result(turn.clone()),
@@ -373,6 +375,8 @@ pub(crate) async fn teardown(
             turn: started.turn_index,
         },
     )?;
+    #[cfg(feature = "telemetry")]
+    crate::turn::spine::relay::emit_turn_completed(session_id, &draft_for_event);
 
     use crate::proto::gait::log::v1 as pb;
     use pb::turn_result::Outcome;

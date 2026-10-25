@@ -15,6 +15,15 @@ pub use gait_sandbox::{process, sandbox};
 pub use gait_types::{config, diagnostic, sandbox_grant, types};
 pub mod embed;
 pub mod launch;
+
+/// The environment a hand or a shell command inherits (everything else is
+/// cleared). `TRACEPARENT` is the only variable added for tracing.
+pub(crate) fn env_passes_to_children(key: &str) -> bool {
+    matches!(
+        key,
+        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT"
+    )
+}
 pub mod modes;
 pub mod port;
 pub mod profile;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-platform", "crates/gait-auth", "crates/gait-provider", "crates/gait-local", "crates/gait-llama-cpp", "crates/gait-workflow", "crates/gait-turn-runner", "crates/gait-ops", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp", "crates/gait-identity", "crates/gait-testkit", "crates/gait-watch", "crates/gait-codemode", "crates/gait-codemode-js", "xtask"]
+members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-platform", "crates/gait-auth", "crates/gait-provider", "crates/gait-local", "crates/gait-llama-cpp", "crates/gait-workflow", "crates/gait-turn-runner", "crates/gait-ops", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp", "crates/gait-events", "crates/gait-identity", "crates/gait-testkit", "crates/gait-watch", "crates/gait-codemode", "crates/gait-codemode-js", "xtask"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -41,6 +41,8 @@ tokio-stream       = "0.1"
 tokio-util         = "0.7"
 thiserror          = "1"
 coded-error        = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "be55165013f5d557ecf8e1b1cf784fb3d07e9753" }
+concord-telemetry  = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", optional = true }
+tracing            = { version = "0.1", optional = true }
 eventsource-stream = "0.2"
 async-stream       = "0.3"
 async-trait        = "0.1"
@@ -67,6 +69,7 @@ gait-proto      = { path = "crates/gait-proto" }
 gait-identity   = { path = "crates/gait-identity" }
 gait-state      = { path = "crates/gait-state" }
 gait-ops        = { path = "crates/gait-ops" }
+gait-events     = { path = "crates/gait-events", optional = true }
 gait-codemode   = { path = "crates/gait-codemode", optional = true }
 prost          = "0.13"
 pbjson-types   = "0.7"
@@ -80,6 +83,7 @@ hex            = "0.4"
 
 [features]
 testing = []
+telemetry = ["dep:concord-telemetry", "dep:gait-events", "dep:tracing"]
 local = ["gait-provider/local-native"]
 # `gait-bin`'s `full`/`min` composition (Task 5). `min` itself is a no-op here
 # — it only exists so `cargo test -p gait-core --features min` resolves when
@@ -104,6 +108,7 @@ gait-auth = { path = "crates/gait-auth", features = ["testing"] }
 # gait-state behind `feature = "testing"`; enable it for the test build only.
 gait-state = { path = "crates/gait-state", features = ["testing"] }
 gait-repl = { path = "crates/gait-repl", features = ["dev-harness"] }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", features = ["testing"] }
 
 [[bin]]
 name = "mock_brain"

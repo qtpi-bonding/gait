@@ -161,7 +161,9 @@ mod full_one_shot {
             "--allow-intree".to_string(),
         ];
 
-        gait_cli::cli::run::cmd_run(&argv, gait_dir.clone(), gait_dir.clone()).await;
+        gait_cli::cli::run::cmd_run(&argv, gait_dir.clone(), gait_dir.clone())
+            .await
+            .expect("cmd_run succeeds against the mock brain");
 
         let events = gait_core::session::Ingestor::from_session(&gait_dir, &session_id)
             .events()

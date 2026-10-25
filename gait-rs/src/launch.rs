@@ -25,6 +25,25 @@
 
 use std::path::PathBuf;
 
+/// The environment variable a child `gait` or hand reads its parent trace from
+/// (the same name `concord_telemetry::propagation::TRACEPARENT_ENV` carries).
+#[cfg(any(feature = "telemetry", test))]
+pub(crate) const TRACEPARENT_ENV: &str = "TRACEPARENT";
+
+#[cfg(any(feature = "telemetry", test))]
+pub(crate) fn with_trace_env_from(cmd: &mut std::process::Command, traceparent: Option<String>) {
+    if let Some(tp) = traceparent {
+        cmd.env(TRACEPARENT_ENV, tp);
+    }
+}
+
+pub(crate) fn with_trace_env(cmd: &mut std::process::Command) {
+    #[cfg(feature = "telemetry")]
+    with_trace_env_from(cmd, concord_telemetry::propagation::traceparent());
+    #[cfg(not(feature = "telemetry"))]
+    let _ = cmd;
+}
+
 // ── RunLaunch (sites 1, 3, 4, 5 — `RunArgs` in gait-cli) ────────────────────
 
 /// Flags for `gait run` / the bare-positional `gait "task"` entry, parsed by
@@ -178,6 +197,7 @@ pub fn spawn_wake(req: &crate::session::completion::WakeRequest) {
     .to_process_argv();
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
     let mut cmd = std::process::Command::new(&exe);
+    with_trace_env(&mut cmd);
     cmd.args(&argv)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -376,6 +396,35 @@ impl DaemonExitLaunch {
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn with_trace_env_adds_nothing_without_a_trace() {
+        let mut cmd = std::process::Command::new("gait");
+        with_trace_env_from(&mut cmd, None);
+        assert!(cmd.get_envs().all(|(key, _)| key != "TRACEPARENT"));
+    }
+
+    #[test]
+    fn with_trace_env_sets_traceparent_when_present() {
+        let value = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let mut cmd = std::process::Command::new("gait");
+        with_trace_env_from(&mut cmd, Some(value.to_string()));
+        assert_eq!(
+            cmd.get_envs()
+                .find(|(key, _)| *key == "TRACEPARENT")
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str()),
+            Some(value)
+        );
+    }
+
+    #[test]
+    fn traceparent_is_the_only_new_env_var_passed() {
+        assert!(crate::env_passes_to_children("TRACEPARENT"));
+        assert!(!crate::env_passes_to_children("AWS_SECRET_ACCESS_KEY"));
+        assert!(!crate::env_passes_to_children("GAIT_AGENT_DIR"));
+        assert!(!crate::env_passes_to_children("OPENAI_API_KEY"));
+    }
 
     #[test]
     fn brain_launch_round_trips_through_brain_args() {

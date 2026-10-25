@@ -123,6 +123,8 @@ pub enum TurnResult {
     Failed {
         ended: String,
         message: String,
+        code: Option<String>,
+        class: Option<String>,
     },
 }
 
