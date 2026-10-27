@@ -1,0 +1,459 @@
+id: gait
+verified_at: 32b0ee9e
+public:
+  name: gait
+  summary: Coding agent harness where each turn is a fresh sandboxed process and state is folded from
+    an append-only log.
+  status: active
+  stage: released
+  stack:
+  - Rust
+  - Protobuf
+  - libgit2
+  - Wasmtime
+  links:
+  - type: repo
+    url: https://github.com/qtpi-bonding/gait
+  screenshots:
+  - file: thumbnail.png
+    alt: Gait terminal session undoing a turn, with the git diff of the change
+private:
+  started: 2026-06
+  visibility: public
+  license: AGPL-3.0-or-later
+  ownership: designed and directed; code written with AI assistance
+  build: agentic
+facts:
+- id: three-process-turns
+  assertion: In the sealed path each turn runs as three kinds of process. The parent (the spine) is the
+    only process that appends to the session log; the model process (gait __brain) sends append requests
+    over a stdio protocol and the tool processes return buffered events to the parent. The model process
+    seals itself at start-up with no user-readable or writable paths (on macOS only OS system directories,
+    file metadata and executable mapping stay readable) and unrestricted outbound network. Each tool call
+    is a separate short-lived gait __run-tool process that applies a per-call seal and exits after one
+    response. The seals are enforced by the kernel only on macOS (Seatbelt); on Linux the Landlock seal is
+    not implemented and the processes run unsealed. The tool seal is skipped when sandbox.on is false or
+    a shell_whitelist entry grants unsandbox; the model-process seal is not skipped by those. The in-process
+    embed path runs without the process split.
+  evidence:
+  - gait-rs/docs/sandbox-security.md
+  - gait-rs/crates/gait-sandbox/src/sandbox.rs
+  - gait-rs/src/turn/brain.rs
+  - gait-rs/src/turn/hand.rs
+  - gait-rs/src/turn/spine/relay.rs
+  - gait-rs/src/turn/spine/handlers/tool.rs
+  - gait-rs/tests/seatbelt_seal.rs
+- id: daemonless-turns
+  assertion: Each turn runs in a fresh model process that exits when the turn ends, and a new process
+    rebuilds turn state from the session log on disk. The exceptions are the ACP adapter, a long-running
+    stdio server with an in-memory session table, and the REPL, which loops in one process; both hold
+    connection handles and input, not turn state, and each REPL iteration still starts a fresh model process.
+    The shell tool can start detached background processes, which are tracked in a daemons.jsonl registry.
+    The README says a killed mid-turn process is recovered by rebuilding from the log; that recovery was
+    not exercised for this entry.
+  evidence:
+  - gait-rs/docs/architecture.md
+  - gait-rs/src/turn/spine/relay.rs
+  - gait-rs/crates/gait-acp/src/session_map.rs
+  - gait-rs/crates/gait-repl/src/chat.rs
+  - README.md
+- id: event-log-jsonl
+  assertion: Events are appended as one proto3-JSON line each to a per-session log.jsonl at <gait-dir>/.active/<session>/sessions/<session>/log.jsonl,
+    flushed with fsync per line. In the sealed turn path the parent process is the only writer. Streaming
+    text deltas go to an in-process channel only and are never written. The session directory is a git
+    worktree on a session/<id> branch of the gait workspace repository (not the user's code repository)
+    in which only log.jsonl and diagnostic.jsonl are tracked. At the end of each turn, including pauses,
+    the parent commits it if the tree changed; a failed commit is ignored. The branch merges into main
+    on gait persist. One-off ephemeral turns keep an in-memory log and write nothing.
+  evidence:
+  - gait-rs/crates/gait-state/src/proto/emitter.rs
+  - gait-rs/crates/gait-proto/src/wire.rs
+  - gait-rs/crates/gait-state/src/session/live.rs
+  - gait-rs/crates/gait-state/src/git/trace.rs
+  - gait-rs/src/turn/spine/lifecycle.rs
+  - gait-rs/src/turn/session_log.rs
+- id: state-from-log
+  assertion: Conversation state is rebuilt by folding the session log (applying Redact and Replace events
+    and honouring Summary compaction events), and session- and once-scoped permission grants are folded
+    from PermissionsReply events, so the log both defines that state and records what happened. Model
+    choice, enabled skills, MCP servers and plugins, working directory and active mode are also folded
+    from log events, seeded from the config hierarchy (gait.jsonc, agent frontmatter, CLI flags). Global
+    allow grants are written to <gait-dir>/gait.jsonc and mode allow grants to modes/<name>/MODE.md, outside
+    the log; persistent deny grants are not built. Each event carries a SHA-256 hash of its body, but events
+    are not hash-chained to each other.
+  evidence:
+  - gait-rs/docs/architecture.md
+  - gait-rs/crates/gait-state/src/session/retrace/mod.rs
+  - gait-rs/crates/gait-state/src/permissions/grants.rs
+  - gait-rs/crates/gait-state/src/permissions/persist.rs
+  - gait-rs/crates/gait-state/src/modes.rs
+  - gait-rs/crates/gait-proto/src/envelope.rs
+- id: provider-agnostic
+  assertion: gait-provider keeps a static registry of 17 providers, selected by a provider/model string.
+    It speaks four wire formats. Anthropic Messages is used by anthropic and minimax. OpenAI Chat Completions
+    is used by openai, groq, mistral, openrouter, deepinfra, xai, cerebras, togetherai, fireworks, perplexity,
+    opencode and the local servers ollama and lmstudio. Two Responses-style wires serve the ChatGPT-subscription
+    providers openai-codex and openai-signin. All implement one Provider trait, and the turn code holds
+    the provider as Arc<dyn Provider>. Base URLs and API-key environment variables live only in the registry,
+    and adding an OpenAI-compatible provider is one registry row.
+  evidence:
+  - gait-rs/crates/gait-provider/src/providers.rs
+  - gait-rs/crates/gait-provider/src/provider.rs
+  - gait-rs/crates/gait-provider/src/factory.rs
+- id: kernel-sandbox
+  assertion: On macOS, the model process and each tool process apply a deny-by-default kernel Seatbelt
+    profile to themselves (through libsandbox) before doing work; the tool seal applies only when sandbox.on
+    is true (the default) and the command is not whitelisted with unsandbox. If the profile cannot be compiled
+    or applied, the process continues unsealed and logs a SandboxApplied event with enforcement "unavailable".
+    On Linux the Landlock sandbox is a stub that always reports unavailable, so Linux runs unsealed without
+    refusing to start. Other platforms use a no-op sandbox, and the README says Windows is not supported.
+    Seatbelt does not filter by hostname, so allowed network hosts are checked by the application (webfetch),
+    and the sandbox.deny.read/write patterns are enforced by application checks in the tool process, not
+    by the kernel. docs/sandbox-security.md states the threat model and what is not covered. The repository
+    contains no independent security audit.
+  evidence:
+  - gait-rs/crates/gait-sandbox/src/sandbox.rs
+  - gait-rs/src/turn/hand.rs
+  - gait-rs/src/turn/brain.rs
+  - gait-rs/src/turn/spine/handlers/tool.rs
+  - gait-rs/tests/seatbelt_seal.rs
+  - gait-rs/docs/sandbox-security.md
+  - docs/sandbox.md
+  - README.md
+- id: permissions
+  assertion: Tool calls go through a pattern-matched permission gate with three outcomes, checked in this
+    order. Deny always wins, including with --auto-approve. Allow comes next (auto-approve mode allows everything
+    not denied). Otherwise the user is asked. A few tools (clarify, inform, annotate, prune, structured_done)
+    declare themselves passthrough and bypass the gate. The gate runs in the turn loop before a call is
+    dispatched, and the kernel sandbox applies below it, in the tool process. Clarify questions and permission
+    requests are separate event types. Session-scoped allow and deny grants are rebuilt from the log. Deny
+    rules come from config and agent frontmatter; saving a global or mode-scoped deny from an interactive
+    answer is not implemented (only allow can be saved to gait.jsonc or MODE.md).
+  evidence:
+  - gait-rs/crates/gait-state/src/permissions/gate.rs
+  - gait-rs/crates/gait-state/src/permissions/grants.rs
+  - gait-rs/crates/gait-state/src/permissions/persist.rs
+  - gait-rs/src/turn/execute.rs
+  - proto/log.proto
+  - README.md
+- id: three-layer-sandbox-config
+  assertion: The sandbox block of gait.jsonc has three layers. A global ceiling sets readable, writable
+    and network ("off", "*" or a host list). A per-tool floor is set under tools.<name>. Shell-only shell_whitelist
+    entries are exact single-command patterns with grants such as network, write, read, bind or unsandbox,
+    and compound commands never match. A call blocked by the kernel seal or deny patterns is logged as a
+    SandboxDenied event naming the dimension. Network host lists are not enforced by Seatbelt; webfetch
+    checks them in the application.
+  evidence:
+  - docs/sandbox.md
+  - gait-rs/crates/gait-sandbox/src/sandbox.rs
+  - gait-rs/src/turn/spine/handlers/tool.rs
+  - gait-rs/src/turn/hand.rs
+  - proto/log.proto
+- id: sandbox-unlock-flow
+  assertion: In supervised mode (not --auto-approve), when a shell tool fails with a "Permission denied"
+    or "Operation not permitted" signature (or a network-failure signature with network denied), the turn
+    pauses with a SandboxUnlock event and the session shows state awaiting-unlock. The user answers with
+    gait unlock or the REPL /unlock, or pre-grants paths with --unlock <path>. Detection for the shell
+    tool is by matching error text, so it is heuristic. In auto mode the failure is logged and the turn
+    continues.
+  evidence:
+  - gait-rs/src/turn/hand.rs
+  - gait-rs/src/turn/execute.rs
+  - gait-rs/crates/gait-cli/src/cli/session.rs
+  - gait-rs/crates/gait-ops/src/session.rs
+  - proto/log.proto
+  - docs/sandbox.md
+- id: same-capabilities-all-frontends
+  assertion: The CLI, both REPL variants and the ACP adapter all drive ordinary turns through the same
+    gait-turn-runner crate (run_turn_source; the CLI also uses run_single_prompt for a one-shot prompt),
+    so turn execution is not reimplemented per frontend. The frontends still pass different options to
+    it. Only the CLI passes a configured sandbox on/off value (the REPLs and ACP leave it unset, which the
+    runner treats as on). Only ACP can install a file-system delegate that routes file reads and writes
+    through the connected editor, and only when the client advertises both read and write. ACP passes no
+    profile override. Workflows and the rich REPL renderer are not available in every frontend.
+  evidence:
+  - gait-rs/crates/gait-turn-runner/src/lib.rs
+  - gait-rs/crates/gait-cli/src/cli/run.rs
+  - gait-rs/crates/gait-repl/src/chat.rs
+  - gait-rs/crates/gait-repl/src/plain.rs
+  - gait-rs/crates/gait-acp/src/handlers.rs
+  - gait-rs/crates/gait-acp/src/fs_delegate.rs
+- id: repl-lightweight
+  assertion: The gait-repl crate has two renderers. Full gait uses the rich REPL (markdown through termimad,
+    syntax highlighting through syntect, background detection through termbg), compiled only with the rich-tui
+    feature. gait-min uses a plain line-oriented REPL (reedline line editing, no ANSI rendering) that supports
+    only a subset of slash commands (/help, /info, /inference, /auth, /new, /undo, /sandbox, /unlock, /skill,
+    /exit). Both run turns through the shared turn runner, and each keeps its loop state (session id, pending
+    input) in the REPL process while durable session state stays in the log on disk.
+  evidence:
+  - gait-rs/crates/gait-repl/src/plain.rs
+  - gait-rs/crates/gait-repl/src/chat.rs
+  - gait-rs/crates/gait-repl/Cargo.toml
+  - gait-rs/crates/gait-bin/Cargo.toml
+  - gait-rs/docs/gait-min.md
+- id: acp-adapter
+  assertion: gait-acp is a separate binary (its own Cargo package, not a dependency of the gait or gait-min
+    binaries) that serves the Agent Client Protocol over stdio and runs real gait turns through the shared
+    turn runner. It implements initialize, session/new, load, resume, list, close, delete, set_mode, prompt
+    and the cancel notification. It streams message, thought and tool-call updates to the client, asks the
+    client for permission through session/request_permission, asks free-text questions through elicitation/create,
+    and, when the client advertises both fs read and write, routes file reads and writes through the editor.
+    It can require signed message attestations (--require-attestation). Its integration tests use an in-process
+    channel with a mock model; no run against a real editor was done for this entry. The crate-level doc
+    comment still says "Phase 1, connection skeleton" and is out of date.
+  evidence:
+  - gait-rs/crates/gait-acp/src/main.rs
+  - gait-rs/crates/gait-acp/src/lib.rs
+  - gait-rs/crates/gait-acp/src/handlers.rs
+  - gait-rs/crates/gait-acp/src/fs_delegate.rs
+  - gait-rs/crates/gait-acp/tests
+  - gait-rs/crates/gait-bin/Cargo.toml
+- id: embeddable
+  assertion: The turn engine is a Rust library (package gait-core, module gait_core::embed). A host implements
+    three ports (TurnSource for input, TurnSink for output, TurnDriver for per-turn setup) and calls embed::run_loop;
+    the CLI, REPLs, ACP adapter and workflow runner reach it through the shared gait-turn-runner crate.
+    JsonSink hands each stream item and result to a callback as a protobuf-JSON string. Each turn launches
+    a sealed gait __brain child process, so an embedding binary must be gait or gait-acp, implement the
+    same role dispatch, or set GAIT_BRAIN_EXE. No C-ABI/FFI crate, network transport or non-Rust binding
+    is included. docs/embedding.md is out of date (wrong crate name, run_loop arity and TurnDriver shape).
+    The embed integration test calls run_turn rather than run_loop, and none of the embed tests were run
+    for this entry.
+  evidence:
+  - gait-rs/src/embed.rs
+  - gait-rs/docs/embedding.md
+  - gait-rs/tests/integration_embed.rs
+  - gait-rs/crates/gait-turn-runner/src/lib.rs
+- id: gait-min-build
+  assertion: gait-min is a second binary built from the same gait-bin crate with the Cargo feature set
+    min instead of the default full. The min build leaves out the workflow runner, the rich REPL renderer
+    (termimad, syntect, termbg), the MCP client, Code Mode and telemetry, and uses the plain REPL. It keeps
+    the one-shot CLI, the permission gate, the sandbox, skills and named inferences, and writes the same
+    session log format. Absence of those dependencies is checked by make check-min, which fails if cargo
+    tree for the min composition lists the excluded crates; that check was not run for this entry.
+  evidence:
+  - gait-rs/crates/gait-bin/Cargo.toml
+  - gait-rs/Makefile
+  - gait-rs/docs/gait-min.md
+  - gait-rs/crates/gait-bin/src/min_main.rs
+  - gait-rs/tests/min_no_extensions.rs
+- id: local-models
+  assertion: Local models are reachable two ways. Ollama and LM Studio are registry providers on the OpenAI-compatible
+    wire (default http://localhost:11434/v1 and http://localhost:1234/v1, no API key required). Separately,
+    an opt-in local Cargo feature builds an in-process llama.cpp GGUF engine (a local/<model> model string);
+    it is off in both the gait and gait-min default builds, compiles llama.cpp from source, and maps tool
+    calls for only one model name (qwen2.5-coder-7b-instruct-q4-k-m). The docs call this path experimental.
+    It was not built or run for this entry.
+  evidence:
+  - gait-rs/crates/gait-provider/src/providers.rs
+  - gait-rs/crates/gait-provider/src/factory.rs
+  - gait-rs/crates/gait-provider/src/local.rs
+  - gait-rs/crates/gait-local/src/lib.rs
+  - gait-rs/crates/gait-llama-cpp/src/lib.rs
+  - gait-rs/crates/gait-bin/Cargo.toml
+  - docs/providers.md
+- id: built-in-workflows
+  assertion: A YAML workflow runner (gait workflow run, continue and validate) executes a DAG of four
+    node types. Shell nodes run a command, prompt nodes run one gait turn, branch nodes route on a numeric
+    or string comparison or an exact-match case table, and gate nodes pause the run for a human. Nodes declare
+    depends_on edges, and validation rejects duplicate ids, dangling references and cycles. Node output
+    and exit-code references ($node.output, $node.output.field, $node.exit) are substituted between nodes,
+    with node values single-quoted when spliced into shell commands. A run paused at a gate is resumed with
+    workflow continue, which rebuilds state from the run log. A node can retry with a fixed or exponential
+    delay and can be marked continue-on-error. The runner is a separate crate compiled only into the full
+    gait build and excluded from gait-min. There is no loop node; repetition is only through retry.
+  evidence:
+  - gait-rs/crates/gait-workflow/src/schema.rs
+  - gait-rs/crates/gait-workflow/src/runner.rs
+  - gait-rs/crates/gait-workflow/src/vars.rs
+  - gait-rs/crates/gait-workflow/src/validate.rs
+  - gait-rs/crates/gait-workflow/tests/continue_resume.rs
+  - gait-rs/crates/gait-bin/Cargo.toml
+  - gait-rs/docs/gait-min.md
+- id: builtin-tools
+  assertion: The model-facing built-in tool set is read, write, apply_patch, glob, grep, ls, shell, structured_done,
+    codesearch, webfetch, enable, spawn_agent, list_agents, clarify, inform and prune, plus a code tool
+    registered only when the code-mode feature is compiled in. The annotate tool is defined but not registered
+    as a model tool; only an internal curate filter uses it. The codesearch tool is a regex text search
+    (ripgrep, with a directory-walk fallback), not a semantic or embedding-based search. The prune tool
+    replaces the agent's own earlier tool results with a short tombstone by appending a Replace event.
+  evidence:
+  - gait-rs/src/tools/mod.rs
+  - gait-rs/src/tools/codesearch.rs
+  - gait-rs/src/tools/prune.rs
+  - gait-rs/src/tools/annotate.rs
+  - gait-rs/src/turn/curate.rs
+- id: subagents
+  assertion: The spawn_agent tool starts a child gait run as a separate OS process with its own session
+    log and its own spine, model and tool process tree. The child runs in auto-approve mode. It receives
+    --sandbox-locked whenever the parent's sandbox is on, which forces the child's sandbox on and makes
+    its own --no-sandbox a no-op. By default the call blocks and returns the child's result; with detached=true
+    it starts an independent peer and returns the session id. A non-detached child is killed with the parent.
+    list_agents lists active sessions. The context_files argument is documented in code as reserved and
+    unused.
+  evidence:
+  - gait-rs/src/tools/spawn_agent.rs
+  - gait-rs/src/tools/list_agents.rs
+  - gait-rs/src/turn/spine/handlers/agent.rs
+  - gait-rs/src/launch.rs
+- id: mcp-client
+  assertion: Full builds include an MCP client (rmcp) that connects to servers over stdio (a spawned command)
+    or streamable HTTP, with server definitions read from <gait-dir>/mcp/<name>.json. The client is compiled
+    out of gait-min.
+  evidence:
+  - gait-rs/src/mcp/client.rs
+  - gait-rs/crates/gait-state/src/mcp.rs
+  - gait-rs/crates/gait-bin/Cargo.toml
+  - gait-rs/docs/gait-min.md
+- id: skills
+  assertion: Skills are markdown files at <gait-dir>/skills/<name>/SKILL.md (frontmatter with a name plus
+    a non-empty body), scanned from disk and loaded into the model's context through the enable tool. They
+    are available in both gait and gait-min.
+  evidence:
+  - gait-rs/crates/gait-state/src/skills.rs
+  - gait-rs/src/tools/load.rs
+  - gait-rs/docs/gait-min.md
+- id: code-mode
+  assertion: In full builds the code tool evaluates model-supplied JavaScript in a pinned QuickJS-WASI
+    guest run under Wasmtime. The guest's WASI and env imports are linked to inert stubs, so it has no
+    filesystem, network, process, clock or random access of its own, and it reaches tools only through
+    a host_call bridge into the shared capability dispatcher. Default limits are 30 s, 64 MiB memory, 128
+    host calls and 4 MiB output. The gait-codemode-js crate is a metadata-only placeholder.
+  evidence:
+  - gait-rs/crates/gait-codemode/src/lib.rs
+  - gait-rs/crates/gait-codemode/src/quickjs.rs
+  - gait-rs/src/tools/code.rs
+  - gait-rs/crates/gait-codemode-js/src/lib.rs
+  - gait-rs/docs/architecture.md
+- id: lifecycle-hooks
+  assertion: Shell hooks configured in gait.jsonc or agent frontmatter run through sh -c at six events
+    (pre_turn, pre_step, post_step, pre_tool, post_tool, post_turn) with GAIT_* environment variables and
+    no timeout. A non-zero pre_tool exit blocks the call. Stdout from pre_turn replaces the system prompt,
+    and stdout from post_tool replaces the tool result. Each run is logged as a hook_run event.
+  evidence:
+  - gait-rs/crates/gait-state/src/hook_runner.rs
+  - gait-rs/crates/gait-state/src/config_hook.rs
+  - gait-rs/src/turn/execute.rs
+  - docs/hooks.md
+- id: modes
+  assertion: A mode is a markdown file at <gait-dir>/modes/<name>/MODE.md (frontmatter description, allow,
+    deny and classify_policy, with the body as steering text). It overlays the permission baseline, with
+    deny always unioned and never removed. Activating one appends a Mode event to the session log. An optional
+    classify_policy can auto-resolve ask decisions through a named inference profile.
+  evidence:
+  - gait-rs/src/modes.rs
+  - gait-rs/crates/gait-state/src/modes.rs
+  - gait-rs/src/turn/execute.rs
+- id: config-gait-jsonc
+  assertion: Persistent configuration is a JSONC file, gait.jsonc, in the gait-dir (model, allow and deny
+    patterns, sandbox, hooks and more). Global permission grants are appended to it, and some commands
+    rewrite it as plain JSON and strip comments.
+  evidence:
+  - gait-rs/crates/gait-types/src/config/mod.rs
+  - gait-rs/crates/gait-state/src/permissions/persist.rs
+  - README.md
+- id: checkpoint-undo
+  assertion: While a session is live, gait snapshots the working directory into a separate per-session
+    bare git repository kept inside the session directory (using the user's repository only as a read-only
+    object source). Snapshots are taken at the start of each run, after each shell, write or apply_patch
+    tool result, and at the end of each completed, cancelled or failed run (not when a run pauses). Snapshots
+    honor .gitignore rules by construction and never write to the user's repository. gait undo <session>
+    --turn N restores the code to run N's final snapshot with a hard reset and also deletes untracked,
+    non-ignored files in the codebase; with --transcript it hard-resets the session's log to that run's
+    commit. --turn 0 --code restores the pre-first-request baseline (the transcript cannot be rewound to
+    turn 0). Undo refuses to run while a turn holds the session lock, and the checkpoint store is deleted
+    when the session is persisted or discarded. Read in code and unit tests, not exercised for this entry.
+  evidence:
+  - gait-rs/crates/gait-state/src/git/checkpoint/mod.rs
+  - gait-rs/crates/gait-state/src/git/checkpoint/tests.rs
+  - gait-rs/src/turn/spine/checkpoint_enrich.rs
+  - gait-rs/src/turn/spine/lifecycle.rs
+  - gait-rs/src/turn/run_lifecycle.rs
+  - gait-rs/crates/gait-ops/src/session.rs
+  - gait-rs/crates/gait-cli/src/cli/session.rs
+- id: context-compaction
+  assertion: Before sampling, when an estimated token count crosses a configured threshold, the harness
+    asks the model for one tool-less summary and appends it as a session Summary event, and the transcript
+    fold then starts from that summary. History is not rewritten. The token estimate is a fixed 3-characters-per-token
+    heuristic plus provider-observed usage.
+  evidence:
+  - gait-rs/src/turn/compaction.rs
+  - gait-rs/src/turn/mod.rs
+  - proto/log.proto
+- id: structured-result
+  assertion: A turn ends either implicitly (an assistant reply with no tool calls) or through the structured_done
+    tool, whose optional result is arbitrary JSON. With gait run --result-schema <file> or --result-schema-json,
+    the result is validated against the supplied JSON Schema, with a configurable number of validation
+    retries (output_schema_retries in the profile). The retry-exhaustion path was not traced for this entry.
+  evidence:
+  - gait-rs/src/tools/structured_done.rs
+  - gait-rs/crates/gait-cli/src/cli/run.rs
+  - gait-rs/src/turn/mod.rs
+  - gait-rs/src/profile.rs
+- id: ops-layer
+  assertion: Deterministic command verbs (init, link, session list, undo, persist and discard, permission
+    allow and deny, extension and auth management, daemon stop) live in a gait-ops crate shared by the
+    CLI, the REPL and the ACP adapter. The crate runs no model turns, never prints or exits, and returns
+    results as values.
+  evidence:
+  - gait-rs/crates/gait-ops/src/lib.rs
+  - gait-rs/crates/gait-ops/Cargo.toml
+  - gait-rs/crates/gait-cli/Cargo.toml
+  - gait-rs/crates/gait-repl/Cargo.toml
+  - gait-rs/crates/gait-acp/Cargo.toml
+- id: telemetry-events
+  assertion: Behind a telemetry Cargo feature (enabled in the full gait build and the gait-acp binary,
+    off in gait-min), turns emit typed protobuf events (PromptAccepted, TurnCompleted, AgentSpawned, AgentReported)
+    through the concord-telemetry library, exported over OTLP only if OTEL_EXPORTER_OTLP_ENDPOINT is configured.
+    End-to-end export was not exercised for this entry.
+  evidence:
+  - proto/gait/events/v1/events.proto
+  - gait-rs/crates/gait-events/src/lib.rs
+  - gait-rs/crates/gait-bin/Cargo.toml
+  - gait-rs/crates/gait-acp/Cargo.toml
+- id: generated-manual
+  assertion: docs/manual.md is rendered from the live clap command definitions plus a hand-written gait-manual/manual.yaml.
+    The test committed_manual_is_current in gait-bin (built only with the full feature) fails if the committed
+    file differs from the rendered text, and make manual regenerates it. The test exists in the source;
+    it was not run for this entry.
+  evidence:
+  - gait-rs/crates/gait-bin/src/manual.rs
+  - gait-rs/gait-manual/manual.yaml
+  - gait-rs/Makefile
+  - docs/manual.md
+- id: git-via-libgit2
+  assertion: gait performs its own git operations (session worktrees and commits, per-session checkpoint
+    snapshots, undo, workspace init) through the git2 crate (libgit2) and does not invoke the git CLI at
+    runtime. The only git subprocess in non-test code is in the build script, which runs git rev-parse HEAD
+    to stamp a build hash and falls back to "unknown". The shell tool and the ripgrep-based search tools
+    do run external programs, so a model can still run git through the shell tool.
+  evidence:
+  - README.md
+  - gait-rs/build.rs
+  - gait-rs/crates/gait-state/src/git/trace.rs
+  - gait-rs/crates/gait-state/src/git/checkpoint/mod.rs
+  - gait-rs/crates/gait-state/Cargo.toml
+- id: protobuf-schemas
+  assertion: The log format is defined in protobuf. proto/log.proto defines the Event envelope and every
+    event kind written to log.jsonl. proto/sandbox.proto, proto/workflow.proto, proto/state.proto and proto/gait/events/v1/events.proto
+    define the sandbox process signals, workflow messages, a session-state query type and telemetry events.
+    Rust types are generated at build time (prost, with a vendored protoc) and no generated code is checked
+    in. Each log.jsonl line is the canonical proto3 JSON mapping of an Event, produced by pbjson-generated
+    serde code. Working state such as the conversation is derived by Rust fold code, not defined in protobuf,
+    and the state.proto query type is compiled but no code references it.
+  evidence:
+  - proto/log.proto
+  - proto/sandbox.proto
+  - proto/workflow.proto
+  - proto/state.proto
+  - proto/gait/events/v1/events.proto
+  - gait-rs/crates/gait-proto/build.rs
+  - gait-rs/crates/gait-proto/src/lib.rs
+  - gait-rs/crates/gait-events/build.rs
+- id: rust-language
+  assertion: gait is written in Rust. The gait-rs Cargo workspace has a root engine package (gait-core),
+    22 crates under crates/ (binary, CLI, REPL, turn runner, ops, state, protobuf, types, provider, auth,
+    local-model contract, llama.cpp engine, sandbox, workflow, ACP adapter, Code Mode host, events, identity,
+    platform, watch, testkit, and a metadata-only gait-codemode-js), and an xtask helper.
+  evidence:
+  - gait-rs/Cargo.toml
+  - gait-rs/crates/gait-acp/src/main.rs
