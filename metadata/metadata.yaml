@@ -1,4 +1,17 @@
 id: gait
+uses:
+- project: coded-error
+  evidence:
+  - gait-rs/Cargo.toml
+- project: concord-telemetry
+  evidence:
+  - gait-rs/Cargo.toml
+- project: identity-crypto
+  evidence:
+  - gait-rs/crates/gait-acp/Cargo.toml
+- project: message-attestation
+  evidence:
+  - gait-rs/crates/gait-acp/Cargo.toml
 verified_at: 32b0ee9e
 public:
   name: gait
