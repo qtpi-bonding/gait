@@ -204,6 +204,7 @@ facts:
     It can require signed message attestations (--require-attestation). Its integration tests use an in-process
     channel with a mock model; no run against a real editor was done for this entry. The crate-level doc
     comment still says "Phase 1, connection skeleton" and is out of date.
+  state: partial
   evidence:
   - gait-rs/crates/gait-acp/src/main.rs
   - gait-rs/crates/gait-acp/src/lib.rs
@@ -221,6 +222,7 @@ facts:
     is included. docs/embedding.md is out of date (wrong crate name, run_loop arity and TurnDriver shape).
     The embed integration test calls run_turn rather than run_loop, and none of the embed tests were run
     for this entry.
+  state: partial
   evidence:
   - gait-rs/src/embed.rs
   - gait-rs/docs/embedding.md
@@ -461,3 +463,12 @@ facts:
   evidence:
   - gait-rs/Cargo.toml
   - gait-rs/crates/gait-acp/src/main.rs
+- id: wasm-plugins
+  assertion: WASM plugins at <gait-dir>/plugins/<name>/PLUGIN.md are discovered, listed and can be enabled,
+    but execution is not implemented. Enabling one returns a stub message ("wasm runtime not yet implemented").
+    Plugin loading is excluded from gait-min.
+  state: foundation
+  evidence:
+  - gait-rs/src/wasm_plugins.rs
+  - gait-rs/src/tools/load.rs
+  - gait-rs/docs/gait-min.md
