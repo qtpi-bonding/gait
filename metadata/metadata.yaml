@@ -35,6 +35,7 @@ facts:
     not implemented and the processes run unsealed. The tool seal is skipped when sandbox.on is false or
     a shell_whitelist entry grants unsandbox; the model-process seal is not skipped by those. The in-process
     embed path runs without the process split.
+  state: partial
   evidence:
   - gait-rs/docs/sandbox-security.md
   - gait-rs/crates/gait-sandbox/src/sandbox.rs
@@ -111,6 +112,7 @@ facts:
     and the sandbox.deny.read/write patterns are enforced by application checks in the tool process, not
     by the kernel. docs/sandbox-security.md states the threat model and what is not covered. The repository
     contains no independent security audit.
+  state: partial
   evidence:
   - gait-rs/crates/gait-sandbox/src/sandbox.rs
   - gait-rs/src/turn/hand.rs
@@ -129,6 +131,7 @@ facts:
     requests are separate event types. Session-scoped allow and deny grants are rebuilt from the log. Deny
     rules come from config and agent frontmatter; saving a global or mode-scoped deny from an interactive
     answer is not implemented (only allow can be saved to gait.jsonc or MODE.md).
+  state: partial
   evidence:
   - gait-rs/crates/gait-state/src/permissions/gate.rs
   - gait-rs/crates/gait-state/src/permissions/grants.rs
@@ -243,6 +246,7 @@ facts:
     it is off in both the gait and gait-min default builds, compiles llama.cpp from source, and maps tool
     calls for only one model name (qwen2.5-coder-7b-instruct-q4-k-m). The docs call this path experimental.
     It was not built or run for this entry.
+  state: partial
   evidence:
   - gait-rs/crates/gait-provider/src/providers.rs
   - gait-rs/crates/gait-provider/src/factory.rs
