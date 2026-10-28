@@ -16,7 +16,7 @@ public:
     url: https://github.com/qtpi-bonding/gait
   screenshots:
   - file: thumbnail.png
-    alt: Gait terminal session undoing a turn, with the git diff of the change
+    alt: Gait REPL listing two turns, undoing to turn 1, and the git diff shrinking from 7 changed lines to 4
 private:
   started: 2026-06
   visibility: public
