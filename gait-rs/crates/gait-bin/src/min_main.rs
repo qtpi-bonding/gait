@@ -46,7 +46,18 @@ async fn run(raw: Vec<String>) -> ExitCode {
         return gait_bin::finish(gait_cli::cli::args::cmd_run(&raw[2..]).await);
     }
 
-    let cli = MinCli::parse();
+    let cli = match MinCli::try_parse_from(&raw) {
+        Ok(cli) => cli,
+        Err(e) if e.use_stderr() => {
+            return gait_bin::report(&gait_cli::cli::error::CliError::usage(
+                e.to_string().trim_end(),
+            ));
+        }
+        Err(e) => {
+            let _ = e.print();
+            return ExitCode::SUCCESS;
+        }
+    };
 
     let cwd = cwd_or_dot();
     let gait_dir_arg = cli.gait_dir.clone();

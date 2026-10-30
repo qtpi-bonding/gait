@@ -38,15 +38,17 @@ async fn run(raw: Vec<String>) -> ExitCode {
         #[cfg(feature = "local")]
         {
             if let Err(error) = gait_llama_cpp::run_local_runner(&raw[2..]).await {
-                eprintln!("[gait] local runner: {error}");
-                return ExitCode::from(1);
+                return gait_bin::report(&gait_cli::cli::error::CliError::failed(format!(
+                    "local runner: {error}"
+                )));
             }
             return ExitCode::SUCCESS;
         }
         #[cfg(not(feature = "local"))]
         {
-            eprintln!("[gait] local runner requires a Gait build with the 'local' feature");
-            return ExitCode::from(1);
+            return gait_bin::report(&gait_cli::cli::error::CliError::usage(
+                "local runner requires a Gait build with the 'local' feature",
+            ));
         }
     }
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
@@ -82,7 +84,18 @@ async fn run(raw: Vec<String>) -> ExitCode {
 }
 
 async fn run_cli(raw: Vec<String>) -> ExitCode {
-    let cli = Cli::parse_from(&raw);
+    let cli = match Cli::try_parse_from(&raw) {
+        Ok(cli) => cli,
+        Err(e) if e.use_stderr() => {
+            return gait_bin::report(&gait_cli::cli::error::CliError::usage(
+                e.to_string().trim_end(),
+            ));
+        }
+        Err(e) => {
+            let _ = e.print();
+            return ExitCode::SUCCESS;
+        }
+    };
     let cwd = cwd_or_dot();
     let gait_dir_arg = cli.gait_dir.clone();
     let resolve_gait_dir = || -> anyhow::Result<PathBuf> {
