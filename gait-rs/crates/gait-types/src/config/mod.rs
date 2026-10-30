@@ -550,6 +550,18 @@ pub enum ConfigLoadPolicy {
     Lenient,
 }
 
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.config")]
+pub enum ConfigError {
+    #[error("{0}")]
+    #[coded(code = "invalid", class = Logical)]
+    Invalid(String),
+}
+
+fn invalid(message: impl Into<String>) -> anyhow::Error {
+    coded_error::into_anyhow(ConfigError::Invalid(message.into()))
+}
+
 pub fn load_config_with(gait_dir: &Path, policy: ConfigLoadPolicy) -> anyhow::Result<GaitConfig> {
     let path = gait_dir.join("gait.jsonc");
     if !path.exists() {
@@ -560,10 +572,10 @@ pub fn load_config_with(gait_dir: &Path, policy: ConfigLoadPolicy) -> anyhow::Re
     match serde_json::from_str::<GaitConfig>(&stripped) {
         Ok(config) => Ok(config),
         Err(e) => match policy {
-            ConfigLoadPolicy::Strict => Err(anyhow::anyhow!(
+            ConfigLoadPolicy::Strict => Err(invalid(format!(
                 "gait.jsonc parse error in {}: {e}",
                 path.display()
-            )),
+            ))),
             ConfigLoadPolicy::Lenient => Ok(GaitConfig::default()),
         },
     }
@@ -588,8 +600,8 @@ fn append_list_field(field: &str, pattern: &str, path: &Path) -> anyhow::Result<
         let stripped = strip_jsonc_comments(&raw);
         match serde_json::from_str::<serde_json::Value>(&stripped) {
             Ok(serde_json::Value::Object(m)) => m,
-            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
-            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+            Ok(_) => return Err(invalid("gait.jsonc root is not a JSON object")),
+            Err(e) => return Err(invalid(format!("gait.jsonc parse error: {e}"))),
         }
     } else {
         serde_json::Map::new()
@@ -598,7 +610,7 @@ fn append_list_field(field: &str, pattern: &str, path: &Path) -> anyhow::Result<
         .entry(field)
         .or_insert_with(|| serde_json::Value::Array(vec![]))
         .as_array_mut()
-        .ok_or_else(|| anyhow::anyhow!("{field} field is not an array"))?;
+        .ok_or_else(|| invalid(format!("{field} field is not an array")))?;
     if !list.iter().any(|v| v.as_str() == Some(pattern)) {
         list.push(serde_json::Value::String(pattern.to_string()));
     }
@@ -620,8 +632,8 @@ fn append_sandbox_field(field: &str, value: &str, path: &Path) -> anyhow::Result
         let stripped = strip_jsonc_comments(&raw);
         match serde_json::from_str::<serde_json::Value>(&stripped) {
             Ok(serde_json::Value::Object(m)) => m,
-            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
-            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+            Ok(_) => return Err(invalid("gait.jsonc root is not a JSON object")),
+            Err(e) => return Err(invalid(format!("gait.jsonc parse error: {e}"))),
         }
     } else {
         serde_json::Map::new()
@@ -632,13 +644,13 @@ fn append_sandbox_field(field: &str, value: &str, path: &Path) -> anyhow::Result
         .entry("sandbox")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("gait.jsonc 'sandbox' is not an object"))?;
+        .ok_or_else(|| invalid("gait.jsonc 'sandbox' is not an object"))?;
 
     let list = sandbox
         .entry(field)
         .or_insert_with(|| serde_json::Value::Array(vec![]))
         .as_array_mut()
-        .ok_or_else(|| anyhow::anyhow!("sandbox.{field} is not an array"))?;
+        .ok_or_else(|| invalid(format!("sandbox.{field} is not an array")))?;
 
     if !list.iter().any(|v| v.as_str() == Some(value)) {
         list.push(serde_json::Value::String(value.to_string()));
@@ -669,8 +681,8 @@ pub fn append_sandbox_network_host(gait_dir: &Path, host: &str) -> anyhow::Resul
         let stripped = strip_jsonc_comments(&raw);
         match serde_json::from_str::<serde_json::Value>(&stripped) {
             Ok(serde_json::Value::Object(m)) => m,
-            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
-            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+            Ok(_) => return Err(invalid("gait.jsonc root is not a JSON object")),
+            Err(e) => return Err(invalid(format!("gait.jsonc parse error: {e}"))),
         }
     } else {
         serde_json::Map::new()
@@ -680,7 +692,7 @@ pub fn append_sandbox_network_host(gait_dir: &Path, host: &str) -> anyhow::Resul
         .entry("sandbox")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("gait.jsonc 'sandbox' is not an object"))?;
+        .ok_or_else(|| invalid("gait.jsonc 'sandbox' is not an object"))?;
 
     // If network is "*" (All), nothing to do — already maximally permissive.
     if sandbox.get("network").and_then(|v| v.as_str()) == Some("*") {

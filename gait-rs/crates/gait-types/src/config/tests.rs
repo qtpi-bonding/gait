@@ -641,3 +641,28 @@ fn lenient_missing_file_returns_default() {
         .expect("missing file is not an error in Lenient");
     assert_eq!(cfg.inference, GaitConfig::default().inference);
 }
+
+#[test]
+fn strict_load_of_broken_jsonc_is_a_coded_invalid() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), "{ \"inference\": ").unwrap();
+    let err = load_config_with(dir.path(), ConfigLoadPolicy::Strict).unwrap_err();
+    let facts = coded_error::facts_anyhow(&err);
+    assert_eq!(facts.code, "gait.config.invalid");
+    assert_eq!(facts.class, coded_error::ErrorClass::Logical);
+}
+
+#[test]
+fn edit_of_non_object_config_is_a_coded_invalid() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), "[]").unwrap();
+    let err = append_allow_pattern(dir.path(), "shell:cargo *").unwrap_err();
+    let facts = coded_error::facts_anyhow(&err);
+    assert_eq!(facts.code, "gait.config.invalid");
+    assert_eq!(facts.class, coded_error::ErrorClass::Logical);
+}
+
+#[test]
+fn config_error_codes_are_unique() {
+    coded_error::check_codes("gait.config.", &[ConfigError::ALL_CODES]).unwrap();
+}

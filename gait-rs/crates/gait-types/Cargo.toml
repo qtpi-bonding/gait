@@ -12,6 +12,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 schemars   = { version = "0.8", features = ["derive"] }
 thiserror  = "1"
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "be55165013f5d557ecf8e1b1cf784fb3d07e9753" }
 anyhow     = "1"
 async-trait = "0.1"
 
