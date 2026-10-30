@@ -53,7 +53,11 @@ pub fn parse_one_off(result: &Value) -> anyhow::Result<OneOff> {
     match (cmd, out) {
         (Some(c), None) => Ok(OneOff::Cmd(c.to_string())),
         (None, Some(o)) => Ok(OneOff::Output(o.to_string())),
-        _ => anyhow::bail!("expected exactly one of `cmd` or `output`, got: {result}"),
+        _ => {
+            return Err(CliError::failed(format!(
+                "expected exactly one of `cmd` or `output`, got: {result}"
+            )))
+        }
     }
 }
 
@@ -82,11 +86,13 @@ fn resolve_one_off_inference(
         .map(str::to_owned)
         .or(config.inference)
         .ok_or_else(|| {
-            anyhow::anyhow!("no inference set; pass --inference <name> or set config.inference")
+            CliError::usage("no inference set; pass --inference <name> or set config.inference")
         })?;
     let selection = gait_ops::inference::resolve_selection(gait_dir, &name)?;
     if selection.inference.model.is_empty() {
-        anyhow::bail!("inference '{name}' does not select a model");
+        return Err(CliError::usage(format!(
+            "inference '{name}' does not select a model"
+        )));
     }
     Ok(selection.inference)
 }
@@ -140,14 +146,16 @@ fn read_single_key() -> anyhow::Result<char> {
 fn resolve_custom_schema(args: &ExecArgs) -> anyhow::Result<Option<Value>> {
     if let Some(path) = &args.result_schema {
         let text = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("reading --result-schema {}: {e}", path.display()))?;
+            .map_err(|e| {
+                CliError::failed_with(&format!("reading --result-schema {}", path.display()), e)
+            })?;
         return Ok(Some(serde_json::from_str(&text).map_err(|e| {
-            anyhow::anyhow!("parsing --result-schema {}: {e}", path.display())
+            CliError::invalid_input(format!("parsing --result-schema {}: {e}", path.display()))
         })?));
     }
     if let Some(raw) = &args.result_schema_json {
         return Ok(Some(serde_json::from_str(raw).map_err(|e| {
-            anyhow::anyhow!("parsing --result-schema-json: {e}")
+            CliError::invalid_input(format!("parsing --result-schema-json: {e}"))
         })?));
     }
     Ok(None)
@@ -194,7 +202,7 @@ pub async fn run_one_off(
             _ => None,
         })
         .and_then(|value| serde_json::to_value(value).ok())
-        .ok_or_else(|| anyhow::anyhow!("model returned no structured result"))?;
+        .ok_or_else(|| CliError::failed("model returned no structured result"))?;
     if using_custom_schema {
         Ok(OneOff::Raw(result))
     } else {
@@ -236,6 +244,13 @@ pub async fn cmd_exec(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn no_inference_is_a_usage_error_exit_65() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = resolve_one_off_inference(dir.path(), None).unwrap_err();
+        assert_eq!(coded_error::cli::exit_code_anyhow(&err), 65);
+    }
 
     #[test]
     fn parses_cmd_variant() {

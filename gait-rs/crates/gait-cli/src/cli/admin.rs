@@ -599,7 +599,7 @@ pub fn read_callback_arg<R: std::io::Read>(arg: &str, mut stdin: R) -> anyhow::R
     std::io::BufRead::read_line(&mut reader, &mut line)?;
     let value = line.trim().to_string();
     if value.is_empty() {
-        anyhow::bail!("no callback URL provided on stdin");
+        return Err(CliError::usage("no callback URL provided on stdin"));
     }
     Ok(value)
 }
