@@ -1218,8 +1218,11 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            coded_error::downcast_ref::<OpError>(&err).is_none(),
-            "an untyped failure must not carry an OpError variant, got {err:?}"
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::Invalid(_))
+            ),
+            "an incomplete reply is caller input and must be OpError::Invalid, got {err:?}"
         );
         // No PermissionsReply was written — the session is still AwaitingPermission.
         assert_eq!(read_events(&tx).map(|e| e.len()).unwrap_or(0), 1);
