@@ -25,6 +25,11 @@ pub enum OpError {
 }
 
 impl OpError {
+    /// A caller-input failure as an `anyhow::Error` that keeps its code.
+    pub fn invalid(message: impl Into<String>) -> anyhow::Error {
+        coded_error::into_anyhow(OpError::Invalid(message.into()))
+    }
+
     /// The typed failure carried by an op's `anyhow::Error`, if it has one.
     pub fn find(err: &anyhow::Error) -> Option<&OpError> {
         coded_error::downcast_ref::<OpError>(err)
@@ -41,7 +46,13 @@ mod tests {
         coded_error::check_codes("gait.op.", &[OpError::ALL_CODES]).unwrap();
         assert_eq!(
             OpError::ALL_CODES,
-            &["gait.op.not_found", "gait.op.conflict", "gait.op.session_busy", "gait.op.confirmation_required", "gait.op.invalid"]
+            &[
+                "gait.op.not_found",
+                "gait.op.conflict",
+                "gait.op.session_busy",
+                "gait.op.confirmation_required",
+                "gait.op.invalid"
+            ]
         );
     }
 
@@ -68,7 +79,8 @@ mod tests {
     #[test]
     fn op_error_has_no_other_variant() {
         let err = coded_error::into_anyhow(OpError::SessionBusy("turn running".into()));
-        let typed = coded_error::downcast_ref::<OpError>(&err).expect("typed OpError survives anyhow");
+        let typed =
+            coded_error::downcast_ref::<OpError>(&err).expect("typed OpError survives anyhow");
         assert!(matches!(typed, OpError::SessionBusy(_)));
         assert_eq!(typed.class(), coded_error::ErrorClass::Transient);
         assert_eq!(format!("{err}"), "session busy: turn running");

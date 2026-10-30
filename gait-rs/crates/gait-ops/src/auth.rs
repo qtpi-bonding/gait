@@ -79,9 +79,7 @@ fn write_outcome(
     credential: ResolvedCredential,
 ) -> anyhow::Result<AuthWriteOutcome> {
     let ResolvedCredential::Subscription(subscription) = credential else {
-        return Err(anyhow::anyhow!(
-            "sign-in returned an API key credential"
-        ));
+        return Err(anyhow::anyhow!("sign-in returned an API key credential"));
     };
     let display = subscription
         .account_label
@@ -192,7 +190,9 @@ pub fn link(
     home: Option<PathBuf>,
 ) -> anyhow::Result<AuthWriteOutcome> {
     if provider.is_empty() {
-        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
+        return Err(coded_error::into_anyhow(OpError::Conflict(
+            "provider name is required".to_string(),
+        )));
     }
     let source: Box<dyn AuthSource> = match source_id {
         CODEX_SOURCE_ID => Box::new(CodexAuthSource),
@@ -218,7 +218,9 @@ pub fn link(
 /// credential file/keyring entry is never changed or revoked.
 pub fn unlink(provider: &str) -> anyhow::Result<AuthRemoveOutcome> {
     if provider.is_empty() {
-        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
+        return Err(coded_error::into_anyhow(OpError::Conflict(
+            "provider name is required".to_string(),
+        )));
     }
     gait_state::auth::unlink_external_binding(provider)?;
     Ok(AuthRemoveOutcome {
@@ -253,10 +255,14 @@ impl ModelsOutcome {
 /// accidentally wipe an entry by passing `""`.
 pub fn add(provider: &str, api_key: String) -> anyhow::Result<AuthWriteOutcome> {
     if provider.is_empty() {
-        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
+        return Err(coded_error::into_anyhow(OpError::Conflict(
+            "provider name is required".to_string(),
+        )));
     }
     if api_key.is_empty() {
-        return Err(coded_error::into_anyhow(OpError::Conflict("api key is required".to_string())));
+        return Err(coded_error::into_anyhow(OpError::Conflict(
+            "api key is required".to_string(),
+        )));
     }
     gait_state::auth::write_api_key(provider, &api_key)?;
     let prefix: String = api_key.chars().take(8).collect();
@@ -280,7 +286,9 @@ fn remove_using(
     remove_entry: impl FnOnce(&str) -> Result<(), gait_state::auth::AuthError>,
 ) -> anyhow::Result<AuthRemoveOutcome> {
     if provider.is_empty() {
-        return Err(coded_error::into_anyhow(OpError::Conflict("provider name is required".to_string())));
+        return Err(coded_error::into_anyhow(OpError::Conflict(
+            "provider name is required".to_string(),
+        )));
     }
     remove_entry(provider).map_err(|error| match error {
         gait_state::auth::AuthError::ManagedElsewhere(_) => coded_error::into_anyhow(OpError::Conflict(

@@ -1209,12 +1209,14 @@ async fn run_sh_one_off(
             return Err(e);
         }
     };
-    let inference_name = inference_override
-        .or(cfg.inference)
-        .ok_or_else(|| anyhow::anyhow!("no inference set; select an inference"))?;
+    let inference_name = inference_override.or(cfg.inference).ok_or_else(|| {
+        gait_ops::OpError::invalid("no inference set; select an inference".to_string())
+    })?;
     let inference = gait_ops::inference::resolve_selection(&gait_dir, &inference_name)?.inference;
     if inference.model.is_empty() {
-        anyhow::bail!("inference '{inference_name}' does not select a model");
+        return Err(gait_ops::OpError::invalid(format!(
+            "inference '{inference_name}' does not select a model"
+        )));
     }
     let exe = std::env::current_exe()?;
     let schema = one_off_schema();
@@ -1634,7 +1636,10 @@ mod command_tests {
     #[test]
     fn queued_undo_note_prefixes_the_next_message_once() {
         assert_eq!(
-            with_undo_note(Some("[undo] code restored to turn 1".into()), "carry on".into()),
+            with_undo_note(
+                Some("[undo] code restored to turn 1".into()),
+                "carry on".into()
+            ),
             "[undo] code restored to turn 1\n\ncarry on"
         );
         assert_eq!(with_undo_note(None, "carry on".into()), "carry on");
