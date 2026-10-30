@@ -59,7 +59,9 @@ pub fn auth_method_for(provider_id: &str) -> Option<Box<dyn AuthMethod>> {
 
 fn map_auth_error(error: gait_auth::AuthError) -> anyhow::Error {
     match error {
-        gait_auth::AuthError::Retryable(message) => anyhow::anyhow!(message),
+        gait_auth::AuthError::Retryable(message) => {
+            coded_error::into_anyhow(gait_auth::AuthError::Retryable(message))
+        }
         gait_auth::AuthError::LoginRequired(message) => {
             let message = if message.contains("gait auth login") {
                 message
@@ -68,7 +70,7 @@ fn map_auth_error(error: gait_auth::AuthError) -> anyhow::Error {
             };
             coded_error::into_anyhow(OpError::Conflict(message))
         }
-        other => anyhow::anyhow!(other),
+        other => coded_error::into_anyhow(other),
     }
 }
 
@@ -829,5 +831,26 @@ mod tests {
         assert!(!out.models.is_empty(), "expected at least one model");
         let filtered = out.render_filtered();
         assert!(!filtered.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod map_auth_error_tests {
+    use super::*;
+
+    #[test]
+    fn retryable_auth_error_keeps_its_transient_class() {
+        let err = map_auth_error(gait_auth::AuthError::Retryable("try later".into()));
+        let facts = coded_error::facts_anyhow(&err);
+        assert_eq!(facts.code, "gait.auth.retryable");
+        assert_eq!(facts.class, coded_error::ErrorClass::Transient);
+    }
+
+    #[test]
+    fn other_auth_errors_keep_their_code() {
+        let err = map_auth_error(gait_auth::AuthError::MissingApiKey);
+        let facts = coded_error::facts_anyhow(&err);
+        assert_eq!(facts.code, "gait.auth.missing_api_key");
+        assert_eq!(facts.class, coded_error::ErrorClass::Logical);
     }
 }
