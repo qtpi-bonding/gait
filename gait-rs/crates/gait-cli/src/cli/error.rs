@@ -109,6 +109,14 @@ mod tests {
     }
 
     #[test]
+    fn failed_with_keeps_a_transient_cause_for_run_error() {
+        use coded_error::cli::exit_code_anyhow;
+        let busy = coded_error::into_anyhow(gait_ops::OpError::SessionBusy("s".into()));
+        let err = CliError::failed_with("[gait] run error", busy);
+        assert_eq!(exit_code_anyhow(&err), 75);
+    }
+
+    #[test]
     fn cli_error_display_is_the_message_verbatim() {
         let err = CliError::usage("gait: needs a session id");
         assert_eq!(format!("{err:#}"), "gait: needs a session id");

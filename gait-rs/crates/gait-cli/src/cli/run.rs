@@ -454,7 +454,7 @@ pub async fn cmd_run(
     let Some(outcome) = turn_or_grace(turn, grace_rx).await else {
         return Ok(ExitCode::SUCCESS);
     };
-    let outcome = outcome.map_err(|e| CliError::failed(format!("[gait] run error: {e}")))?;
+    let outcome = outcome.map_err(|e| CliError::failed_with("[gait] run error", e))?;
 
     if sink.failed {
         return Err(CliError::failed(

@@ -135,7 +135,12 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Res
 
     let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
     let yaml_content = std::fs::read_to_string(&yaml_path).map_err(|e| {
-        CliError::failed(format!("[gait] cannot read {}: {}", yaml_path.display(), e))
+        let message = format!("[gait] cannot read {}: {}", yaml_path.display(), e);
+        if e.kind() == std::io::ErrorKind::NotFound {
+            CliError::not_found(message)
+        } else {
+            CliError::failed(message)
+        }
     })?;
     let wf: WorkflowDef = serde_yaml::from_str(&yaml_content).map_err(|e| {
         CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e))
@@ -207,7 +212,12 @@ pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) -
     };
     let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
     let yaml_content = std::fs::read_to_string(&yaml_path).map_err(|e| {
-        CliError::failed(format!("[gait] cannot read {}: {}", yaml_path.display(), e))
+        let message = format!("[gait] cannot read {}: {}", yaml_path.display(), e);
+        if e.kind() == std::io::ErrorKind::NotFound {
+            CliError::not_found(message)
+        } else {
+            CliError::failed(message)
+        }
     })?;
 
     // Schema-shape check first: reports every field-level violation (wrong

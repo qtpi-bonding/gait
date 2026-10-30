@@ -758,7 +758,10 @@ pub fn bulk_act(
                     warnings.push((id.clone(), w));
                 }
             }
-            Err(e) => failed.push((id.clone(), e.to_string())),
+            Err(e) => failed.push((
+                id.clone(),
+                format!("{}: {e}", coded_error::facts_anyhow(&e).code),
+            )),
         }
     }
 

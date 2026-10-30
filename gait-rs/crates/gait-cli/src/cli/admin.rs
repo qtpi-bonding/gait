@@ -909,7 +909,7 @@ pub async fn cmd_models(args: ModelsArgs) -> CliResult {
                 )
             );
         }
-        Err(e) => return Err(CliError::failed(format!("Error fetching models: {}", e))),
+        Err(e) => return Err(CliError::failed_with("Error fetching models", e)),
     }
     Ok(())
 }
