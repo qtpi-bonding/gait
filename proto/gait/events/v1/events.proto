@@ -85,3 +85,15 @@ message PermissionDecided {
   uint32 item_count = 5;
   bool persisted = 6;
 }
+
+enum Disposition {
+  DISPOSITION_UNSPECIFIED = 0;
+  DISPOSITION_PERSISTED = 1;
+  DISPOSITION_DISCARDED = 2;
+}
+
+message SessionDisposed {
+  string source_record_id = 1;
+  string session_id = 2;
+  Disposition disposition = 3;
+}

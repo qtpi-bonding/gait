@@ -780,7 +780,21 @@ pub fn bulk_act(
 /// render, not a print here (Wall 1).
 fn persist_one(gait_dir: &Path, id: &str) -> anyhow::Result<Option<String>> {
     let repos = gait_state::git::Repos::production();
+    #[cfg(feature = "telemetry")]
+    let existed = session_branch_exists(gait_dir, id);
+    #[cfg(feature = "telemetry")]
+    let last_record_id = last_record_id(gait_dir, id);
     repos.traces.finish_session(gait_dir, id)?;
+    #[cfg(feature = "telemetry")]
+    {
+        if existed {
+            emit_session_disposed(
+                last_record_id,
+                id,
+                gait_events::gait::events::v1::Disposition::Persisted,
+            );
+        }
+    }
     if let Err(e) = repos.checkpoints.remove(gait_dir, id) {
         return Ok(Some(format!(
             "failed to remove checkpoint db for {}: {}",
@@ -791,10 +805,58 @@ fn persist_one(gait_dir: &Path, id: &str) -> anyhow::Result<Option<String>> {
 }
 
 fn discard_one(gait_dir: &Path, id: &str) -> anyhow::Result<Option<String>> {
+    #[cfg(feature = "telemetry")]
+    let existed = session_branch_exists(gait_dir, id)
+        || gait_state::session::live::worktree_dir(gait_dir, id).exists();
+    #[cfg(feature = "telemetry")]
+    let last_record_id = last_record_id(gait_dir, id);
     gait_state::git::Repos::production()
         .traces
         .discard_session(gait_dir, id)?;
+    #[cfg(feature = "telemetry")]
+    {
+        if existed {
+            emit_session_disposed(
+                last_record_id,
+                id,
+                gait_events::gait::events::v1::Disposition::Discarded,
+            );
+        }
+    }
     Ok(None)
+}
+
+#[cfg(feature = "telemetry")]
+fn session_branch_exists(gait_dir: &Path, id: &str) -> bool {
+    git2::Repository::open(gait_dir)
+        .map(|repo| {
+            repo.find_branch(&format!("session/{id}"), git2::BranchType::Local)
+                .is_ok()
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "telemetry")]
+fn last_record_id(gait_dir: &Path, id: &str) -> String {
+    let log_path = gait_state::session::live::log_path(gait_dir, id);
+    gait_state::session::log::last_event(&log_path)
+        .ok()
+        .flatten()
+        .map(|event| event.id)
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "telemetry")]
+fn emit_session_disposed(
+    source_record_id: String,
+    session_id: &str,
+    disposition: gait_events::gait::events::v1::Disposition,
+) {
+    concord_telemetry::event!(gait_events::gait::events::v1::SessionDisposed {
+        source_record_id,
+        session_id: session_id.to_owned(),
+        disposition: disposition as i32,
+    });
 }
 
 /// Walk `sessions/*`; classify each dir as eligible (idle + not running) or
@@ -1834,5 +1896,112 @@ mod tests {
             out.to_json(false),
             "{\"turn\":2,\"message\":\"did stuff\",\"checkpoint_short\":\"abcd1234\",\"file_count\":1,\"added_lines\":5,\"removed_lines\":null,\"tools\":[{\"name\":\"shell\",\"count\":1}]}"
         );
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod telemetry_tests {
+    use super::*;
+    use gait_events::gait::events::v1::{Disposition, SessionDisposed};
+    use gait_state::git::Repos;
+    use tempfile::TempDir;
+
+    fn init_repo(path: &Path) -> git2::Repository {
+        let repo = git2::Repository::init(path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "t").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        let sig = git2::Signature::now("t", "t@t.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        {
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+        repo
+    }
+
+    fn ws_with_session(id: &str) -> TempDir {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        Repos::production()
+            .traces
+            .create_session_worktree(ws.path(), id)
+            .unwrap();
+        let log_path = gait_state::session::live::log_path(ws.path(), id);
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        gait_state::proto::wire::append(&log_path, gait_state::proto::events::user_text("x".into()))
+            .unwrap();
+        ws
+    }
+
+    fn last_id(ws: &Path, id: &str) -> String {
+        gait_state::session::log::last_event(&gait_state::session::live::log_path(ws, id))
+            .unwrap()
+            .unwrap()
+            .id
+    }
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}-{}", std::process::id())
+    }
+
+    #[test]
+    fn persist_one_emits_session_disposed_persisted() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let sid = unique("sdpersist");
+        let ws = ws_with_session(&sid);
+        let before = last_id(ws.path(), &sid);
+        persist_one(ws.path(), &sid).unwrap();
+        let event = capture.single_event_where::<SessionDisposed>(|e| e.session_id == sid);
+        assert_eq!(event.disposition, Disposition::Persisted as i32);
+        assert_eq!(event.source_record_id, before);
+    }
+
+    #[test]
+    fn discard_one_emits_session_disposed_discarded() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let sid = unique("sddiscard");
+        let ws = ws_with_session(&sid);
+        let before = last_id(ws.path(), &sid);
+        discard_one(ws.path(), &sid).unwrap();
+        let event = capture.single_event_where::<SessionDisposed>(|e| e.session_id == sid);
+        assert_eq!(event.disposition, Disposition::Discarded as i32);
+        assert_eq!(event.source_record_id, before);
+    }
+
+    #[test]
+    fn failed_persist_emits_nothing() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let sid = unique("sdfail");
+        let ws = ws_with_session(&sid);
+        let repo = git2::Repository::open(ws.path()).unwrap();
+        let sig = git2::Signature::now("t", "t@t.com").unwrap();
+        let commit_file = |refname: &str, content: &[u8]| {
+            let blob = repo.blob(content).unwrap();
+            let mut builder = repo.treebuilder(None).unwrap();
+            builder.insert("conflict.txt", blob, 0o100644).unwrap();
+            let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+            let parent = repo.find_reference(refname).unwrap().peel_to_commit().unwrap();
+            repo.commit(Some(refname), &sig, &sig, "c", &tree, &[&parent])
+                .unwrap();
+        };
+        let head = repo.head().unwrap().name().unwrap().to_owned();
+        commit_file(&head, b"main");
+        commit_file(&format!("refs/heads/session/{sid}"), b"session");
+        persist_one(ws.path(), &sid).unwrap_err();
+        let events = capture.events_where::<SessionDisposed>(|e| e.session_id == sid);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn persist_of_missing_session_emits_nothing() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let sid = unique("sdmissing");
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        persist_one(ws.path(), &sid).unwrap();
+        let events = capture.events_where::<SessionDisposed>(|e| e.session_id == sid);
+        assert!(events.is_empty());
     }
 }

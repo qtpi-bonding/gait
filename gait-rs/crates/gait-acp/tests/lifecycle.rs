@@ -253,3 +253,49 @@ async fn session_delete_removes_idle_session_without_merging() {
         "session/<id> branch is gone after discard"
     );
 }
+
+#[tokio::test]
+async fn session_delete_emits_session_disposed() {
+    let capture = concord_telemetry::testing::capture_exclusive();
+    let (_t, gait_dir, codebase) = workspace();
+
+    let session_id = drive(SessionMap::new(), async |cx| {
+        Ok(cx
+            .send_request(NewSessionRequest::new(codebase.clone()))
+            .block_task()
+            .await?
+            .session_id
+            .to_string())
+    })
+    .await
+    .expect("session/new should succeed");
+
+    persist_session_fixture(&gait_dir, &session_id, &codebase);
+    let before = gait_state::session::log::last_event(&gait_state::session::live::log_path(
+        &gait_dir,
+        &session_id,
+    ))
+    .unwrap()
+    .unwrap()
+    .id;
+
+    let map = SessionMap::new();
+    map.insert(gait_dir.clone(), session_id.clone(), codebase.clone());
+    drive(map, async |cx| {
+        cx.send_request(DeleteSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+    })
+    .await
+    .expect("delete succeeds");
+
+    let event = capture
+        .single_event_where::<gait_events::gait::events::v1::SessionDisposed>(|e| {
+            e.session_id == session_id
+        });
+    assert_eq!(
+        event.disposition,
+        gait_events::gait::events::v1::Disposition::Discarded as i32
+    );
+    assert_eq!(event.source_record_id, before);
+}
