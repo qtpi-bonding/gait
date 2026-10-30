@@ -370,7 +370,12 @@ message TurnDone {
   }
 }
 message TurnCancelled { string signal_event_id = 1; }
-message TurnFailed { string reason = 1; string message = 2; }
+message TurnFailed {
+  string reason = 1;
+  string message = 2;
+  optional string error_code = 3;
+  optional string error_class = 4;
+}
 message TurnResult {
   string turn_id = 1;
   uint32 index = 2;

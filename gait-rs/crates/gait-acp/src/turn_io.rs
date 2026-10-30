@@ -955,6 +955,8 @@ mod tests {
                 gait_core::proto::gait::log::v1::TurnFailed {
                     reason: "max_steps".into(),
                     message: "hit cap".into(),
+                    error_code: None,
+                    error_class: None,
                 },
             ),
         );
@@ -971,6 +973,8 @@ mod tests {
                 gait_core::proto::gait::log::v1::TurnFailed {
                     reason: "error".into(),
                     message: "boom".into(),
+                    error_code: None,
+                    error_class: None,
                 },
             ),
         );

@@ -136,6 +136,8 @@ fn repair_incomplete_tail(
             outcome: Some(Outcome::Failed(pb::TurnFailed {
                 reason: "coordinator_recovery".into(),
                 message: "recovered an unmatched TurnStart after coordinator restart".into(),
+                error_code: None,
+                error_class: None,
             })),
             ..Default::default()
         };

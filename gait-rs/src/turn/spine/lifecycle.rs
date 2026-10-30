@@ -541,6 +541,8 @@ fn durable_turn_result(
                 draft.failure_reason.clone()
             },
             message: draft.message.clone(),
+            error_code: None,
+            error_class: None,
         })
     } else {
         match raw {
@@ -565,6 +567,8 @@ fn durable_turn_result(
                 pb::turn_result::Outcome::Failed(pb::TurnFailed {
                     reason: draft.failure_reason.clone(),
                     message: draft.message.clone(),
+                    error_code: draft.error_code.clone(),
+                    error_class: draft.error_class.clone(),
                 })
             }
             pause => pb::turn_result::Outcome::Pause(pb::TurnPause {

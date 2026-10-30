@@ -437,3 +437,30 @@ fn tool_result_checkpoint_field_round_trips() {
     let decoded = <ToolResult as prost::Message>::decode(bytes.as_slice()).unwrap();
     assert_eq!(decoded.checkpoint, Some("deadbeef".to_string()));
 }
+
+#[test]
+fn turn_failed_without_code_parses_from_the_old_shape() {
+    use super::gait::log::v1::TurnFailed;
+    let old: TurnFailed =
+        serde_json::from_value(json!({"reason": "x", "message": "y"})).expect("old shape");
+    assert_eq!(old.error_code, None);
+    assert_eq!(old.error_class, None);
+    let back = serde_json::to_value(&old).expect("serialize");
+    assert_eq!(back, json!({"reason": "x", "message": "y"}));
+}
+
+#[test]
+fn turn_failed_with_code_round_trips() {
+    use super::gait::log::v1::TurnFailed;
+    let failed = TurnFailed {
+        reason: "error".into(),
+        message: "request failed".into(),
+        error_code: Some("gait.provider.timeout".into()),
+        error_class: Some("transient".into()),
+    };
+    let value = serde_json::to_value(&failed).expect("serialize");
+    assert_eq!(value["errorCode"], json!("gait.provider.timeout"));
+    assert_eq!(value["errorClass"], json!("transient"));
+    let back: TurnFailed = serde_json::from_value(value).expect("deserialize");
+    assert_eq!(back, failed);
+}
