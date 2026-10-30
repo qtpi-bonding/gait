@@ -418,6 +418,27 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "telemetry")]
+    #[test]
+    #[serial_test::serial]
+    fn with_trace_env_inside_a_parented_span_sends_that_trace() {
+        let _capture = concord_telemetry::testing::capture();
+        let span = tracing::info_span!("launch.trace_probe");
+        concord_telemetry::propagation::set_parent(&span, |key| {
+            (key == "traceparent")
+                .then(|| "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string())
+        });
+        let mut cmd = std::process::Command::new("gait");
+        span.in_scope(|| with_trace_env(&mut cmd));
+        let value = cmd
+            .get_envs()
+            .find(|(key, _)| *key == "TRACEPARENT")
+            .and_then(|(_, value)| value)
+            .and_then(|value| value.to_str())
+            .expect("TRACEPARENT is set");
+        assert!(value.starts_with("00-0af7651916cd43dd8448eb211c80319c-"));
+    }
+
     #[test]
     fn traceparent_is_the_only_new_env_var_passed() {
         assert!(crate::env_passes_to_children("TRACEPARENT"));

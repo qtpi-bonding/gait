@@ -410,10 +410,7 @@ pub async fn run_tool_as_spine(
                 "TMPDIR",
                 shell_process_dir.as_deref().unwrap_or(jail.as_path()),
             );
-        #[cfg(feature = "telemetry")]
-        if let Some(tp) = concord_telemetry::propagation::traceparent() {
-            std_cmd.env(concord_telemetry::propagation::TRACEPARENT_ENV, tp);
-        }
+        crate::launch::with_trace_env(&mut std_cmd);
         // Enroll hand into the cascade group (joins brain's process group).
         if let Err(e) = group.configure_enrolled(&mut std_cmd) {
             let _ = std::fs::remove_dir_all(&jail);
