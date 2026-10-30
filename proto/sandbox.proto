@@ -153,7 +153,6 @@ message Signal {
   oneof body {
     Impulse impulse = 2;
     Feedback feedback = 3;
-    Spawn spawn = 4;
     Append append = 5;
     Terminated terminated = 6;
     StreamForward stream_forward = 7;
@@ -162,12 +161,6 @@ message Signal {
     Diagnostic diagnostic = 10;        // brain→spine: a diagnostic.jsonl record (JSON string)
     ArchiveOutput archive_output = 11; // brain→spine: persist/bound an in-process tool result
   }
-}
-
-// Brain → spine: launch a child gait process (spawn_agent delegation).
-message Spawn {
-  repeated string argv = 1;
-  bool detached = 2;
 }
 
 // Brain → spine: persist one log event (spine is sole gait-dir writer).
@@ -219,7 +212,7 @@ message StreamForward {
 
 // Brain → spine: write an agent_update event to a parent session and resume it.
 // Spine acquires the parent's session lock, appends the event, commits, and
-// releases. The following Spawn signal triggers the actual child-resume spawn.
+// releases, then spawns the parent resume itself.
 message Notify {
   string target_session = 1;
   string from_session   = 2;

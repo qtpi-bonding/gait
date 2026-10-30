@@ -707,41 +707,6 @@ pub async fn relay_brain_turn(
                 state.finalized_turn = t.turn;
                 break;
             }
-            Some(signal::Body::Spawn(sp)) => {
-                // Brain (sealed) delegates process-launch to spine.
-                // Append --sandbox-locked so the child cannot disable sandboxing.
-                let mut argv = sp.argv;
-                if sandbox_on {
-                    argv.push("--sandbox-locked".to_string());
-                }
-                if sp.detached {
-                    // Peer agent: breaks out of the cascade group — survives parent death.
-                    let mut cmd = std::process::Command::new(exe);
-                    cmd.args(&argv)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null());
-                    let _ = group.spawn_detached(cmd);
-                } else {
-                    // Subagent: enrolled in parent's cascade group — reaped when parent ends.
-                    // Pass --cascade-group so the child self-assigns (race-free enrollment).
-                    if let Some(handle) = group.handle() {
-                        argv.extend(["--cascade-group".to_string(), handle]);
-                    } else {
-                        #[allow(clippy::print_stderr)]
-                        // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
-                        {
-                            eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
-                        }
-                    }
-                    let mut cmd = std::process::Command::new(exe);
-                    cmd.args(&argv)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null());
-                    let _ = group.spawn_enrolled(cmd);
-                }
-            }
             Some(signal::Body::Notify(Notify {
                 target_session,
                 from_session,

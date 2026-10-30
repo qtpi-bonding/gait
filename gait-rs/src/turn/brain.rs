@@ -3,8 +3,8 @@
 //! The brain is spawned by the spine (`gait __brain`), self-seals to
 //! `{read_all: false, readable: [], writable: [], network: All}`, and runs one turn via
 //! `embed::run_loop`. All disk writes go through the spine via Nerve signals
-//! (Append for events, ArchiveOutput for in-process tool results, Spawn for
-//! process launches, StreamForward for streaming).
+//! (Append for events, ArchiveOutput for in-process tool results,
+//! StreamForward for streaming).
 //!
 //! This module owns:
 //! - `brain_scope()` — seal spec: compute + network only, with no disk access
@@ -33,13 +33,12 @@ use gait_proto::gait::sandbox::v1::{
 pub use crate::sandbox::brain_scope;
 
 // The ping and Nerve feedback-reader tasks live for the lifetime of the brain
-// process. These four relays are different: once their senders are dropped,
+// process. These relays are different: once their senders are dropped,
 // they drain a finite queue and exit. Keeping their handles lets shutdown wait
 // for every queued event before it publishes the terminal signal.
 struct BrainRelaySenders {
     event_tx: mpsc::UnboundedSender<Event>,
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
-    spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
 }
 
 struct BrainRelayTasks {
@@ -90,29 +89,13 @@ fn start_brain_relays(nerve_writer: &NerveWriter) -> (BrainRelaySenders, BrainRe
         }
     });
 
-    let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<(Vec<String>, bool)>();
-    let spawn_relay_writer = nerve_writer.clone();
-    let spawn_handle = tokio::spawn(async move {
-        while let Some((argv, detached)) = spawn_rx.recv().await {
-            let sig = Signal {
-                corr_id: 0,
-                body: Some(signal::Body::Spawn(gait_proto::gait::sandbox::v1::Spawn {
-                    argv,
-                    detached,
-                })),
-            };
-            spawn_relay_writer.send_one_way(&sig).await.ok();
-        }
-    });
-
     (
         BrainRelaySenders {
             event_tx,
             stream_fwd_tx,
-            spawn_tx,
         },
         BrainRelayTasks {
-            handles: vec![append_handle, stream_handle, spawn_handle],
+            handles: vec![append_handle, stream_handle],
         },
     )
 }
@@ -139,7 +122,7 @@ pub struct BrainConfig {
 ///
 /// 1. Apply the brain seal (read-all, zero writes, outbound network).
 /// 2. Start the Nerve (stdin → Feedback, stdout → Signals).
-/// 3. Spawn relay tasks (Append, StreamForward, Spawn, Notify).
+/// 3. Spawn relay tasks (Append, StreamForward).
 /// 4. Load session + profile, create BrainDriver + BrainSink.
 /// 5. Call `turn::run_turn`.
 /// 6. Send Terminated signal to the spine.
@@ -191,7 +174,6 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     let BrainRelaySenders {
         event_tx,
         stream_fwd_tx,
-        spawn_tx,
     } = relay_senders;
 
     // Emit the brain-seal SandboxApplied event as the first Append signal.
@@ -355,7 +337,6 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
         nerve_writer: nerve_writer.clone(),
         event_tx,
         stream_fwd_tx,
-        spawn_tx,
         log_mirror,
         initial_git,
         daemons,
@@ -468,8 +449,8 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     };
 
     // BrainDriver owns the persistent sender clones. Dropping it closes all
-    // four finite queues once any turn-local clones have gone away; awaiting
-    // their tasks guarantees Append/StreamForward/Spawn/Notify signals already
+    // finite queues once any turn-local clones have gone away; awaiting
+    // their tasks guarantees Append/StreamForward signals already
     // queued by finalization are written before Terminated can overtake them.
     drop(driver);
     let terminated = Signal {
@@ -539,7 +520,6 @@ struct BrainDriver {
     nerve_writer: NerveWriter,
     event_tx: mpsc::UnboundedSender<Event>,
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
-    spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
     log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,
     initial_git: crate::turn::GitSnapshot,
     daemons: Vec<(String, i32, bool, String)>,
@@ -597,7 +577,6 @@ impl BrainDriver {
         _stream_tx: mpsc::UnboundedSender<StreamItem>,
     ) -> Recorder {
         Recorder::remote_sink(self.stream_fwd_tx.clone(), self.event_tx.clone())
-            .with_spawn_tx(self.spawn_tx.clone())
             .with_log_mirror(self.log_mirror.clone())
     }
 }
@@ -670,7 +649,6 @@ mod tests {
     async fn brain_driver_turn_config_carries_live_cancel_token() {
         let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (stream_fwd_tx, _stream_fwd_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (spawn_tx, _spawn_rx) = tokio::sync::mpsc::unbounded_channel();
         // `start_nerve` just needs *some* AsyncRead/AsyncWrite pair to build a
         // `NerveWriter` around — this test never sends/receives real Signals,
         // so an inert reader/sink is enough.
@@ -693,7 +671,6 @@ mod tests {
             nerve_writer,
             event_tx,
             stream_fwd_tx,
-            spawn_tx,
             log_mirror: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             initial_git: crate::turn::GitSnapshot::default(),
             daemons: Vec::new(),

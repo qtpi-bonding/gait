@@ -1,6 +1,5 @@
 use crate::scheduler::Action;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
 
 #[async_trait::async_trait]
 pub trait HarnessBackend: Send + Sync {
@@ -27,12 +26,6 @@ pub struct NotifyPayload {
 
 pub struct NativeHarnessBackend {
     gait_dir: PathBuf,
-    /// When `Some`, route `gait run` spawns via the Nerve's Spawn signal instead
-    /// of calling `Command::spawn` directly (required when brain is sealed).
-    /// NOTE: spawn_tx is provisioned by the brain for future use; the Notify path
-    /// now routes through notify_parent (spine calls spawn_wake directly).
-    #[allow(dead_code)]
-    spawn_tx: Option<mpsc::UnboundedSender<(Vec<String>, bool)>>,
     /// When `Some`, route NotifyAndResume writes via the Nerve's Notify signal
     /// instead of writing directly to disk (required when brain is sealed).
     notify_tx: Option<tokio::sync::mpsc::UnboundedSender<NotifyPayload>>,
@@ -45,19 +38,6 @@ impl NativeHarnessBackend {
     pub fn new(gait_dir: PathBuf) -> Self {
         Self {
             gait_dir,
-            spawn_tx: None,
-            notify_tx: None,
-            identity: None,
-        }
-    }
-
-    pub fn new_with_spawn(
-        gait_dir: PathBuf,
-        spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
-    ) -> Self {
-        Self {
-            gait_dir,
-            spawn_tx: Some(spawn_tx),
             notify_tx: None,
             identity: None,
         }

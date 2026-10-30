@@ -21,10 +21,6 @@ pub struct Recorder {
     /// sends `Append` signals to the spine over the Nerve. The brain never writes
     /// the gait-dir with this mode active.
     remote: Option<UnboundedSender<Event>>,
-    /// Phase 3 Task 7 `Spawn`: when `Some`, `spawn_process` sends (argv, detached) here
-    /// instead of directly calling `Command::spawn`. A brain-side relay task reads
-    /// from this channel and sends `Spawn` signals to the spine over the Nerve.
-    spawn_tx: Option<UnboundedSender<(Vec<String>, bool)>>,
     /// In-memory mirror of every event recorded in remote mode. The brain's
     /// `Ingestor::from_shared` reads this, so the brain never re-reads the log
     /// from disk. `None` outside the brain (buffer/live recorders).
@@ -39,7 +35,6 @@ impl Recorder {
             scope: Arc::new(Mutex::new(EventScope::Session)),
             buffer: None,
             remote: None,
-            spawn_tx: None,
             log_mirror: None,
         }
     }
@@ -58,16 +53,8 @@ impl Recorder {
             scope: Arc::new(Mutex::new(EventScope::Session)),
             buffer: None,
             remote: Some(event_tx),
-            spawn_tx: None,
             log_mirror: None,
         }
-    }
-
-    /// Builder: attach a spawn relay channel so `spawn_process` sends argv over
-    /// the Nerve (brain mode) rather than calling `Command::spawn` directly.
-    pub fn with_spawn_tx(mut self, tx: UnboundedSender<(Vec<String>, bool)>) -> Self {
-        self.spawn_tx = Some(tx);
-        self
     }
 
     /// Builder: attach a shared log mirror that `record()` appends to in remote mode.
@@ -81,15 +68,10 @@ impl Recorder {
         self.log_mirror.clone()
     }
 
-    /// Fire-and-forget process launch. In remote (brain) mode, sends argv to
-    /// the spine via a Spawn signal. In live mode, calls `Command::spawn` directly.
-    /// `argv` = subcommand + args (e.g. `["run", "--session", id, ...]`); the caller
-    /// (brain relay or this fallback) prepends `current_exe()` as the program.
-    pub fn spawn_process(&self, argv: Vec<String>, detached: bool) {
-        if let Some(tx) = &self.spawn_tx {
-            let _ = tx.send((argv, detached));
-            return;
-        }
+    /// Fire-and-forget `Command::spawn` of `current_exe()` with `argv`
+    /// (e.g. `["run", "--session", id, ...]`). Sets no `TRACEPARENT` and emits no
+    /// `AgentSpawned`; reachable only without a relay.
+    pub fn spawn_process(&self, argv: Vec<String>, _detached: bool) {
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
         let _ = std::process::Command::new(&exe)
             .args(&argv)
@@ -135,7 +117,6 @@ impl Recorder {
             scope: Arc::new(Mutex::new(EventScope::Session)),
             buffer: Some(Arc::new(Mutex::new(Vec::new()))),
             remote: None,
-            spawn_tx: None,
             log_mirror: None,
         }
     }
@@ -338,29 +319,6 @@ mod tests {
             received.id, ev.id,
             "channel event must match returned event"
         );
-    }
-
-    #[test]
-    fn spawn_process_uses_channel_when_spawn_tx_set() {
-        let (stream_tx, _) = mpsc::unbounded_channel::<StreamItem>();
-        let (event_tx, _) = mpsc::unbounded_channel::<Event>();
-        let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<(Vec<String>, bool)>();
-        let rec = Recorder::remote_sink(stream_tx, event_tx).with_spawn_tx(spawn_tx);
-        rec.spawn_process(
-            vec![
-                "run".to_string(),
-                "--session".to_string(),
-                "s12345678".to_string(),
-            ],
-            false,
-        );
-        let (argv, detached) = spawn_rx
-            .try_recv()
-            .expect("spawn argv must arrive in channel");
-        assert_eq!(argv[0], "run");
-        assert_eq!(argv[1], "--session");
-        assert_eq!(argv[2], "s12345678");
-        assert!(!detached, "default spawn must not be detached");
     }
 
     #[test]
