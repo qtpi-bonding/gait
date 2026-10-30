@@ -1,5 +1,5 @@
 use agent_client_protocol::schema::v1::{NewSessionRequest, PromptRequest};
-use agent_client_protocol::Client;
+use agent_client_protocol::{Client, ConnectTo};
 use gait_events::gait::events::v1::{PromptAccepted, TurnCompleted};
 use std::path::Path;
 
