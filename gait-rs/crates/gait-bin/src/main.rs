@@ -74,7 +74,6 @@ async fn run(raw: Vec<String>) -> ExitCode {
     let gait_dir_arg = cli.gait_dir.clone();
     let resolve_gait_dir = || -> anyhow::Result<PathBuf> {
         gait_core::gait_dir::resolve(gait_dir_arg.clone(), &cwd)
-            .map_err(|e| anyhow::anyhow!(e))
     };
 
     if let Some(exec_prompt) = cli.exec {

@@ -112,6 +112,17 @@ async fn session_new_without_gait_dir_errors_not_panics() {
     assert!(init_resp.auth_methods.is_empty());
 }
 
+#[tokio::test]
+async fn new_session_outside_workspace_is_coded_not_found() {
+    let t = tempfile::TempDir::new().unwrap();
+    let Err(err) = drive_session_new(t.path()).await else {
+        panic!("a cwd with no gait-dir must fail");
+    };
+    let data = err.data.expect("error data");
+    assert_eq!(data["code"], "gait.state.gait_dir.not_found");
+    assert_eq!(data["class"], "logical");
+}
+
 /// Task 5: a handler that spawns work and returns immediately must not block
 /// the read loop from serving other requests. Fires a slow request (does NOT
 /// await its response yet), then fires `initialize` and asserts THAT resolves

@@ -7,6 +7,23 @@ use std::path::{Path, PathBuf};
 
 use gait_platform::{NativePlatform, Platform};
 
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.state.gait_dir")]
+pub enum GaitDirError {
+    #[error("{0}")]
+    #[coded(code = "not_found", class = Logical)]
+    NotFound(String),
+    #[error("cannot read {path}: {why}")]
+    #[coded(code = "gaitref_unreadable", class = Infrastructure)]
+    GaitrefUnreadable { path: String, why: String },
+    #[error("{0} names no path")]
+    #[coded(code = "gaitref_empty", class = Logical)]
+    GaitrefEmpty(String),
+    #[error("{0}")]
+    #[coded(code = "home_unavailable", class = Infrastructure)]
+    HomeUnavailable(String),
+}
+
 pub fn resolve(explicit: Option<PathBuf>, start: &Path) -> anyhow::Result<PathBuf> {
     resolve_with(&NativePlatform, explicit, start)
 }
@@ -45,11 +62,11 @@ pub fn discover_with(platform: &dyn Platform, start: &Path) -> anyhow::Result<Pa
         }
         cur = dir.parent();
     }
-    anyhow::bail!(
+    Err(coded_error::into_anyhow(GaitDirError::NotFound(format!(
         "not a gait workspace: no .gait/ or .gaitref found from {} upward — \
          run `gait init .gait`, `gait link <gait-dir>`, or pass --gait-dir",
         start.display()
-    )
+    ))))
 }
 
 /// Read a `.gaitref` pointer → the gait-dir it names. First non-empty line,
@@ -57,7 +74,12 @@ pub fn discover_with(platform: &dyn Platform, start: &Path) -> anyhow::Result<Pa
 /// relative resolved against the `.gaitref` file's own directory).
 fn read_gaitref_with(platform: &dyn Platform, marker: &Path) -> anyhow::Result<PathBuf> {
     let raw = std::fs::read_to_string(marker)
-        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", marker.display()))?;
+        .map_err(|e| {
+            coded_error::into_anyhow(GaitDirError::GaitrefUnreadable {
+                path: marker.display().to_string(),
+                why: e.to_string(),
+            })
+        })?;
     let line = raw
         .lines()
         .map(str::trim)
@@ -65,7 +87,9 @@ fn read_gaitref_with(platform: &dyn Platform, marker: &Path) -> anyhow::Result<P
         .unwrap_or("");
     let path = line.strip_prefix("gaitdir:").unwrap_or(line).trim();
     if path.is_empty() {
-        anyhow::bail!("{} names no path", marker.display());
+        return Err(coded_error::into_anyhow(GaitDirError::GaitrefEmpty(
+            marker.display().to_string(),
+        )));
     }
     let expanded = expand_tilde_with(platform, path)?;
     if expanded.is_absolute() {
@@ -81,12 +105,16 @@ fn read_gaitref_with(platform: &dyn Platform, marker: &Path) -> anyhow::Result<P
 fn expand_tilde_with(platform: &dyn Platform, path: &str) -> anyhow::Result<PathBuf> {
     if path == "~" {
         return platform.home_dir().ok_or_else(|| {
-            anyhow::anyhow!("cannot expand '~': user home directory is unavailable")
+            coded_error::into_anyhow(GaitDirError::HomeUnavailable(
+                "cannot expand '~': user home directory is unavailable".to_string(),
+            ))
         });
     }
     if let Some(rest) = path.strip_prefix("~/") {
         let home = platform.home_dir().ok_or_else(|| {
-            anyhow::anyhow!("cannot expand '{path}': user home directory is unavailable")
+            coded_error::into_anyhow(GaitDirError::HomeUnavailable(format!(
+                "cannot expand '{path}': user home directory is unavailable"
+            )))
         })?;
         return Ok(home.join(rest));
     }
@@ -130,6 +158,30 @@ mod tests {
                 .then(|| self.gait_dir.clone())
                 .flatten()
         }
+    }
+
+    #[test]
+    fn discover_outside_a_workspace_is_a_coded_not_found() {
+        let t = tempfile::TempDir::new().unwrap();
+        let err = discover_with(&NativePlatform, t.path()).unwrap_err();
+        let facts = coded_error::facts_anyhow(&err);
+        assert_eq!(facts.code, "gait.state.gait_dir.not_found");
+        assert_eq!(facts.class, coded_error::ErrorClass::Logical);
+    }
+
+    #[test]
+    fn empty_gaitref_is_coded() {
+        let t = tempfile::TempDir::new().unwrap();
+        std::fs::write(t.path().join(".gaitref"), "  \n").unwrap();
+        let err = discover_with(&NativePlatform, t.path()).unwrap_err();
+        let facts = coded_error::facts_anyhow(&err);
+        assert_eq!(facts.code, "gait.state.gait_dir.gaitref_empty");
+        assert_eq!(facts.class, coded_error::ErrorClass::Logical);
+    }
+
+    #[test]
+    fn gait_dir_error_codes_are_unique() {
+        coded_error::check_codes("gait.state.gait_dir.", &[GaitDirError::ALL_CODES]).unwrap();
     }
 
     #[test]

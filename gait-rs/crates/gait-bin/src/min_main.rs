@@ -51,7 +51,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     let cwd = cwd_or_dot();
     let gait_dir_arg = cli.gait_dir.clone();
     let resolve_gait_dir = || -> anyhow::Result<PathBuf> {
-        gait_core::gait_dir::resolve(gait_dir_arg.clone(), &cwd).map_err(|e| anyhow::anyhow!(e))
+        gait_core::gait_dir::resolve(gait_dir_arg.clone(), &cwd)
     };
 
     // Mode dispatch: -e (exec), -i (interactive, plain REPL only), bare
