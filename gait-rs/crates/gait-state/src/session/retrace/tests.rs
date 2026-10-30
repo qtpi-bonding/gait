@@ -1,6 +1,6 @@
 use super::*;
 use crate::proto::{events, wire};
-use identity_keyfile::testkit::TempAgentDir;
+use identity_keyfile::testkit::TempIdentityDir;
 use tempfile::TempDir;
 
 fn write_events(dir: &std::path::Path, bodies: Vec<event::Body>) -> std::path::PathBuf {
@@ -1647,8 +1647,8 @@ fn raw_messages_carry_event_ids() {
 
 /// Agent identity fixture, minted at `now` so that events stamped at `now`
 /// fall inside its device key window. Keep the fixture alive while using `ctx`.
-fn agent_fixture(now: i64) -> (TempAgentDir, gait_identity::IdentityContext) {
-    let agent = TempAgentDir::new(now, 3_600);
+fn agent_fixture(now: i64) -> (TempIdentityDir, gait_identity::IdentityContext) {
+    let agent = TempIdentityDir::new(now, 3_600);
     let ctx = gait_identity::IdentityContext::new(agent.path()).unwrap();
     (agent, ctx)
 }

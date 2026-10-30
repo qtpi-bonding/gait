@@ -97,7 +97,7 @@ impl Attestor {
             .with_context(|| format!("load agent identity from {}", agent_dir.display()))?
             .public();
         let own_devices = public.device_keys_at(now_unix());
-        Self::with_own_devices(agent_dir, trusted, own_devices, public.agent_id.to_string())
+        Self::with_own_devices(agent_dir, trusted, own_devices, public.principal_id.to_string())
     }
 
     /// The startup constructor behind [`Attestor::open`], taking the initial
@@ -325,7 +325,7 @@ mod tests {
     use super::*;
     use identity_crypto::jwk_duo::{GenerationService, KeyDuo};
     use identity_crypto::pb;
-    use identity_keyfile::testkit::TempAgentDir;
+    use identity_keyfile::testkit::TempIdentityDir;
     use message_attestation::{UnsignedAttestation, attach, sign_attestation};
 
     fn public_jwk_file(dir: &Path, duo: &KeyDuo) -> std::path::PathBuf {
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn extra_recipient_key_is_accepted_and_an_unlisted_key_is_not() {
-        let agent = TempAgentDir::new(now_unix(), 86_400);
+        let agent = TempIdentityDir::new(now_unix(), 86_400);
         let (central, trusted) = trusted_central();
         let extra = PublicKey::from(GenerationService::generate_key_duo().signing_key_pair());
         let unlisted = PublicKey::from(GenerationService::generate_key_duo().signing_key_pair());
@@ -506,13 +506,13 @@ mod tests {
         let now = now_unix();
         // The agent was created, then its device rotated a while ago: the old
         // device retired before `now`, the new one is current.
-        let agent = TempAgentDir::new(now - 1_000, 86_400);
+        let agent = TempIdentityDir::new(now - 1_000, 86_400);
         let (central, trusted) = trusted_central();
         let attestor = Attestor::open(agent.path(), vec![trusted]).unwrap();
         let old_device =
             identity_keyfile::device_keys_at(&agent.load().unwrap(), now)[0].clone();
 
-        identity_keyfile::AgentKeys::rotate_device(agent.path(), now - 500, 86_400).unwrap();
+        identity_keyfile::IdentityKeys::rotate_device(agent.path(), now - 500, 86_400).unwrap();
         let new_device =
             identity_keyfile::device_keys_at(&agent.load().unwrap(), now)[0].clone();
         assert_ne!(old_device, new_device, "the rotation produced a new device");
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn a_batch_confirmed_between_the_replay_read_and_the_claim_is_rejected() {
         let now = now_unix();
-        let agent = TempAgentDir::new(now, 86_400);
+        let agent = TempIdentityDir::new(now, 86_400);
         let (central, trusted) = trusted_central();
         let attestor = Attestor::open(agent.path(), vec![trusted]).unwrap();
         let device = identity_keyfile::device_keys_at(&agent.load().unwrap(), now)[0].clone();
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn in_flight_claim_rejects_a_concurrent_second_claimant() {
         let now = now_unix();
-        let agent = TempAgentDir::new(now, 86_400);
+        let agent = TempIdentityDir::new(now, 86_400);
         let (central, trusted) = trusted_central();
         let attestor = Attestor::open(agent.path(), vec![trusted]).unwrap();
         let device = identity_keyfile::device_keys_at(&agent.load().unwrap(), now)[0].clone();

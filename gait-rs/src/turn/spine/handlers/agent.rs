@@ -323,17 +323,17 @@ mod telemetry_tests {
 mod tests {
     use super::*;
     use crate::turn::spine::handlers::test_ctx;
-    use identity_keyfile::testkit::TempAgentDir;
+    use identity_keyfile::testkit::TempIdentityDir;
     use std::sync::Arc;
 
     /// A real agent identity minted now, with a one-hour device window.
     /// Keep the returned fixture alive while the identity is in use.
-    fn agent_identity() -> (TempAgentDir, Arc<gait_identity::IdentityContext>) {
+    fn agent_identity() -> (TempIdentityDir, Arc<gait_identity::IdentityContext>) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let agent = TempAgentDir::new(now, 3_600);
+        let agent = TempIdentityDir::new(now, 3_600);
         let identity = Arc::new(gait_identity::IdentityContext::new(agent.path()).unwrap());
         (agent, identity)
     }

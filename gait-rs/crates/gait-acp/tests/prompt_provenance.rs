@@ -9,7 +9,7 @@ use gait_acp::session_map::SessionMap;
 use gait_proto::gait::log::v1::{Event, Provenance, event, payload};
 use identity_crypto::jwk_duo::{GenerationService, KeyDuo, KeyDuoSerializer};
 use identity_crypto::{PrincipalId, PublicKey, Timestamp, mint_session, pb};
-use identity_keyfile::testkit::TempAgentDir;
+use identity_keyfile::testkit::TempIdentityDir;
 use message_attestation::{
     DEFAULT_META_KEY, FileReplayStore, ReplayStore as _, UnsignedAttestation, attach,
     sign_attestation,
@@ -190,7 +190,7 @@ fn now_unix() -> i64 {
 /// recipient list), a central delivery key pair (the bridge's signer, supplied
 /// to gait only as its public JWK), and one message author.
 struct Fixture {
-    agent: TempAgentDir,
+    agent: TempIdentityDir,
     central: KeyDuo,
     trusted: (String, PublicKey),
     author: PublicKey,
@@ -216,7 +216,7 @@ impl Fixture {
             .cert()
             .clone();
         Self {
-            agent: TempAgentDir::new(now, 86_400),
+            agent: TempIdentityDir::new(now, 86_400),
             central,
             trusted,
             author,
@@ -233,7 +233,7 @@ impl Fixture {
     }
 
     fn scope(&self) -> String {
-        self.agent.load().unwrap().agent_id.to_string()
+        self.agent.load().unwrap().principal_id.to_string()
     }
 
     fn attestor(&self) -> Arc<Attestor> {

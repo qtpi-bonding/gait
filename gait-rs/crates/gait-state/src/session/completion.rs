@@ -216,14 +216,14 @@ fn notify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use identity_keyfile::testkit::TempAgentDir;
+    use identity_keyfile::testkit::TempIdentityDir;
     use tempfile::TempDir;
 
     /// A real agent identity in its own directory, separate from the gait dir.
     /// The returned fixture must stay alive for as long as the context is used.
-    fn identity_fixture() -> (TempAgentDir, gait_identity::IdentityContext) {
+    fn identity_fixture() -> (TempIdentityDir, gait_identity::IdentityContext) {
         let now = wall_clock();
-        let agent = TempAgentDir::new(now, 3_600);
+        let agent = TempIdentityDir::new(now, 3_600);
         let ctx = gait_identity::IdentityContext::new(agent.path()).unwrap();
         (agent, ctx)
     }

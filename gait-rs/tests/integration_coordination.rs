@@ -6,7 +6,7 @@ use gait_core::{
     turn::{run_turn, TurnResult},
 };
 use gait_identity::{DirectVerifier, IdentityContext, ProvenanceVerifier};
-use identity_keyfile::testkit::TempAgentDir;
+use identity_keyfile::testkit::TempIdentityDir;
 
 /// The substantive payload kind for a proto event, if it carries one.
 fn event_kind(e: &Event) -> Option<&payload::Kind> {
@@ -85,7 +85,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let agent = TempAgentDir::new(now, 3_600);
+    let agent = TempIdentityDir::new(now, 3_600);
     let identity = Arc::new(IdentityContext::new(agent.path()).unwrap());
     init_git_repo(ws.path());
     std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();

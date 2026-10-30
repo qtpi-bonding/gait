@@ -237,16 +237,16 @@ mod tests {
     use crate::session::read_session_meta;
     use crate::test_utils::init_git_repo;
     use gait_identity::{DirectVerifier, IdentityContext, ProvenanceVerifier};
-    use identity_keyfile::testkit::TempAgentDir;
+    use identity_keyfile::testkit::TempIdentityDir;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     /// A real agent identity minted now, with a one-hour device window, so a
     /// child event stamped at wall-clock time verifies. Keep the fixture alive
     /// while the identity is in use.
-    fn agent_identity() -> (TempAgentDir, Arc<IdentityContext>) {
+    fn agent_identity() -> (TempIdentityDir, Arc<IdentityContext>) {
         let now = wall_clock_secs();
-        let agent = TempAgentDir::new(now, 3_600);
+        let agent = TempIdentityDir::new(now, 3_600);
         let identity = Arc::new(IdentityContext::new(agent.path()).unwrap());
         (agent, identity)
     }

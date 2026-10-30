@@ -286,14 +286,14 @@ pub async fn run_one(
 /// where `gait` finds it at process entry (the spine reads it at turn start).
 /// The directory lives as long as the process, so every test sees a valid one.
 pub fn publish_agent_identity() {
-    static AGENT: std::sync::OnceLock<identity_keyfile::testkit::TempAgentDir> =
+    static AGENT: std::sync::OnceLock<identity_keyfile::testkit::TempIdentityDir> =
         std::sync::OnceLock::new();
     let agent = AGENT.get_or_init(|| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        identity_keyfile::testkit::TempAgentDir::new(now, 86_400)
+        identity_keyfile::testkit::TempIdentityDir::new(now, 86_400)
     });
     std::env::set_var("GAIT_AGENT_DIR", agent.path());
 }

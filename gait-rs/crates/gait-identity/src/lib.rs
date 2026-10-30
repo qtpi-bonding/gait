@@ -73,7 +73,7 @@ impl IdentityContext {
     pub fn new(agent_dir: impl Into<PathBuf>) -> Result<Self> {
         let agent_dir = agent_dir.into();
         let keys = load_keys(&agent_dir)?;
-        Ok(Self { agent_dir, agent_id: keys.agent_id })
+        Ok(Self { agent_dir, agent_id: keys.principal_id })
     }
 
     pub fn agent_id(&self) -> &PrincipalId {
@@ -100,7 +100,7 @@ pub fn sign_direct_event(
     let issued = now();
     let session = mint_session(
         keys.device.signing_key_pair(),
-        keys.agent_id.genesis(),
+        keys.principal_id.genesis(),
         issued,
         issued.checked_add(ttl_secs).context("session expiry overflow")?,
     )?;
@@ -138,7 +138,7 @@ impl DirectVerifier {
 
     fn verify(&self, ev: &Event, session_id: &str) -> Option<PrincipalId> {
         let devices = self.public.device_keys_at((ev.ts / 1000) as i64);
-        verify_direct_provenance(ev, self.public.agent_id.genesis(), &devices, session_id)
+        verify_direct_provenance(ev, self.public.principal_id.genesis(), &devices, session_id)
     }
 }
 
@@ -177,7 +177,7 @@ pub fn verify_direct_provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use identity_keyfile::testkit::TempAgentDir;
+    use identity_keyfile::testkit::TempIdentityDir;
 
     #[test]
     fn identity_error_codes_are_unique() {
@@ -266,7 +266,7 @@ mod tests {
         };
         let session = mint_session(
             keys.device.signing_key_pair(),
-            keys.agent_id.genesis(),
+            keys.principal_id.genesis(),
             now_secs,
             now_secs + ttl,
         )
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn signed_event_verifies_for_its_own_workspace() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let signed = signed(&ctx, "event-own", 1_000_000, "hash", "session", 1_000, 60);
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn event_ts_before_cert_not_before_minus_skew_is_rejected() {
         let now = 1_000;
-        let fixture = TempAgentDir::new(now, 3_600);
+        let fixture = TempIdentityDir::new(now, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let too_early = signed(
             &ctx,
@@ -335,7 +335,7 @@ mod tests {
     fn event_ts_after_cert_not_after_is_rejected() {
         let now = 1_000;
         let ttl = 60;
-        let fixture = TempAgentDir::new(now, 3_600);
+        let fixture = TempIdentityDir::new(now, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let too_late = signed(
             &ctx,
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn event_moved_to_another_session_is_rejected() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-session", 1_000_000, "hash", "right", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn tampered_content_hash_is_rejected() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let mut ev = signed(&ctx, "event-hash", 1_000_000, "original", "s", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn wrong_nonce_is_rejected() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let mut ev = signed(&ctx, "event-nonce", 1_000_000, "hash", "s", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
@@ -392,8 +392,8 @@ mod tests {
 
     #[test]
     fn device_not_in_set_is_rejected() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
-        let other = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
+        let other = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-device", 1_000_000, "hash", "s", 1_000, 60);
         let real = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
@@ -405,12 +405,12 @@ mod tests {
 
     #[test]
     fn other_principals_genesis_is_rejected() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let keys = ctx.keys().unwrap();
         // The own device signs a session under ANOTHER principal's genesis.
-        let other = TempAgentDir::new(1_000, 3_600);
-        let other_genesis = other.load().unwrap().agent_id.genesis().clone();
+        let other = TempIdentityDir::new(1_000, 3_600);
+        let other_genesis = other.load().unwrap().principal_id.genesis().clone();
         assert_ne!(&other_genesis, ctx.agent_id().genesis());
         let ev = Event {
             id: "event-principal".into(),
@@ -444,10 +444,10 @@ mod tests {
 
     #[test]
     fn signing_and_verifying_work_without_root_key_file() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         std::fs::remove_file(fixture.path().join("root.jwk.json")).unwrap();
         std::fs::remove_file(fixture.path().join("rotations.json")).ok();
-        assert!(identity_keyfile::AgentKeys::load(fixture.path()).is_err());
+        assert!(identity_keyfile::IdentityKeys::load(fixture.path()).is_err());
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-no-root", 1_000_000, "hash", "s", 1_000, 60);
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
@@ -458,13 +458,13 @@ mod tests {
     fn verifier_works_after_the_agent_dir_becomes_unreadable() {
         use std::os::unix::fs::PermissionsExt;
 
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-sealed", 1_000_000, "hash", "s", 1_000, 60);
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
         let original = std::fs::metadata(fixture.path()).unwrap().permissions();
         std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
-        let sealed = identity_keyfile::AgentKeys::load(fixture.path()).is_err();
+        let sealed = identity_keyfile::IdentityKeys::load(fixture.path()).is_err();
         let verified = verifier.verify_direct(&ev, "s");
         std::fs::set_permissions(fixture.path(), original).unwrap();
         assert!(sealed, "chmod 000 must make the agent dir unloadable (tests do not run as root)");
@@ -474,10 +474,10 @@ mod tests {
     #[test]
     fn retired_device_still_verifies_when_event_precedes_retirement() {
         let t = 1_000;
-        let fixture = TempAgentDir::new(t, 3_600);
+        let fixture = TempIdentityDir::new(t, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-retired-before", t as u64 * 1_000, "hash", "s", t, 60);
-        identity_keyfile::AgentKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
+        identity_keyfile::IdentityKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
         let reloaded = fixture.load().unwrap();
         let devices = identity_keyfile::device_keys_at(&reloaded, t);
         assert_eq!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s"), Some(ctx.agent_id().clone()));
@@ -486,10 +486,10 @@ mod tests {
     #[test]
     fn retired_device_fails_when_event_follows_retirement() {
         let t = 1_000;
-        let fixture = TempAgentDir::new(t, 3_600);
+        let fixture = TempIdentityDir::new(t, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-retired-after", (t + 101) as u64 * 1_000, "hash", "s", t, 3_600);
-        identity_keyfile::AgentKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
+        identity_keyfile::IdentityKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
         let reloaded = fixture.load().unwrap();
         let devices = identity_keyfile::device_keys_at(&reloaded, t + 101);
         assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").is_none());
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn wrong_body_type_is_rejected() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed_with_body_type(
             &ctx,
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn garbage_signed_message_is_rejected_without_panic() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let mut empty = signed(&ctx, "event-empty", 1_000_000, "hash", "s", 1_000, 60);
         empty.provenance[0].signed_message = Some(Default::default());
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn verified_author_is_the_agent_principal() {
-        let fixture = TempAgentDir::new(1_000, 3_600);
+        let fixture = TempIdentityDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-author", 1_000_000, "hash", "s", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
