@@ -148,7 +148,11 @@ pub(crate) fn direct_on_durable(session_id: String) -> gait_core::port::input::O
     })
 }
 
-pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, String> {
+fn internal(message: impl Into<String>) -> anyhow::Error {
+    coded_error::into_anyhow(crate::error::PromptError::Internal(message.into()))
+}
+
+pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, anyhow::Error> {
     use gait_core::proto::gait::log::v1::turn_result::Outcome;
     match r.turns.last().and_then(|turn| turn.outcome.as_ref()) {
         Some(Outcome::Done(_)) => Ok(StopReason::EndTurn),
@@ -156,7 +160,14 @@ pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, String> {
         Some(Outcome::Failed(failed)) if failed.reason == "max_steps" => {
             Ok(StopReason::MaxTurnRequests)
         }
-        Some(Outcome::Failed(failed)) => Err(failed.message.clone()),
+        Some(Outcome::Failed(failed)) => Err(match failed.error_code.as_deref() {
+            Some(code) => coded_error::from_remote(
+                Some(code),
+                failed.error_class.as_deref().and_then(|class| class.parse().ok()),
+                failed.message.clone(),
+            ),
+            None => internal(failed.message.clone()),
+        }),
         Some(Outcome::Pause(_)) => {
             // Permissions/Clarify/Inform/SandboxUnlock all resume via
             // AcpTurnSource::next() before a run ever finalizes into this arm for
@@ -165,9 +176,11 @@ pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, String> {
             // pending_interaction's caller in next()), or any pause next()
             // couldn't resolve (transport error, protocol violation, cancellation
             // after the fact).
-            Err("turn ended awaiting interaction, which is unsupported here".into())
+            Err(internal(
+                "turn ended awaiting interaction, which is unsupported here",
+            ))
         }
-        None => Err("run produced no final turn outcome".into()),
+        None => Err(internal("run produced no final turn outcome")),
     }
 }
 
@@ -935,17 +948,20 @@ mod tests {
         let r = run_with(gait_core::proto::gait::log::v1::turn_result::Outcome::Done(
             Default::default(),
         ));
-        assert_eq!(turn_result_to_stop_reason(&r), Ok(StopReason::EndTurn));
+        assert!(matches!(
+            turn_result_to_stop_reason(&r),
+            Ok(StopReason::EndTurn)
+        ));
     }
 
     #[test]
     fn cancelled_maps_to_cancelled() {
-        assert_eq!(
+        assert!(matches!(
             turn_result_to_stop_reason(&run_with(
                 gait_core::proto::gait::log::v1::turn_result::Outcome::Cancelled(Default::default())
             )),
             Ok(StopReason::Cancelled)
-        );
+        ));
     }
 
     #[test]
@@ -960,10 +976,10 @@ mod tests {
                 },
             ),
         );
-        assert_eq!(
+        assert!(matches!(
             turn_result_to_stop_reason(&r),
             Ok(StopReason::MaxTurnRequests)
-        );
+        ));
     }
 
     #[test]
@@ -978,7 +994,33 @@ mod tests {
                 },
             ),
         );
-        assert_eq!(turn_result_to_stop_reason(&r), Err("boom".into()));
+        let err = turn_result_to_stop_reason(&r).unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+        let wire = crate::error::acp_error(&err, crate::error::PROMPT);
+        assert_eq!(
+            wire.data.as_ref().unwrap()["code"],
+            "gait.acp.prompt.internal"
+        );
+    }
+
+    #[test]
+    fn coded_failure_answers_its_own_code_and_class() {
+        let r = run_with(
+            gait_core::proto::gait::log::v1::turn_result::Outcome::Failed(
+                gait_core::proto::gait::log::v1::TurnFailed {
+                    reason: "error".into(),
+                    message: "secret provider details".into(),
+                    error_code: Some("gait.provider.timeout".into()),
+                    error_class: Some("transient".into()),
+                },
+            ),
+        );
+        let err = turn_result_to_stop_reason(&r).unwrap_err();
+        let wire = crate::error::acp_error(&err, crate::error::PROMPT);
+        let data = wire.data.as_ref().unwrap();
+        assert_eq!(data["code"], "gait.provider.timeout");
+        assert_eq!(data["class"], "transient");
+        assert_eq!(wire.message, "request failed");
     }
 
     #[test]

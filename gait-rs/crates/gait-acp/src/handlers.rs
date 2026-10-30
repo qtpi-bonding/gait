@@ -467,9 +467,7 @@ pub fn build_agent_with_attestation(
                                     }
                                     Err(e) => Err(e),
                                     Ok(_) => match sink.take_result() {
-                                        Some(tr) => turn_result_to_stop_reason(&tr).map_err(|msg| {
-                                            coded_error::into_anyhow(PromptError::Internal(msg))
-                                        }),
+                                        Some(tr) => turn_result_to_stop_reason(&tr),
                                         None => Err(coded_error::into_anyhow(PromptError::Internal(
                                             "turn produced no result".into(),
                                         ))),
