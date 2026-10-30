@@ -1765,6 +1765,7 @@ dependencies = [
  "concord-telemetry",
  "gait-cli",
  "gait-core",
+ "gait-events",
  "gait-identity",
  "gait-llama-cpp",
  "gait-proto",

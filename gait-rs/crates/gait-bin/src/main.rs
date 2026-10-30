@@ -68,8 +68,21 @@ async fn run(raw: Vec<String>) -> ExitCode {
             return gait_bin::finish(gait_cli::cli::args::cmd_run(&raw[2..]).await);
         }
     }
+    #[cfg(feature = "telemetry")]
+    {
+        use tracing::Instrument;
+        let span = tracing::info_span!("gait.cli");
+        concord_telemetry::propagation::set_parent_from_env(&span);
+        return run_cli(raw).instrument(span).await;
+    }
+    #[cfg(not(feature = "telemetry"))]
+    {
+        return run_cli(raw).await;
+    }
+}
 
-    let cli = Cli::parse();
+async fn run_cli(raw: Vec<String>) -> ExitCode {
+    let cli = Cli::parse_from(&raw);
     let cwd = cwd_or_dot();
     let gait_dir_arg = cli.gait_dir.clone();
     let resolve_gait_dir = || -> anyhow::Result<PathBuf> {

@@ -80,6 +80,8 @@ concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.g
 tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
+gait-events = { path = "../gait-events" }
+tracing = "0.1"
 tempfile = "3"
 serial_test = "3"
 prost        = "0.13"
