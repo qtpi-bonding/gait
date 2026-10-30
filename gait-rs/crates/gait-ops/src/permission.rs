@@ -64,6 +64,57 @@ pub fn resolve_active_mode_name(gait_dir: &Path, session_id: &str) -> Option<Str
     gait_state::session::retrace::active_mode(&evs, &muts).map(|m| m.name)
 }
 
+#[cfg(feature = "telemetry")]
+fn event_scope(scope: GrantScope) -> gait_events::gait::events::v1::GrantScope {
+    use gait_events::gait::events::v1::GrantScope as E;
+    match scope {
+        GrantScope::Once => E::Once,
+        GrantScope::Session => E::Session,
+        GrantScope::Mode => E::Mode,
+        GrantScope::Agent => E::Agent,
+        GrantScope::Global => E::Global,
+    }
+}
+
+#[cfg(feature = "telemetry")]
+fn scope_rank(scope: GrantScope) -> u8 {
+    match scope {
+        GrantScope::Once => 0,
+        GrantScope::Session => 1,
+        GrantScope::Mode => 2,
+        GrantScope::Agent => 3,
+        GrantScope::Global => 4,
+    }
+}
+
+#[cfg(feature = "telemetry")]
+fn scope_persists(scope: GrantScope) -> bool {
+    matches!(
+        scope,
+        GrantScope::Global | GrantScope::Agent | GrantScope::Mode
+    )
+}
+
+#[cfg(feature = "telemetry")]
+fn emit_permission_decided(
+    source_record_id: String,
+    session_id: &str,
+    decision: gait_events::gait::events::v1::PermissionDecision,
+    scope: Option<GrantScope>,
+    item_count: usize,
+    persisted: bool,
+) {
+    use gait_events::gait::events::v1::GrantScope as E;
+    concord_telemetry::event!(gait_events::gait::events::v1::PermissionDecided {
+        source_record_id,
+        session_id: session_id.to_owned(),
+        decision: decision as i32,
+        scope: scope.map_or(E::Unspecified, event_scope) as i32,
+        item_count: item_count as u32,
+        persisted,
+    });
+}
+
 /// Outcome returned by [`allow`]. Carries the reply items the op wrote (so the
 /// adapter can render them under `--json`) and the scope it stamped on each.
 #[derive(Debug)]
@@ -122,7 +173,17 @@ pub fn allow(
         mode_name.as_deref(),
     )?;
 
-    write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
+    let _record_id = write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
+
+    #[cfg(feature = "telemetry")]
+    emit_permission_decided(
+        _record_id,
+        session_id,
+        gait_events::gait::events::v1::PermissionDecision::Allow,
+        Some(params.scope),
+        reply_items.len(),
+        scope_persists(params.scope),
+    );
 
     Ok(AllowOutcome {
         reply_items,
@@ -171,7 +232,16 @@ pub fn deny(gait_dir: &Path, session_id: &str) -> anyhow::Result<DenyOutcome> {
         return Ok(DenyOutcome { reply_items: reply });
     }
 
-    write_permissions_reply(&tx_path, "user", reply.clone()).coded()?;
+    let _record_id = write_permissions_reply(&tx_path, "user", reply.clone()).coded()?;
+    #[cfg(feature = "telemetry")]
+    emit_permission_decided(
+        _record_id,
+        session_id,
+        gait_events::gait::events::v1::PermissionDecision::Deny,
+        None,
+        reply.len(),
+        false,
+    );
     Ok(DenyOutcome { reply_items: reply })
 }
 
@@ -348,7 +418,28 @@ pub fn reply_for_items(
     if reply_items.is_empty() {
         return Ok(ReplyOutcome { reply_items });
     }
-    write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
+    let _record_id = write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
+    #[cfg(feature = "telemetry")]
+    {
+        let broadest = choices
+            .iter()
+            .filter(|c| c.decision == pb::Decision::Allow)
+            .map(|c| c.scope)
+            .max_by_key(|s| scope_rank(*s));
+        let decision = if broadest.is_some() {
+            gait_events::gait::events::v1::PermissionDecision::Allow
+        } else {
+            gait_events::gait::events::v1::PermissionDecision::Deny
+        };
+        emit_permission_decided(
+            _record_id,
+            session_id,
+            decision,
+            broadest,
+            choices.len(),
+            broadest.is_some_and(scope_persists),
+        );
+    }
     Ok(ReplyOutcome { reply_items })
 }
 // -----------------------------------------------------------------------------
@@ -458,7 +549,17 @@ pub fn unlock(params: UnlockParams) -> anyhow::Result<UnlockOutcome> {
         })
         .collect();
 
-    write_unlock_reply(&tx_path, "user", reply_items.clone()).coded()?;
+    let _record_id = write_unlock_reply(&tx_path, "user", reply_items.clone()).coded()?;
+
+    #[cfg(feature = "telemetry")]
+    emit_permission_decided(
+        _record_id,
+        &params.session_id,
+        gait_events::gait::events::v1::PermissionDecision::SandboxUnlock,
+        Some(params.scope),
+        reply_items.len(),
+        persisted_grants > 0,
+    );
 
     Ok(UnlockOutcome {
         reply_items,
@@ -1122,5 +1223,175 @@ mod tests {
         );
         // No PermissionsReply was written — the session is still AwaitingPermission.
         assert_eq!(read_events(&tx).map(|e| e.len()).unwrap_or(0), 1);
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod telemetry_tests {
+    use super::*;
+    use gait_events::gait::events::v1 as ev;
+    use gait_state::proto::gait::log::v1 as pb;
+    use gait_state::session::log::read_events;
+    use gait_state::proto::wire;
+    use tempfile::TempDir;
+
+    fn ws() -> TempDir {
+        let ws = TempDir::new().unwrap();
+        std::fs::write(
+            ws.path().join("gait.jsonc"),
+            r#"{
+  "allow": ["read"],
+  "sandbox": { "on": true, "readable": [], "writable": [], "network": false }
+}
+"#,
+        )
+        .unwrap();
+        ws
+    }
+
+    fn session(ws: &Path, id: &str) -> std::path::PathBuf {
+        let tx = gait_state::session::live::log_path(ws, id);
+        std::fs::create_dir_all(tx.parent().unwrap()).unwrap();
+        tx
+    }
+
+    fn perm_item(id: &str) -> pb::PermissionItem {
+        pb::PermissionItem {
+            id: id.into(),
+            tool_name: "shell".into(),
+            cmd: "ls".into(),
+            patterns: vec!["ls".into()],
+            reason: String::new(),
+            preview: None,
+            tool_args: None,
+        }
+    }
+
+    fn seed_permission(tx: &Path, id: &str) {
+        wire::append(tx, gait_state::proto::events::permissions(&[perm_item(id)])).unwrap();
+    }
+
+    fn last_id(tx: &Path) -> String {
+        read_events(tx).unwrap().last().unwrap().id.clone()
+    }
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}-{}", std::process::id())
+    }
+
+    #[test]
+    fn allow_emits_permission_decided_after_the_reply_is_written() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let ws = ws();
+        let sid = unique("pdallow");
+        let tx = session(ws.path(), &sid);
+        seed_permission(&tx, "p1");
+        allow(
+            ws.path(),
+            &sid,
+            AllowParams {
+                scope: GrantScope::Session,
+                pattern: None,
+            },
+        )
+        .unwrap();
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        assert_eq!(event.decision, ev::PermissionDecision::Allow as i32);
+        assert_eq!(event.scope, ev::GrantScope::Session as i32);
+        assert_eq!(event.item_count, 1);
+        assert!(!event.persisted);
+        assert_eq!(event.source_record_id, last_id(&tx));
+    }
+
+    #[test]
+    fn deny_emits_permission_decided_deny() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let ws = ws();
+        let sid = unique("pddeny");
+        let tx = session(ws.path(), &sid);
+        seed_permission(&tx, "p1");
+        deny(ws.path(), &sid).unwrap();
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        assert_eq!(event.decision, ev::PermissionDecision::Deny as i32);
+        assert_eq!(event.scope, ev::GrantScope::Unspecified as i32);
+        assert!(!event.persisted);
+        assert_eq!(event.source_record_id, last_id(&tx));
+    }
+
+    #[test]
+    fn reply_for_items_emits_permission_decided() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let ws = ws();
+        let sid = unique("pdreply");
+        let tx = session(ws.path(), &sid);
+        seed_permission(&tx, "p1");
+        reply_for_items(
+            ws.path(),
+            &sid,
+            vec![perm_item("p1")],
+            vec![ItemChoice {
+                id: "p1".into(),
+                decision: pb::Decision::Allow,
+                scope: GrantScope::Global,
+                pattern: Some("ls".into()),
+            }],
+        )
+        .unwrap();
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        assert_eq!(event.decision, ev::PermissionDecision::Allow as i32);
+        assert_eq!(event.scope, ev::GrantScope::Global as i32);
+        assert_eq!(event.item_count, 1);
+        assert!(event.persisted);
+        assert_eq!(event.source_record_id, last_id(&tx));
+    }
+
+    #[test]
+    fn unlock_global_emits_persisted_true() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let ws = ws();
+        let sid = unique("pdunlock");
+        let tx = session(ws.path(), &sid);
+        wire::append(
+            &tx,
+            gait_state::proto::events::sandbox_unlock(&[pb::SandboxUnlockItem {
+                id: "u1".into(),
+                tool_name: "write".into(),
+                resource: "/tmp/a.txt".into(),
+                dimension: "write".into(),
+                preview: None,
+            }]),
+        )
+        .unwrap();
+        unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: sid.clone(),
+            scope: GrantScope::Global,
+            agent: None,
+        })
+        .unwrap();
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        assert_eq!(event.decision, ev::PermissionDecision::SandboxUnlock as i32);
+        assert_eq!(event.scope, ev::GrantScope::Global as i32);
+        assert!(event.persisted);
+        assert_eq!(event.source_record_id, last_id(&tx));
+    }
+
+    #[test]
+    fn failed_allow_emits_nothing() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let ws = ws();
+        let sid = unique("pdfail");
+        let _tx = session(ws.path(), &sid);
+        allow(
+            ws.path(),
+            &sid,
+            AllowParams {
+                scope: GrantScope::Once,
+                pattern: None,
+            },
+        )
+        .unwrap_err();
+        let events = capture.events_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        assert!(events.is_empty());
     }
 }

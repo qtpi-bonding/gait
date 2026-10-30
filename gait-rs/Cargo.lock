@@ -1959,7 +1959,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "coded-error",
+ "concord-telemetry",
  "gait-auth",
+ "gait-events",
  "gait-proto",
  "gait-state",
  "git2",

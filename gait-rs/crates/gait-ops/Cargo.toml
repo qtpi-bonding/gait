@@ -10,6 +10,8 @@ coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "
 gait-state = { path = "../gait-state" }
 gait-auth = { path = "../gait-auth" }
 gait-proto = { path = "../gait-proto" }
+gait-events = { path = "../gait-events", optional = true }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", optional = true }
 anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
@@ -18,7 +20,11 @@ git2 = "0.20"     # init's commit + undo's transcript git-walk
 libc = "0.2"      # daemon::stop killpg(SIGTERM)
 serde_yaml = "0.9"  # extension's frontmatter helpers
 
+[features]
+telemetry = ["dep:concord-telemetry", "dep:gait-events"]
+
 [dev-dependencies]
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a884cce4deb9a0c9baa8e5640519f93f78022668", features = ["testing"] }
 tempfile = "3"
 gait-auth = { path = "../gait-auth", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }  # models() async test

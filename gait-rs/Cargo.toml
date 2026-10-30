@@ -83,7 +83,7 @@ hex            = "0.4"
 
 [features]
 testing = []
-telemetry = ["dep:concord-telemetry", "dep:gait-events", "dep:tracing"]
+telemetry = ["dep:concord-telemetry", "dep:gait-events", "dep:tracing", "gait-ops/telemetry"]
 local = ["gait-provider/local-native"]
 # `gait-bin`'s `full`/`min` composition (Task 5). `min` itself is a no-op here
 # — it only exists so `cargo test -p gait-core --features min` resolves when
