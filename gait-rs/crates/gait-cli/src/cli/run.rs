@@ -457,6 +457,9 @@ pub async fn cmd_run(
     let outcome = outcome.map_err(|e| CliError::failed_with("[gait] run error", e))?;
 
     if sink.failed {
+        if let Some(error) = outcome.run_result.as_ref().and_then(failure_error) {
+            return Err(error);
+        }
         return Err(CliError::failed(
             "[gait] run failed; see the diagnostic above",
         ));
@@ -473,6 +476,21 @@ pub async fn cmd_run(
     Ok(ExitCode::SUCCESS)
 }
 
+/// The coded error of a failed final turn, so the exit code follows its class.
+/// `None` when the turn did not fail or carries no code.
+fn failure_error(run_result: &gait_core::proto::gait::log::v1::RunResult) -> Option<anyhow::Error> {
+    use gait_core::proto::gait::log::v1::turn_result::Outcome;
+    let Some(Outcome::Failed(failed)) = run_result.turns.last()?.outcome.as_ref() else {
+        return None;
+    };
+    let code = failed.error_code.as_deref()?;
+    Some(coded_error::from_remote(
+        Some(code),
+        failed.error_class.as_deref().and_then(|class| class.parse().ok()),
+        failed.message.clone(),
+    ))
+}
+
 // ── Brain ─────────────────────────────────────────────────────────────────────
 // The brain runtime lives in gait-core/src/turn/brain.rs.
 // Dispatch is via gait_core::__dispatch_role (Task 5).
@@ -480,6 +498,41 @@ pub async fn cmd_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_failed(
+        error_code: Option<&str>,
+        error_class: Option<&str>,
+    ) -> gait_core::proto::gait::log::v1::RunResult {
+        use gait_core::proto::gait::log::v1::{turn_result::Outcome, RunResult, TurnFailed, TurnResult};
+        RunResult {
+            turns: vec![TurnResult {
+                outcome: Some(Outcome::Failed(TurnFailed {
+                    reason: "error".into(),
+                    message: "request failed".into(),
+                    error_code: error_code.map(Into::into),
+                    error_class: error_class.map(Into::into),
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn failure_error_follows_the_class_of_a_coded_failure() {
+        let run = run_failed(Some("gait.provider.timeout"), Some("transient"));
+        let error = failure_error(&run).expect("coded failure");
+        assert_eq!(coded_error::cli::exit_code_anyhow(&error), 75);
+    }
+
+    #[test]
+    fn failure_error_is_none_without_a_code() {
+        assert!(failure_error(&run_failed(None, None)).is_none());
+        assert_eq!(
+            coded_error::cli::exit_code_anyhow(&CliError::failed("[gait] run failed; see the diagnostic above")),
+            69
+        );
+    }
 
     #[test]
     fn parse_verified_goal_flag_and_absence() {
