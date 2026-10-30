@@ -13,7 +13,7 @@ fn main() -> ExitCode {
     let agent_id = identity.as_ref().ok().and_then(|value| value.as_ref())
         .map(|ctx| ctx.agent_id().to_string());
     if let Err(error) = gait_bin::install_agent_identity(identity) {
-        return gait_cli::cli::error::report(&error);
+        return gait_bin::report(&error);
     }
     let is_role = raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]);
     let _guard = if !is_role {
@@ -57,7 +57,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     // Mode dispatch: -e (exec), -i (interactive, plain REPL only), bare
     // positional (task)
     if let Some(exec_prompt) = cli.exec {
-        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_cli::cli::error::report(&e) };
+        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_bin::report(&e) };
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
         let args = gait_cli::cli::exec::ExecArgs {
             inference: cli.inference,
@@ -69,7 +69,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     }
 
     if cli.interactive {
-        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_cli::cli::error::report(&e) };
+        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_bin::report(&e) };
         let codebase = cli.codebase.unwrap_or_else(cwd_or_dot);
         let args = gait_repl::plain::PlainReplArgs {
             gait_dir,
@@ -83,7 +83,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     }
 
     if cli.task.is_some() {
-        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_cli::cli::error::report(&e) };
+        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_bin::report(&e) };
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
 
         let run_argv = gait_core::launch::RunLaunch {
@@ -131,7 +131,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
                 MinCli::command(),
                 gait_repl::plain::MIN_REPL_COMMANDS,
             ) {
-                return gait_cli::cli::error::report(&anyhow::anyhow!(e));
+                return gait_bin::report(&anyhow::anyhow!(e));
             }
             return ExitCode::SUCCESS;
         }
@@ -153,13 +153,13 @@ async fn run(raw: Vec<String>) -> ExitCode {
 
         MinCommands::Register(args) => {
             if let Err(e) = gait_cli::cli::admin::cmd_register(*args) {
-                return gait_cli::cli::error::report(&anyhow::anyhow!(e));
+                return gait_bin::report(&anyhow::anyhow!(e));
             }
             ExitCode::SUCCESS
         }
         MinCommands::Unregister(args) => {
             if let Err(e) = gait_cli::cli::admin::cmd_unregister(*args) {
-                return gait_cli::cli::error::report(&anyhow::anyhow!(e));
+                return gait_bin::report(&anyhow::anyhow!(e));
             }
             ExitCode::SUCCESS
         }

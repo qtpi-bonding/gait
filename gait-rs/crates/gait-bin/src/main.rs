@@ -17,7 +17,7 @@ fn main() -> ExitCode {
     let agent_id = identity.as_ref().ok().and_then(|value| value.as_ref())
         .map(|ctx| ctx.agent_id().to_string());
     if let Err(error) = gait_bin::install_agent_identity(identity) {
-        return gait_cli::cli::error::report(&error);
+        return gait_bin::report(&error);
     }
     let is_role = raw.get(1).map(String::as_str) == Some("__local-runner")
         || (raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]));
@@ -79,7 +79,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     if let Some(exec_prompt) = cli.exec {
         let gait_dir = match resolve_gait_dir() {
             Ok(dir) => dir,
-            Err(e) => return gait_cli::cli::error::report(&e),
+            Err(e) => return gait_bin::report(&e),
         };
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
         let args = gait_cli::cli::exec::ExecArgs {
@@ -94,7 +94,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     if cli.interactive {
         let gait_dir = match resolve_gait_dir() {
             Ok(dir) => dir,
-            Err(e) => return gait_cli::cli::error::report(&e),
+            Err(e) => return gait_bin::report(&e),
         };
         let codebase = cli.codebase.unwrap_or_else(cwd_or_dot);
         return gait_bin::finish_unit(gait_repl::chat::run_chat(
@@ -105,7 +105,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     if cli.task.is_some() {
         let gait_dir = match resolve_gait_dir() {
             Ok(dir) => dir,
-            Err(e) => return gait_cli::cli::error::report(&e),
+            Err(e) => return gait_bin::report(&e),
         };
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
         let run_argv = gait_core::launch::RunLaunch {
@@ -136,7 +136,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
             };
             let gait_dir = match gait_core::gait_dir::resolve(manual_gait_dir.or(gait_dir_arg), &cwd) {
                 Ok(dir) => dir,
-                Err(e) => return gait_cli::cli::error::report(&anyhow::anyhow!(e)),
+                Err(e) => return gait_bin::report(&anyhow::anyhow!(e)),
             };
             gait_bin::finish_unit(gait_bin::manual::install(args, &gait_dir).map_err(|e| anyhow::anyhow!(e)))
         }
