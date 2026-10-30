@@ -733,13 +733,13 @@ mod validate_tests {
     }
 
     #[test]
-    fn validate_of_a_missing_workflow_is_a_failed_read() {
+    fn validate_of_a_missing_workflow_is_a_not_found() {
         let td = tempfile::TempDir::new().unwrap();
         let err = cmd_workflow_validate(&["nope".to_string()], td.path().to_path_buf(), false)
             .expect_err("missing workflow file is an error");
         assert!(matches!(
             coded_error::downcast_ref::<CliError>(&err),
-            Some(CliError::Failed(_))
+            Some(CliError::NotFound(_))
         ));
     }
 
@@ -771,14 +771,14 @@ mod validate_tests {
     }
 
     #[tokio::test]
-    async fn run_of_a_missing_workflow_is_a_failed_read() {
+    async fn run_of_a_missing_workflow_is_a_not_found() {
         let td = tempfile::TempDir::new().unwrap();
         let err = cmd_workflow_run(&["nope".to_string()], td.path().to_path_buf())
             .await
             .expect_err("missing workflow file is an error");
         assert!(matches!(
             coded_error::downcast_ref::<CliError>(&err),
-            Some(CliError::Failed(_))
+            Some(CliError::NotFound(_))
         ));
     }
 

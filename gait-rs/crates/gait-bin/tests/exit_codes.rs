@@ -31,7 +31,7 @@ fn help_exits_0() {
 }
 
 #[test]
-fn no_workspace_exits_65() {
+fn missing_gait_dir_flag_exits_65() {
     let cwd = tempfile::TempDir::new().unwrap();
     let home = tempfile::TempDir::new().unwrap();
     let output = gait()
@@ -42,7 +42,7 @@ fn no_workspace_exits_65() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(65));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not a gait workspace"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--gait-dir"));
 }
 
 #[test]
