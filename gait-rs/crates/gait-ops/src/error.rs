@@ -19,6 +19,9 @@ pub enum OpError {
     #[error("confirmation required: {0}")]
     #[coded(code = "confirmation_required", class = Logical)]
     ConfirmationRequired(String),
+    #[error("invalid: {0}")]
+    #[coded(code = "invalid", class = Logical)]
+    Invalid(String),
 }
 
 impl OpError {
@@ -38,7 +41,7 @@ mod tests {
         coded_error::check_codes("gait.op.", &[OpError::ALL_CODES]).unwrap();
         assert_eq!(
             OpError::ALL_CODES,
-            &["gait.op.not_found", "gait.op.conflict", "gait.op.session_busy", "gait.op.confirmation_required"]
+            &["gait.op.not_found", "gait.op.conflict", "gait.op.session_busy", "gait.op.confirmation_required", "gait.op.invalid"]
         );
     }
 
@@ -57,6 +60,9 @@ mod tests {
         let confirm = OpError::ConfirmationRequired("x".into());
         assert_eq!(confirm.code(), "gait.op.confirmation_required");
         assert_eq!(confirm.class(), Logical);
+        let invalid = OpError::Invalid("x".into());
+        assert_eq!(invalid.code(), "gait.op.invalid");
+        assert_eq!(invalid.class(), Logical);
     }
 
     #[test]

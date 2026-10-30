@@ -90,9 +90,9 @@ pub fn allow(
         GrantScope::Session => CoreAllowScope::Session,
         GrantScope::Once => CoreAllowScope::Once,
         GrantScope::Agent => {
-            return Err(anyhow::anyhow!(
-                "scope 'agent' is not supported for allow; use --scope mode"
-            ));
+            return Err(coded_error::into_anyhow(OpError::Invalid(
+                "scope 'agent' is not supported for allow; use --scope mode".to_string(),
+            )));
         }
     };
 
@@ -270,10 +270,10 @@ pub fn reply_for_items(
     // silently denied at resume — reject rather than half-answer.
     for it in &items {
         if !answered.contains(it.id.as_str()) {
-            return Err(anyhow::anyhow!(
+            return Err(coded_error::into_anyhow(OpError::Invalid(format!(
                 "incomplete reply: pending item '{}' for session {session_id} was not answered",
                 it.id
-            ));
+            ))));
         }
     }
 
@@ -281,10 +281,10 @@ pub fn reply_for_items(
     for c in &choices {
         let item = if c.decision == pb::Decision::Allow {
             let Some(pattern) = c.pattern.clone() else {
-                return Err(anyhow::anyhow!(
+                return Err(coded_error::into_anyhow(OpError::Invalid(format!(
                     "allow choice for item '{}' is missing a pattern",
                     c.id
-                ));
+                ))));
             };
             let mode_name = resolve_active_mode_name(gait_dir, session_id);
             let (choice, scope_tag) = match c.scope {
@@ -298,9 +298,9 @@ pub fn reply_for_items(
                 ),
                 GrantScope::Once => (PermissionChoice::Once(pattern.clone()), pb::Scope::Once),
                 GrantScope::Agent => {
-                    return Err(anyhow::anyhow!(
-                        "scope 'agent' is not supported for reply/allow; use 'mode'"
-                    ));
+                    return Err(coded_error::into_anyhow(OpError::Invalid(
+                        "scope 'agent' is not supported for reply/allow; use 'mode'".to_string(),
+                    )));
                 }
             };
             save_choice(&choice, gait_dir, session_id, mode_name.as_deref())?;
@@ -316,10 +316,10 @@ pub fn reply_for_items(
             // comment), and carries the pattern in `text` so the
             // ActivePermissions fold picks it up into `deny_session`.
             let Some(pattern) = c.pattern.clone() else {
-                return Err(anyhow::anyhow!(
+                return Err(coded_error::into_anyhow(OpError::Invalid(format!(
                     "session-scoped deny choice for item '{}' is missing a pattern",
                     c.id
-                ));
+                ))));
             };
             save_choice(
                 &PermissionChoice::DenySession(pattern.clone()),
@@ -509,6 +509,23 @@ mod tests {
     use gait_state::proto::wire;
     use gait_state::session::log::read_events;
     use tempfile::TempDir;
+
+    #[test]
+    fn allow_with_agent_scope_is_a_logical_invalid() {
+        let dir = TempDir::new().unwrap();
+        let err = allow(
+            dir.path(),
+            "any",
+            AllowParams {
+                scope: GrantScope::Agent,
+                pattern: None,
+            },
+        )
+        .unwrap_err();
+        let facts = coded_error::facts_anyhow(&err);
+        assert_eq!(facts.code, "gait.op.invalid");
+        assert_eq!(facts.class, coded_error::ErrorClass::Logical);
+    }
 
     #[test]
     fn grant_scope_default_is_once() {
