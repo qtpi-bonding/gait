@@ -161,7 +161,7 @@ pub fn write_permissions_reply(
     tx_path: &std::path::Path,
     _from: &str,
     items: Vec<pb::PermissionsReplyItem>,
-) -> Result<(), SessionError> {
+) -> Result<String, SessionError> {
     let body = crate::proto::events::permissions_reply(&items);
     let prev = last_event(tx_path)?;
     let ev = crate::proto::envelope::mint(
@@ -176,7 +176,7 @@ pub fn write_permissions_reply(
     let json = serde_json::to_string(&ev)?;
     use std::io::Write;
     writeln!(file, "{}", json)?;
-    Ok(())
+    Ok(ev.id)
 }
 /// Append a `ClarifyReply` event to the transcript. Each `ClarifyReplyItem.id`
 /// corresponds to a `ClarifyItem.id` in the preceding `Clarify` request.
@@ -304,7 +304,7 @@ pub fn write_unlock_reply(
     tx_path: &std::path::Path,
     _from: &str,
     items: Vec<pb::SandboxUnlockReplyItem>,
-) -> Result<(), SessionError> {
+) -> Result<String, SessionError> {
     let body = crate::proto::events::sandbox_unlock_reply(&items);
     let prev = last_event(tx_path)?;
     let ev = crate::proto::envelope::mint(
@@ -319,7 +319,7 @@ pub fn write_unlock_reply(
     let json = serde_json::to_string(&ev)?;
     use std::io::Write;
     writeln!(file, "{}", json)?;
-    Ok(())
+    Ok(ev.id)
 }
 
 pub fn init_session(opts: InitSessionOpts) -> Result<(), SessionError> {

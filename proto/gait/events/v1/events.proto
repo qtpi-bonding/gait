@@ -60,3 +60,28 @@ message AgentReported {
   bool signed = 5;
   NotifyOutcome outcome = 6;
 }
+
+enum PermissionDecision {
+  PERMISSION_DECISION_UNSPECIFIED = 0;
+  PERMISSION_DECISION_ALLOW = 1;
+  PERMISSION_DECISION_DENY = 2;
+  PERMISSION_DECISION_SANDBOX_UNLOCK = 3;
+}
+
+enum GrantScope {
+  GRANT_SCOPE_UNSPECIFIED = 0;
+  GRANT_SCOPE_ONCE = 1;
+  GRANT_SCOPE_SESSION = 2;
+  GRANT_SCOPE_MODE = 3;
+  GRANT_SCOPE_AGENT = 4;
+  GRANT_SCOPE_GLOBAL = 5;
+}
+
+message PermissionDecided {
+  string source_record_id = 1;
+  string session_id = 2;
+  PermissionDecision decision = 3;
+  GrantScope scope = 4;
+  uint32 item_count = 5;
+  bool persisted = 6;
+}
