@@ -38,7 +38,9 @@ impl IdentityError {
             KeyfileError::Io { path, .. } if path != &dir => {
                 Self::DeviceKeyUnreadable { dir, source }
             }
-            KeyfileError::Parse { .. } | KeyfileError::Crypto(_) => {
+            KeyfileError::Parse { .. }
+            | KeyfileError::Crypto(_)
+            | KeyfileError::VerifyFailed(_) => {
                 Self::DeviceKeyUnreadable { dir, source }
             }
             KeyfileError::DelegationMismatch => Self::DelegationExpired { dir, source },

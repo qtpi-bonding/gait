@@ -39,5 +39,5 @@ testing = []
 [dev-dependencies]
 tempfile = "3"
 gait-auth = { path = "../gait-auth", features = ["testing"] }
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "67737b3aeee80f5e9871d0c5f6d8c766c13e3681" }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "67737b3aeee80f5e9871d0c5f6d8c766c13e3681", features = ["testkit"] }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "2b3c82cd6e74c086b0fd13648457e3e4fcd2c139" }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "2b3c82cd6e74c086b0fd13648457e3e4fcd2c139", features = ["testkit"] }
