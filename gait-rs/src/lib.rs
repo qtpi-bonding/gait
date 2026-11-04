@@ -52,6 +52,7 @@ pub(crate) mod mcp;
 #[cfg(test)]
 mod permissions_invariant_tests;
 pub(crate) mod prompt;
+pub use prompt::install_reply_instructions;
 #[cfg(test)]
 mod test_utils;
 pub(crate) mod wasm_plugins;

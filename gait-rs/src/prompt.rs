@@ -101,6 +101,41 @@ fn ensure_codebase_dir(gait_dir: &Path, codebase: &Path) -> PathBuf {
     dir
 }
 
+static REPLY_INSTRUCTIONS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Installs the process-wide reply instructions (text read from
+/// `--reply-instructions-file`). The first call wins.
+pub fn install_reply_instructions(text: impl Into<String>) {
+    let _ = REPLY_INSTRUCTIONS.set(text.into());
+}
+
+/// The self-identity block, added to the system prompt once per session:
+/// `You are <name> (p256:...). Messages that mention this id, or are addressed
+/// to="you", are for you. <reply instructions>`. `name` and the reply text are
+/// left out when empty.
+pub fn self_identity_block(agent_id: &str, name: Option<&str>, reply: Option<&str>) -> String {
+    let who = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => format!("You are {name} ({agent_id})."),
+        None => format!("You are {agent_id}."),
+    };
+    let mut block = format!(
+        "{who} Messages that mention this id, or are addressed to=\"you\", are for you."
+    );
+    if let Some(reply) = reply.map(str::trim).filter(|r| !r.is_empty()) {
+        block.push(' ');
+        block.push_str(reply);
+    }
+    block.push('\n');
+    block
+}
+
+/// The block for the current process: `GAIT_AGENT_NAME` and the installed
+/// reply instructions.
+pub fn process_self_identity_block(agent_id: &str) -> String {
+    let name = std::env::var("GAIT_AGENT_NAME").ok();
+    self_identity_block(agent_id, name.as_deref(), REPLY_INSTRUCTIONS.get().map(String::as_str))
+}
+
 pub fn content_hash_short(s: &str) -> String {
     // FNV-1a 64-bit — stable across Rust versions, unlike DefaultHasher.
     const BASIS: u64 = 0xcbf29ce484222325;
@@ -113,6 +148,24 @@ pub fn content_hash_short(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn self_identity_block_uses_id_name_and_reply_text() {
+        let b = super::self_identity_block("p256:ab", Some("Ada"), Some("Reply with send_message."));
+        assert_eq!(
+            b,
+            "You are Ada (p256:ab). Messages that mention this id, or are addressed to=\"you\", are for you. Reply with send_message.\n"
+        );
+    }
+
+    #[test]
+    fn self_identity_block_omits_missing_name_and_reply() {
+        let b = super::self_identity_block("p256:ab", None, Some("  "));
+        assert_eq!(
+            b,
+            "You are p256:ab. Messages that mention this id, or are addressed to=\"you\", are for you.\n"
+        );
+    }
+
     use super::*;
 
     #[test]

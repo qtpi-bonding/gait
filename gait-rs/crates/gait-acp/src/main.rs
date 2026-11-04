@@ -38,6 +38,12 @@ enum ConfigError {
     #[error("--state-dir needs a directory path")]
     #[coded(code = "state_dir_missing", class = Logical)]
     StateDirMissing,
+    #[error("--reply-instructions-file needs a file path")]
+    #[coded(code = "reply_instructions_missing", class = Logical)]
+    ReplyInstructionsMissing,
+    #[error("cannot read --reply-instructions-file {0}: {1}")]
+    #[coded(code = "reply_instructions_unreadable", class = Logical)]
+    ReplyInstructionsUnreadable(String, String),
     #[error("--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory")]
     #[coded(code = "attestation_needs_identity", class = Logical)]
     AttestationNeedsIdentity,
@@ -52,6 +58,7 @@ struct AttestationFlags {
     require_attestation: bool,
     trusted_deliverers: Vec<PrincipalId>,
     state_dir: Option<PathBuf>,
+    reply_instructions: Option<String>,
 }
 
 fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> {
@@ -75,6 +82,19 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
                     return Err(coded_error::into_anyhow(ConfigError::StateDirMissing));
                 };
                 flags.state_dir = Some(PathBuf::from(value));
+                i += 1;
+            }
+            "--reply-instructions-file" => {
+                let Some(value) = argv.get(i + 1) else {
+                    return Err(coded_error::into_anyhow(ConfigError::ReplyInstructionsMissing));
+                };
+                let text = std::fs::read_to_string(value).map_err(|error| {
+                    coded_error::into_anyhow(ConfigError::ReplyInstructionsUnreadable(
+                        value.clone(),
+                        error.to_string(),
+                    ))
+                })?;
+                flags.reply_instructions = Some(text);
                 i += 1;
             }
             removed @ ("--trusted-multimatrix-key" | "--trusted-recipient-key") => {
@@ -121,6 +141,9 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
         }
     };
+    if let Some(text) = &flags.reply_instructions {
+        gait_core::install_reply_instructions(text.clone());
+    }
     let require_attestation = flags.require_attestation;
     let state_dir = flags
         .state_dir

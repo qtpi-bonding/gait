@@ -381,6 +381,10 @@ impl Profile {
         identity: Option<std::sync::Arc<gait_identity::IdentityContext>>,
     ) -> anyhow::Result<ResolvedProfile> {
         self.context_policy.validate()?;
+        // Told once per session, in the system prompt; absent without identity.
+        let identity_block = identity
+            .as_ref()
+            .map(|ctx| crate::prompt::process_self_identity_block(&ctx.agent_id().to_string()));
         // Provider (no network until .stream()).
         let provider: std::sync::Arc<dyn gait_provider::provider::Provider> = std::sync::Arc::from(
             gait_provider::factory::load_provider_with_credential_params_and_gait_dir(
@@ -484,7 +488,10 @@ impl Profile {
             provider,
             permissioned,
             model: self.model,
-            instructions: self.instructions,
+            instructions: match identity_block {
+                Some(block) => format!("{}\n{block}", self.instructions),
+                None => self.instructions,
+            },
             mcp_registry,
             mcp_clients,
             skill_registry: self.skills,
