@@ -83,6 +83,31 @@ pub fn minted_layout(gait_dir: &Path) -> Result<identity_keyfile::IdentityLayout
         .map_err(|source| coded_error::into_anyhow(IdentityError::from_keyfile(&device, source)))
 }
 
+/// The environment variable the spine sets on a hand so the hand's own deny
+/// policy (never the brain's) covers the identity folders. `:`-separated.
+pub const DENY_PATHS_ENV: &str = "GAIT_IDENTITY_DENY";
+
+/// Folders the model must never read or write: the device folder, and the root
+/// folder next to a minted one.
+pub fn identity_deny_paths(agent_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![agent_dir.to_path_buf()];
+    if agent_dir.file_name().and_then(|n| n.to_str()) == Some("identity") {
+        if let Some(parent) = agent_dir.parent() {
+            paths.push(parent.join("identity-root"));
+        }
+    }
+    paths
+}
+
+/// [`identity_deny_paths`] joined for [`DENY_PATHS_ENV`].
+pub fn deny_paths_env_value(agent_dir: &Path) -> String {
+    identity_deny_paths(agent_dir)
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// Renews the delegation of a folder gait minted (the root file exists in the
 /// layout's root dir). A device-only folder is never written. Returns whether a
 /// renewal happened.
@@ -661,5 +686,13 @@ mod tests {
         )
         .unwrap();
         assert!(!renew_minted(&layout, unix_now() + 10 * DELEGATION_TTL_SECS).unwrap());
+    }
+
+    #[test]
+    fn deny_paths_cover_a_minted_root_next_to_the_device_folder() {
+        let paths = identity_deny_paths(Path::new("/g/identity"));
+        assert_eq!(paths, vec![PathBuf::from("/g/identity"), PathBuf::from("/g/identity-root")]);
+        assert_eq!(identity_deny_paths(Path::new("/handed/agent")), vec![PathBuf::from("/handed/agent")]);
+        assert_eq!(deny_paths_env_value(Path::new("/g/identity")), "/g/identity:/g/identity-root");
     }
 }

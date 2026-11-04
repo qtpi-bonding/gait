@@ -467,6 +467,60 @@ mod tests {
     }
 
     #[test]
+    fn deny_subpaths_are_emitted_after_the_allows() {
+        let scope = SandboxScope {
+            read_all: true,
+            readable: vec![],
+            writable: vec![PathBuf::from("/repo")],
+            network: NetworkPolicy::Deny,
+            local_bind: false,
+            read_deny: DenyPolicy { subpaths: vec![PathBuf::from("/secret/id")], globs: vec![] },
+            write_deny: DenyPolicy { subpaths: vec![PathBuf::from("/repo/.git")], globs: vec![] },
+        };
+        let p = build_sbpl(&scope);
+        let allow = p.find("(allow file-read*)").unwrap();
+        let deny = p.find("(deny file-read* file-write* (subpath \"/secret/id\"))").unwrap();
+        assert!(deny > allow, "{p}");
+        assert!(p.contains("(deny file-write* (subpath \"/repo/.git\"))"), "{p}");
+    }
+
+    /// A real kernel seal: a process under the generated profile cannot read a
+    /// denied folder even though it holds a blanket read allow.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sealed_process_cannot_read_a_denied_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("identity");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("device.jwk.json"), b"private").unwrap();
+        let open = dir.path().join("open.txt");
+        std::fs::write(&open, b"fine").unwrap();
+        let scope = SandboxScope {
+            read_all: true,
+            readable: vec![],
+            writable: vec![],
+            network: NetworkPolicy::Deny,
+            local_bind: false,
+            read_deny: DenyPolicy { subpaths: vec![secret.clone()], globs: vec![] },
+            write_deny: DenyPolicy::default(),
+        };
+        let profile = build_sbpl(&scope);
+        let run = |file: &std::path::Path| {
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", &profile, "/bin/cat"])
+                .arg(file)
+                .output()
+                .unwrap()
+        };
+        let allowed = run(&open);
+        assert!(allowed.status.success(), "control read failed: {}", String::from_utf8_lossy(&allowed.stderr));
+        assert_eq!(allowed.stdout, b"fine");
+        let denied = run(&secret.join("device.jwk.json"));
+        assert!(!denied.status.success(), "the denied folder was readable");
+        assert!(denied.stdout.is_empty());
+    }
+
+    #[test]
     fn confined_reads_include_platform_defaults_and_scope() {
         let scope = SandboxScope {
             read_all: false,
@@ -1215,6 +1269,17 @@ pub(crate) mod sbpl {
                 sbpl_escape(&c)
             )
             .unwrap();
+        }
+
+        // Deny subpaths win over every allow above (Seatbelt: the last matching
+        // rule decides), so they are emitted after the read and write allows.
+        for p in &scope.read_deny.subpaths {
+            let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            writeln!(s, r#"(deny file-read* file-write* (subpath "{}"))"#, sbpl_escape(&c)).unwrap();
+        }
+        for p in &scope.write_deny.subpaths {
+            let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            writeln!(s, r#"(deny file-write* (subpath "{}"))"#, sbpl_escape(&c)).unwrap();
         }
 
         // /dev/null always writable for output redirection.

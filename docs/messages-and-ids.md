@@ -33,5 +33,9 @@ Not written yet (covered only by the concordium batch stack run):
 - Two gait-acp starts racing on one state dir mint a single identity.
 - An event signed by a device renewed after start verifies after `DirectVerifier::refresh`.
 - Integration tests for the self-identity block (once per session; absent without identity). Only the block builder is unit-tested.
-- `send_message`: the explicit sandbox read-deny on the identity folder and its sealed integration test; the send child is not enrolled in gait's cascade-kill group (the library runs it in its own process group with a timeout and kills it on exit).
+- `send_message`: the send child is not enrolled in gait's cascade-kill group (the library runs it in its own process group with a timeout and kills it on exit).
 - A send cut off by a timeout or an aborted turn may already have been accepted; a retry mints a new message id, so the recipient can see a duplicate.
+
+## Identity folders are denied to the model
+
+The device folder and the minted root folder are in the hand's `read_deny` and `write_deny` (the hand builds these itself, never from the brain). The spine names a handed `GAIT_AGENT_DIR` through `GAIT_IDENTITY_DENY`; `<gait_dir>/identity` and `<gait_dir>/identity-root` are always covered. The Seatbelt profile now emits `deny file-read* file-write*` for deny subpaths after the allows, so a sealed shell cannot read them even inside the codebase (tested with a real `sandbox-exec`). Linux has no sandbox implementation yet (Landlock is a stub).

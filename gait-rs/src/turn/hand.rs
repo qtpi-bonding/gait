@@ -431,7 +431,18 @@ pub async fn run_hand(config: HandConfig) {
 fn local_deny_policy(gait_dir: &Path) -> (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy) {
     let cfg = gait_types::config::load_config(gait_dir);
     let read = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.read);
-    let write = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.write);
+    let mut write = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.write);
+    let mut read = read;
+    // The agent's identity folders: the device key must never reach the model.
+    // The spine names them; the minted default beside gait_dir is always covered.
+    let mut identity: Vec<PathBuf> = vec![gait_dir.join("identity"), gait_dir.join("identity-root")];
+    if let Some(list) = std::env::var_os(gait_identity::DENY_PATHS_ENV) {
+        identity.extend(std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()));
+    }
+    for path in identity {
+        read.subpaths.push(path.clone());
+        write.subpaths.push(path);
+    }
     (read, write)
 }
 
@@ -790,6 +801,19 @@ mod tests {
             !scope.read_deny.globs.is_empty(),
             "read_deny must come from local config, not the wire — got empty"
         );
+    }
+
+    #[test]
+    fn identity_folders_are_denied_to_read_and_write() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gait_ops::workspace::run_init(dir.path()).unwrap();
+        let (read, write) = local_deny_policy(dir.path());
+        let key = dir.path().join("identity").join("device.jwk.json");
+        assert!(classify_denial_by_path(&key, &read).is_some());
+        assert!(classify_denial_by_path(&key, &write).is_some());
+        let root = dir.path().join("identity-root").join("root.jwk.json");
+        assert!(classify_denial_by_path(&root, &read).is_some());
+        assert!(classify_denial_by_path(&dir.path().join("notes.txt"), &read).is_none());
     }
 
     #[test]

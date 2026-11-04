@@ -406,6 +406,16 @@ pub async fn run_tool_as_spine(
             .stderr(std::process::Stdio::piped())
             .env_clear()
             .envs(std::env::vars().filter(|(k, _)| crate::env_passes_to_children(k)))
+            .envs(
+                std::env::var_os("GAIT_AGENT_DIR")
+                    .map(|dir| {
+                        (
+                            gait_identity::DENY_PATHS_ENV,
+                            gait_identity::deny_paths_env_value(std::path::Path::new(&dir)),
+                        )
+                    })
+                    .into_iter(),
+            )
             .env(
                 "TMPDIR",
                 shell_process_dir.as_deref().unwrap_or(jail.as_path()),
