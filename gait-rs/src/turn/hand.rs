@@ -185,16 +185,15 @@ pub async fn run_hand(config: HandConfig) {
     // parameters schema, so it lives here, after the tool is resolved.
     let args_json = crate::tools::coerce_scalar_params(args_json, tool.parameters());
 
-    // App-level deny-policy gate — check-before-serve, not react-after-fail.
-    // The kernel-level (Seatbelt) deny mechanism this was originally meant to
-    // pair with (2026-07-25 sandbox-file-deny-policy plan, Task 7) turned out
-    // to be unreliable on real hardware (an undocumented macOS sandbox-compiler
-    // quirk silently drops trailing `deny` rules in common rule shapes — see
-    // that plan's notes) and was reverted; this app-level check is therefore
-    // the ONLY thing enforcing `read_deny`/`write_deny` today, not a redundant
-    // second layer over working kernel enforcement. If the kernel mechanism is
-    // ever fixed and reinstated, this becomes true defense-in-depth on top of
-    // it with no changes needed here.
+    // App-level deny-policy gate -- check-before-serve, not react-after-fail.
+    // It covers only the read, write and apply_patch tools (never `shell`), and
+    // it matches path prefixes without resolving symlinks or `..`. It is the
+    // ONLY deny enforcement on Linux, where the kernel sandbox is a stub.
+    // On macOS the Seatbelt profile also emits `deny` rules for deny subpaths
+    // (sandbox.rs `build_sbpl`). An earlier kernel deny attempt was reverted
+    // after a macOS sandbox-compiler quirk silently dropped trailing `deny`
+    // rules; the current rules are tested through `sandbox-exec` only, NOT
+    // through the in-process `sandbox_apply` path gait uses.
     let proactive_denial =
         classify_proactive_denial(&config.tool, &impulse, &config.codebase, &seal_scope);
 

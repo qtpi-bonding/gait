@@ -36,6 +36,14 @@ Not written yet (covered only by the concordium batch stack run):
 - `send_message`: the send child is not enrolled in gait's cascade-kill group (the library runs it in its own process group with a timeout and kills it on exit).
 - A send cut off by a timeout or an aborted turn may already have been accepted; a retry mints a new message id, so the recipient can see a duplicate.
 
-## Identity folders are denied to the model
+## Identity folders are denied to the model (macOS only; Linux is exposed)
 
-The device folder and the minted root folder are in the hand's `read_deny` and `write_deny` (the hand builds these itself, never from the brain). The spine names a handed `GAIT_AGENT_DIR` through `GAIT_IDENTITY_DENY`; `<gait_dir>/identity` and `<gait_dir>/identity-root` are always covered. The Seatbelt profile now emits `deny file-read* file-write*` for deny subpaths after the allows, so a sealed shell cannot read them even inside the codebase (tested with a real `sandbox-exec`). Linux has no sandbox implementation yet (Landlock is a stub).
+**macOS.** The device folder and the minted root folder are in the hand's `read_deny` and `write_deny` (the hand builds these itself, never from the brain). The spine names a handed `GAIT_AGENT_DIR` through `GAIT_IDENTITY_DENY`; `<gait_dir>/identity` and `<gait_dir>/identity-root` are always covered. The Seatbelt profile emits `deny file-read* file-write*` for deny subpaths after the allows. This is tested with a real `sandbox-exec`, NOT with the in-process `sandbox_apply` path gait uses; an earlier kernel deny attempt was reverted after a macOS sandbox-compiler quirk silently dropped trailing `deny` rules, so the in-process path needs its own check.
+
+**Linux: the key is exposed to the model.** Accepted for the MVP (single user, private tailnet); fix before anything untrusted reaches an agent.
+
+- The Landlock sandbox is a stub (`LandlockSandbox::apply` returns `Unavailable`); the hand and brain log that and run unsealed.
+- The only guard is the hand's pre-check, which covers the read, write and apply_patch tools only. `shell` is not pre-checked, so `cat <GAIT_AGENT_DIR>/device.jwk.json` succeeds. The pre-check also matches path prefixes without resolving symlinks or `..`.
+- An unsealed shell running as the same uid can read `/proc/<spine pid>/environ`, which holds `GAIT_AGENT_DIR` and the provider API keys.
+
+Follow-up options (tracked in concordium's PLAN.md): run the hands as a different uid, or move signing into a separate process under another uid.
