@@ -60,6 +60,43 @@ fn load_keys(agent_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
         .map_err(|source| coded_error::into_anyhow(IdentityError::from_keyfile(agent_dir, source)))
 }
 
+/// How long a minted or renewed root->device delegation lasts.
+pub const DELEGATION_TTL_SECS: i64 = 30 * 86_400;
+/// Renew when the delegation has this much time left or less.
+pub const RENEW_MARGIN_SECS: i64 = 15 * 86_400;
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The split layout gait mints under its state dir.
+pub fn minted_layout(gait_dir: &Path) -> Result<identity_keyfile::IdentityLayout> {
+    std::fs::create_dir_all(gait_dir)
+        .with_context(|| format!("create {}", gait_dir.display()))?;
+    let base = std::fs::canonicalize(gait_dir)
+        .with_context(|| format!("resolve {}", gait_dir.display()))?;
+    let device = base.join("identity");
+    identity_keyfile::IdentityLayout::split(&base.join("identity-root"), &device)
+        .map_err(|source| coded_error::into_anyhow(IdentityError::from_keyfile(&device, source)))
+}
+
+/// Renews the delegation of a folder gait minted (the root file exists in the
+/// layout's root dir). A device-only folder is never written. Returns whether a
+/// renewal happened.
+pub fn renew_minted(layout: &identity_keyfile::IdentityLayout, now: i64) -> Result<bool> {
+    if !layout.root_dir().join("root.jwk.json").exists() {
+        return Ok(false);
+    }
+    let dir = layout.device_dir();
+    let wrap = |source| coded_error::into_anyhow(IdentityError::from_keyfile(dir, source));
+    let mut keys = identity_keyfile::IdentityKeys::load_at(layout).map_err(wrap)?;
+    keys.renew_if_due_at(Some(layout), now, DELEGATION_TTL_SECS, RENEW_MARGIN_SECS)
+        .map_err(wrap)
+}
+
 /// Identity material is deliberately represented by its directory, not cached keys.
 pub struct IdentityContext {
     agent_dir: PathBuf,
@@ -72,6 +109,32 @@ impl IdentityContext {
             Some(path) => Self::new(PathBuf::from(path)).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// Load the folder `GAIT_AGENT_DIR` names (load only, never written); when
+    /// it is unset, mint-or-load the split identity under `gait_dir` (device
+    /// folder `<gait_dir>/identity`, root `<gait_dir>/identity-root`, outside
+    /// every sandbox grant). The caller exports `GAIT_AGENT_DIR` afterwards,
+    /// before any thread or child exists, so role children only load.
+    pub fn from_env_or_mint(gait_dir: &Path) -> Result<Self> {
+        if let Some(path) = std::env::var_os("GAIT_AGENT_DIR") {
+            return Self::new(PathBuf::from(path));
+        }
+        Self::mint_or_load(gait_dir)
+    }
+
+    /// The unset-`GAIT_AGENT_DIR` half of [`Self::from_env_or_mint`].
+    pub fn mint_or_load(gait_dir: &Path) -> Result<Self> {
+        let layout = minted_layout(gait_dir)?;
+        identity_keyfile::IdentityKeys::create_or_load_at(
+            &layout,
+            unix_now(),
+            DELEGATION_TTL_SECS,
+        )
+        .map_err(|source| {
+            coded_error::into_anyhow(IdentityError::from_keyfile(layout.device_dir(), source))
+        })?;
+        Self::new(layout.device_dir())
     }
 
     pub fn new(agent_dir: impl Into<PathBuf>) -> Result<Self> {
@@ -132,17 +195,26 @@ pub trait ProvenanceVerifier: Send + Sync {
 /// The retirement times in it are unsigned local claims; the event time passed
 /// as `at` comes from the receiver's record of the event.
 pub struct DirectVerifier {
-    public: identity_keyfile::DevicePublic,
+    public: std::sync::RwLock<identity_keyfile::DevicePublic>,
 }
 
 impl DirectVerifier {
     pub fn from_context(ctx: &IdentityContext) -> Result<Self> {
-        Ok(Self { public: ctx.keys()?.public() })
+        Ok(Self { public: std::sync::RwLock::new(ctx.keys()?.public()) })
+    }
+
+    /// Re-reads the folder's device history so a device renewed after start
+    /// verifies. Events from earlier devices still verify: the history is kept.
+    pub fn refresh(&self, ctx: &IdentityContext) -> Result<()> {
+        let fresh = ctx.keys()?.public();
+        *self.public.write().unwrap_or_else(|p| p.into_inner()) = fresh;
+        Ok(())
     }
 
     fn verify(&self, ev: &Event, session_id: &str) -> Option<PrincipalId> {
-        let devices = self.public.device_keys_at((ev.ts / 1000) as i64);
-        verify_direct_provenance(ev, self.public.principal_id.genesis(), &devices, session_id)
+        let public = self.public.read().unwrap_or_else(|p| p.into_inner());
+        let devices = public.device_keys_at((ev.ts / 1000) as i64);
+        verify_direct_provenance(ev, public.principal_id.genesis(), &devices, session_id)
     }
 }
 
@@ -539,5 +611,38 @@ mod tests {
         let author = verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").unwrap();
         assert_eq!(&author, ctx.agent_id());
         assert!(author.to_string().starts_with("p256:"));
+    }
+
+    #[test]
+    fn mint_or_load_mints_once_and_keeps_the_root_out_of_the_device_folder() {
+        let gait = tempfile::tempdir().unwrap();
+        let first = IdentityContext::mint_or_load(gait.path()).unwrap();
+        let second = IdentityContext::mint_or_load(gait.path()).unwrap();
+        assert_eq!(first.agent_id(), second.agent_id());
+        let base = std::fs::canonicalize(gait.path()).unwrap();
+        assert!(base.join("identity-root/root.jwk.json").exists());
+        assert!(!base.join("identity/root.jwk.json").exists());
+        assert_eq!(first.agent_dir(), base.join("identity"));
+    }
+
+    #[test]
+    fn minted_folder_renews_before_expiry_and_not_before() {
+        let gait = tempfile::tempdir().unwrap();
+        IdentityContext::mint_or_load(gait.path()).unwrap();
+        let layout = minted_layout(gait.path()).unwrap();
+        let now = unix_now();
+        assert!(!renew_minted(&layout, now).unwrap());
+        assert!(renew_minted(&layout, now + DELEGATION_TTL_SECS - RENEW_MARGIN_SECS + 60).unwrap());
+    }
+
+    #[test]
+    fn device_only_folder_is_never_renewed() {
+        let agent = TempIdentityDir::new(unix_now(), DELEGATION_TTL_SECS);
+        let layout = identity_keyfile::IdentityLayout::split(
+            &std::fs::canonicalize(tempfile::tempdir().unwrap().keep()).unwrap().join("no-root"),
+            &std::fs::canonicalize(agent.path()).unwrap(),
+        )
+        .unwrap();
+        assert!(!renew_minted(&layout, unix_now() + 10 * DELEGATION_TTL_SECS).unwrap());
     }
 }

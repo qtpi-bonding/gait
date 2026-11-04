@@ -109,46 +109,63 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
 
 fn main() -> std::process::ExitCode {
     let raw: Vec<String> = std::env::args().collect();
+    let is_role = raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]);
+    // Role children only load the identity the top process exported; only the
+    // top process may mint (its flags decide where).
+    let flags = if is_role {
+        AttestationFlags::default()
+    } else {
+        match parse_attestation_flags(&raw[1..]) {
+            Ok(flags) => flags,
+            Err(error) => {
+                eprintln!("{error:#}");
+                return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
+            }
+        }
+    };
+    let state_dir = flags
+        .state_dir
+        .clone()
+        .or_else(|| std::env::var_os("GAIT_DIR").map(PathBuf::from));
     // The identity and process verifier are installed BEFORE role dispatch: a
     // turn spawns `current_exe() __brain`, and the brain folds signed events.
-    let identity = match gait_identity::IdentityContext::from_env() {
-        Ok(identity) => identity,
+    let loaded = match (is_role, state_dir.as_deref()) {
+        (false, Some(dir)) => gait_identity::IdentityContext::from_env_or_mint(dir).map(Some),
+        _ => gait_identity::IdentityContext::from_env(),
+    };
+    let identity = match loaded {
+        Ok(identity) => identity.map(Arc::new),
         Err(error) => {
             eprintln!("{error:#}");
             return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
         }
     };
+    let mut verifier = None;
     if let Some(ctx) = &identity {
-        let verifier = match gait_identity::DirectVerifier::from_context(ctx) {
-            Ok(verifier) => verifier,
+        if !is_role && std::env::var_os("GAIT_AGENT_DIR").is_none() {
+            // SAFETY: still single-threaded; set before any runtime or child exists.
+            unsafe { std::env::set_var("GAIT_AGENT_DIR", ctx.agent_dir()) };
+        }
+        let v = match gait_identity::DirectVerifier::from_context(ctx) {
+            Ok(v) => Arc::new(v),
             Err(error) => {
                 eprintln!("{error:#}");
                 return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
             }
         };
-        gait_state::session::retrace::install_process_verifier(Arc::new(verifier));
+        gait_state::session::retrace::install_process_verifier(v.clone());
+        verifier = Some(v);
     }
-    if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
+    if is_role {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
             .expect("failed to start the tokio runtime");
         runtime.block_on(async { gait_core::__dispatch_role(&raw[1..]).await });
         return std::process::ExitCode::SUCCESS;
     }
-    let flags = match parse_attestation_flags(&raw[1..]) {
-        Ok(flags) => flags,
-        Err(error) => {
-            eprintln!("{error:#}");
-            return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
-        }
-    };
     if let Some(text) = &flags.reply_instructions {
         gait_core::install_reply_instructions(text.clone());
     }
     let require_attestation = flags.require_attestation;
-    let state_dir = flags
-        .state_dir
-        .clone()
-        .or_else(|| std::env::var_os("GAIT_DIR").map(PathBuf::from));
     if require_attestation && state_dir.is_none() {
         let error = coded_error::into_anyhow(ConfigError::AttestationNeedsStateDir);
         eprintln!("{error:#}");
@@ -192,6 +209,9 @@ fn main() -> std::process::ExitCode {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
         .expect("failed to start the tokio runtime");
     let result = runtime.block_on(async move {
+        if let (Some(ctx), Some(verifier)) = (identity.clone(), verifier) {
+            gait_acp::renew::spawn(ctx, verifier);
+        }
         tokio::select! {
             result = gait_acp::run_with_attestation(require_attestation, attestor) => result,
             _ = async {
