@@ -324,9 +324,9 @@ pub struct BrainArgs {
     /// The agent's own principal, for the self-identity block (public).
     #[arg(long = "self-id", hide = true)]
     pub self_id: Option<String>,
-    #[arg(long = "self-name", hide = true)]
+    #[arg(long = "self-name", hide = true, allow_hyphen_values = true)]
     pub self_name: Option<String>,
-    #[arg(long = "reply-instructions", hide = true)]
+    #[arg(long = "reply-instructions", hide = true, allow_hyphen_values = true)]
     pub reply_instructions: Option<String>,
     /// The spine has a send command configured: offer `send_message`.
     #[arg(long = "send-message", hide = true)]
@@ -455,6 +455,17 @@ mod tests {
         assert!(!crate::env_passes_to_children("AWS_SECRET_ACCESS_KEY"));
         assert!(!crate::env_passes_to_children("GAIT_AGENT_DIR"));
         assert!(!crate::env_passes_to_children("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn brain_args_accept_hyphen_leading_name_and_instructions() {
+        let argv: Vec<String> = ["--self-name", "-Ada", "--reply-instructions", "- reply via send_message"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let parsed = BrainArgs::try_parse_from(&argv).unwrap();
+        assert_eq!(parsed.self_name.as_deref(), Some("-Ada"));
+        assert_eq!(parsed.reply_instructions.as_deref(), Some("- reply via send_message"));
     }
 
     #[test]

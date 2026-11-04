@@ -11,7 +11,7 @@
 | `--send-command <program>` | Enables the `send_message` reply tool. Repeat `--send-arg <arg>` for its argv (values taken verbatim, no shell). Requires `--send-audience`. |
 | `--send-audience p256:<hex>` | The deliverer principal every send is addressed to (separate from `--trusted-deliverer`). Requires `--send-command`. |
 
-`send_message` is offered only when configured. The model gives targets and a body; the spine signs with the agent's device session (never the root) and runs the command with only the allowlisted environment (no `GAIT_AGENT_DIR`, no provider keys). Each send needs approval.
+`send_message` is offered only when configured. The model gives targets and a body; the spine signs with the agent's device session (never the root) and runs the command with only the allowlisted environment (no `GAIT_AGENT_DIR`, no provider keys). Each send goes through the normal permission gate (`send_message` pattern), so `--auto` runs and `--allow send_message` send without a prompt.
 
 `--trusted-multimatrix-key` and `--trusted-recipient-key` were removed and are refused at start.
 
@@ -34,3 +34,4 @@ Not written yet (covered only by the concordium batch stack run):
 - An event signed by a device renewed after start verifies after `DirectVerifier::refresh`.
 - Integration tests for the self-identity block (once per session; absent without identity). Only the block builder is unit-tested.
 - `send_message`: the explicit sandbox read-deny on the identity folder and its sealed integration test; the send child is not enrolled in gait's cascade-kill group (the library runs it in its own process group with a timeout and kills it on exit).
+- A send cut off by a timeout or an aborted turn may already have been accepted; a retry mints a new message id, so the recipient can see a duplicate.
