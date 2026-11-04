@@ -40,7 +40,9 @@ impl IdentityError {
             }
             KeyfileError::Parse { .. }
             | KeyfileError::Crypto(_)
-            | KeyfileError::VerifyFailed(_) => {
+            | KeyfileError::VerifyFailed(_)
+            | KeyfileError::RootMismatch
+            | KeyfileError::InvalidLayout(_) => {
                 Self::DeviceKeyUnreadable { dir, source }
             }
             KeyfileError::DelegationMismatch => Self::DelegationExpired { dir, source },

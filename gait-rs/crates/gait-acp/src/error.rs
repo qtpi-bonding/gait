@@ -15,9 +15,21 @@ pub enum PromptError {
     #[error("attestation required")]
     #[coded(code = "attestation_required", class = Logical)]
     AttestationRequired,
-    #[error("unknown key id: {0}")]
-    #[coded(code = "attestation_unknown_key", class = Logical)]
-    AttestationUnknownKey(String),
+    #[error("untrusted deliverer: {0}")]
+    #[coded(code = "attestation_unknown_deliverer", class = Logical)]
+    AttestationUnknownDeliverer(String),
+    #[error("delivery is addressed to another agent")]
+    #[coded(code = "attestation_recipient_id_mismatch", class = Logical)]
+    AttestationRecipientIdMismatch,
+    #[error("message {index} was not addressed to the delivering principal")]
+    #[coded(code = "attestation_audience_mismatch", class = Logical)]
+    AttestationAudienceMismatch { index: usize },
+    #[error("invalid message: {0}")]
+    #[coded(code = "attestation_invalid_message", class = Logical)]
+    AttestationInvalidMessage(String),
+    #[error("delivery is stale: {0}")]
+    #[coded(code = "attestation_stale", class = Logical)]
+    AttestationStale(String),
     #[error("bad signature")]
     #[coded(code = "attestation_bad_signature", class = Logical)]
     AttestationBadSignature,
@@ -77,7 +89,7 @@ mod tests {
     #[test]
     fn prompt_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.prompt.", &[PromptError::ALL_CODES]).unwrap();
-        assert_eq!(PromptError::ALL_CODES.len(), 14);
+        assert_eq!(PromptError::ALL_CODES.len(), 18);
     }
 
     #[test]

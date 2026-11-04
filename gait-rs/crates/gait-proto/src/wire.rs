@@ -341,7 +341,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log.jsonl");
         let expected = crate::gait::log::v1::Provenance {
-            context: "signed".into(),
+            author_id: Some("signed".into()),
             ..Default::default()
         };
         let expected_copy = expected.clone();
@@ -366,6 +366,8 @@ mod tests {
             ("verificationOutcome", serde_json::json!(0)),
             ("delegationCert", serde_json::json!({})),
             ("from", serde_json::json!("b2xk")),
+            ("context", serde_json::json!("room")),
+            ("verifiedAuthorId", serde_json::json!("p256:aa")),
         ];
         for (field, value) in removed_fields {
             let mut old = json.clone();
@@ -378,9 +380,9 @@ mod tests {
 
         let mut current = json;
         let mut provenance = serde_json::Map::new();
-        provenance.insert("context".into(), serde_json::json!("room"));
+        provenance.insert("authorId".into(), serde_json::json!("p256:aa"));
         current["provenance"] = serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
-        serde_json::from_value::<Event>(current).expect("context remains a valid provenance field");
+        serde_json::from_value::<Event>(current).expect("authorId is a valid provenance field");
     }
 
     #[test]
@@ -419,11 +421,11 @@ mod tests {
             )),
         });
         let p1 = crate::gait::log::v1::Provenance {
-            context: "room-a".into(),
+            author_id: Some("room-a".into()),
             ..Default::default()
         };
         let p2 = crate::gait::log::v1::Provenance {
-            context: "room-b".into(),
+            author_id: Some("room-b".into()),
             ..Default::default()
         };
         let event = append_with_given_provenances(

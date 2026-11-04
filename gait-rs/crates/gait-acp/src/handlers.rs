@@ -61,6 +61,38 @@ fn attested_on_durable(
     })
 }
 
+/// The log body and provenance of one verified incoming message. Built only
+/// from the verified `Message`, never from `req.prompt`: the structured fields
+/// are logged and the model-facing text is re-rendered from them on fold.
+fn incoming_body(
+    incoming: crate::attestation::VerifiedIncoming,
+) -> (
+    gait_core::proto::gait::log::v1::event::Body,
+    Option<gait_core::proto::gait::log::v1::Provenance>,
+) {
+    let crate::attestation::VerifiedIncoming { author_id, message, via } = incoming;
+    let body = gait_core::proto::wire::body(
+        gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(
+            gait_core::proto::gait::log::v1::IncomingMessage {
+                content: message.body,
+                message_id: message.message_id,
+                to: message.to,
+                reply_to: message.reply_to,
+                references: message.references,
+                mentions: message.mentions,
+                via,
+                render_version: message_attestation::RENDER_VERSION,
+                ..Default::default()
+            },
+        ),
+    );
+    let provenance = gait_core::proto::gait::log::v1::Provenance {
+        author_id: Some(author_id),
+        ..Default::default()
+    };
+    (body, Some(provenance))
+}
+
 /// A supplied-but-invalid (or required-but-missing) attestation does not fail
 /// the prompt: it runs as rejected user text. It is still an error, so it goes
 /// through `acp_error` once, which emits the error record and builds the wire
@@ -324,17 +356,26 @@ pub fn build_agent_with_attestation(
                             // text executed.
                             Ok(Some(batch)) => {
                                 let (messages, confirm) = batch.into_parts();
+                                // Every message was already delivered in an
+                                // earlier Delivery: nothing to run. Advance
+                                // the sequence and mark the keys, then answer.
+                                if messages.is_empty() {
+                                    let _ = confirm();
+                                    return responder.respond(PromptResponse::new(
+                                        StopReason::EndTurn,
+                                    ));
+                                }
                                 let message_ids: Vec<String> = messages
                                     .iter()
-                                    .map(|message| message.message_id.clone())
+                                    .map(|message| message.message.message_id.clone())
                                     .collect();
                                 let source_record_id = message_ids
                                     .first()
                                     .cloned()
                                     .unwrap_or_default();
-                                let author = messages.first().and_then(|message| {
-                                    message.provenance.verified_author_id.clone()
-                                });
+                                let author = messages
+                                    .first()
+                                    .map(|message| message.author_id.clone());
                                 let on_durable = attested_on_durable(
                                     source_record_id,
                                     sid.clone(),
@@ -344,22 +385,7 @@ pub fn build_agent_with_attestation(
                                     confirm,
                                 );
                                 TurnInput::AttestedMessages {
-                                    bodies: messages
-                                        .into_iter()
-                                        .map(|m| {
-                                            (
-                                                gait_core::proto::wire::body(
-                                                    gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(
-                                                        gait_core::proto::gait::log::v1::IncomingMessage {
-                                                            content: m.body_text,
-                                                            ..Default::default()
-                                                        },
-                                                    ),
-                                                ),
-                                                Some(m.provenance),
-                                            )
-                                        })
-                                        .collect(),
+                                    bodies: messages.into_iter().map(incoming_body).collect(),
                                     on_durable,
                                 }
                             }

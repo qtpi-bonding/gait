@@ -57,14 +57,15 @@ message Event {
 
 
 // Provenance for direct events carries a SignedMessage over DirectEventDigest;
-// attested events carry verified_author_id and context only. Neither is
+// attested events carry author_id only (targets and thread live on the
+// IncomingMessage payload). Neither is
 // covered by content_hash.
 message Provenance {
-  string                       context         = 3;  // room/thread reference — freeform, no enforced vocabulary
-  optional string verified_author_id = 9;
+  optional string author_id = 9;  // verified author principal of an attested incoming message
   optional identitycrypto.v1.SignedMessage signed_message = 11;
 
-  reserved 1, 2, 4, 5, 6, 7, 8, 10;
+  reserved 1, 2, 3, 4, 5, 6, 7, 8, 10;
+  reserved "context", "verified_author_id";
   reserved "from", "to", "signature", "scheme", "delegation_cert", "verification_outcome";
   reserved "attested_author_agent_id", "attested_verification_outcome";
 }
@@ -305,9 +306,19 @@ message UserText {
 // Event.provenance. Rejected claims remain in the audit log but are omitted
 // from the agent-facing fold.
 message IncomingMessage {
-  string content = 1;
+  string content = 1;                          // the verified body, never rendered text
   bool rejected_provenance_claim = 2;
   reserved 3, 4;
+  // Structured fields of a verified Message. The model-facing text is
+  // re-rendered from these on fold, with the renderer `render_version`
+  // recorded here when the message was first logged.
+  string                         message_id     = 5;
+  repeated identitycrypto.v1.Target to          = 6;
+  optional string                reply_to       = 7;
+  repeated string                references     = 8;
+  repeated string                mentions       = 9;
+  repeated identitycrypto.v1.Target via         = 10;
+  uint32                         render_version = 11;
 }
 
 message Inject {

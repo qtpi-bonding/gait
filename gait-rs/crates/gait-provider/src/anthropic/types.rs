@@ -720,7 +720,6 @@ mod tests {
     fn user_message_with_attribution_wraps_text_in_room_message_tag() {
         let attribution = vec![gait_types::types::Attribution {
             author_id: "agent-2".into(),
-            context: "room-general".into(),
             trust: gait_types::types::Trust::Unverified,
         }];
         let messages = vec![Message::User {
@@ -734,7 +733,7 @@ mod tests {
         if let AnthropicContent::Text(text) = &converted[0].content {
             assert_eq!(
                 text,
-                "<incoming-message from=\"agent-2\" context=\"room-general\" trust=\"unverified\">Hello from peer</incoming-message>\n"
+                "<incoming-message from=\"agent-2\" trust=\"unverified\">Hello from peer</incoming-message>\n"
             );
         } else {
             panic!("expected Text content, got {:?}", converted[0].content);
@@ -745,7 +744,6 @@ mod tests {
     fn user_message_with_attribution_inserts_marker_block_in_parts() {
         let attribution = vec![gait_types::types::Attribution {
             author_id: "agent-2".into(),
-            context: "room-general".into(),
             trust: gait_types::types::Trust::Unverified,
         }];
         let messages = vec![Message::User {

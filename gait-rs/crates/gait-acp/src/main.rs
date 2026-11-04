@@ -7,65 +7,84 @@
 //! dispatch at all, which just reran `gait_acp::run()` and misread the
 //! brain's binary Nerve init frame as malformed ACP JSON-RPC.
 //!
-//! `--require-attestation`, (repeatable) `--trusted-multimatrix-key <path>`
-//! and (repeatable) `--trusted-recipient-key <path>` (an extra device key an
-//! attestation may be addressed to, beside the agent's own) are the process-level attestation policy -- deliberately parsed
-//! here, not read from any runtime `_meta` claim, since the trust boundary has
-//! to be rooted in how the process itself was launched (e.g. by
-//! `multimatrix-bridge`). The key path names a PUBLIC key-duo JWK file. The
-//! agent identity comes from `GAIT_AGENT_DIR`, read by `IdentityContext`. Unrecognized argv is left alone
-//! (no clap dependency here today).
-use std::path::Path;
+//! `--require-attestation`, (repeatable) `--trusted-deliverer p256:<hex>` and
+//! `--state-dir <path>` are the process-level attestation policy --
+//! deliberately parsed here, not read from any runtime `_meta` claim, since
+//! the trust boundary has to be rooted in how the process itself was launched
+//! (e.g. by `structmuxd`). A trusted deliverer is named by its PRINCIPAL id;
+//! the delivery proves the deliverer's device through its root-to-device
+//! delegation. The delivery replay and dedupe state live under the state dir
+//! (default `$GAIT_DIR`). The agent identity comes from `GAIT_AGENT_DIR`, read
+//! by `IdentityContext`. Unrecognized argv is left alone (no clap dependency
+//! here today), except the removed flags, which are refused.
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use gait_acp::attestation::{Attestor, load_trusted_key};
-use identity_crypto::PublicKey;
+use gait_acp::attestation::Attestor;
+use identity_crypto::PrincipalId;
 
 #[derive(Debug, thiserror::Error, coded_error::CodedError)]
 #[coded(namespace = "gait.acp.config")]
 enum ConfigError {
-    #[error("--trusted-multimatrix-key needs the path of a public key-duo JWK")]
-    #[coded(code = "trusted_key_path_missing", class = Logical)]
-    TrustedKeyPathMissing,
-    #[error("--trusted-recipient-key needs the path of a public key-duo JWK")]
-    #[coded(code = "trusted_recipient_key_path_missing", class = Logical)]
-    TrustedRecipientKeyPathMissing,
+    #[error("--trusted-deliverer needs a principal id (p256:<hex>)")]
+    #[coded(code = "trusted_deliverer_missing", class = Logical)]
+    TrustedDelivererMissing,
+    #[error("--trusted-deliverer takes a principal id (p256:<hex>), not {0:?}")]
+    #[coded(code = "trusted_deliverer_invalid", class = Logical)]
+    TrustedDelivererInvalid(String),
+    #[error("{0} was removed; use --trusted-deliverer p256:<hex>")]
+    #[coded(code = "removed_flag", class = Logical)]
+    RemovedFlag(String),
+    #[error("--state-dir needs a directory path")]
+    #[coded(code = "state_dir_missing", class = Logical)]
+    StateDirMissing,
     #[error("--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory")]
     #[coded(code = "attestation_needs_identity", class = Logical)]
     AttestationNeedsIdentity,
+    #[error("--require-attestation needs a state directory: pass --state-dir or set GAIT_DIR")]
+    #[coded(code = "attestation_needs_state_dir", class = Logical)]
+    AttestationNeedsStateDir,
 }
 
-/// Returns `(require_attestation, trusted delivery keys, extra recipient keys)`. Each key is read from
-/// its JWK file, so a missing or private-key file is an error here, at startup.
-fn parse_attestation_flags(
-    argv: &[String],
-) -> anyhow::Result<(bool, Vec<(String, PublicKey)>, Vec<PublicKey>)> {
-    let mut require_attestation = false;
-    let mut trusted_keys = Vec::new();
-    let mut recipient_keys = Vec::new();
+/// What the process-level attestation flags say.
+#[derive(Debug, Default, PartialEq)]
+struct AttestationFlags {
+    require_attestation: bool,
+    trusted_deliverers: Vec<PrincipalId>,
+    state_dir: Option<PathBuf>,
+}
+
+fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> {
+    let mut flags = AttestationFlags::default();
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--require-attestation" => require_attestation = true,
-            "--trusted-multimatrix-key" => {
-                let Some(path) = argv.get(i + 1) else {
-                    return Err(coded_error::into_anyhow(ConfigError::TrustedKeyPathMissing));
+            "--require-attestation" => flags.require_attestation = true,
+            "--trusted-deliverer" => {
+                let Some(value) = argv.get(i + 1) else {
+                    return Err(coded_error::into_anyhow(ConfigError::TrustedDelivererMissing));
                 };
-                trusted_keys.push(load_trusted_key(Path::new(path))?);
+                let principal = PrincipalId::parse(value).map_err(|_| {
+                    coded_error::into_anyhow(ConfigError::TrustedDelivererInvalid(value.clone()))
+                })?;
+                flags.trusted_deliverers.push(principal);
                 i += 1;
             }
-            "--trusted-recipient-key" => {
-                let Some(path) = argv.get(i + 1) else {
-                    return Err(coded_error::into_anyhow(ConfigError::TrustedRecipientKeyPathMissing));
+            "--state-dir" => {
+                let Some(value) = argv.get(i + 1) else {
+                    return Err(coded_error::into_anyhow(ConfigError::StateDirMissing));
                 };
-                recipient_keys.push(load_trusted_key(Path::new(path))?.1);
+                flags.state_dir = Some(PathBuf::from(value));
                 i += 1;
+            }
+            removed @ ("--trusted-multimatrix-key" | "--trusted-recipient-key") => {
+                return Err(coded_error::into_anyhow(ConfigError::RemovedFlag(removed.to_owned())));
             }
             _ => {}
         }
         i += 1;
     }
-    Ok((require_attestation, trusted_keys, recipient_keys))
+    Ok(flags)
 }
 
 fn main() -> std::process::ExitCode {
@@ -95,27 +114,44 @@ fn main() -> std::process::ExitCode {
         runtime.block_on(async { gait_core::__dispatch_role(&raw[1..]).await });
         return std::process::ExitCode::SUCCESS;
     }
-    let (require_attestation, trusted_keys, recipient_keys) = match parse_attestation_flags(&raw[1..]) {
+    let flags = match parse_attestation_flags(&raw[1..]) {
         Ok(flags) => flags,
         Err(error) => {
             eprintln!("{error:#}");
             return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
         }
     };
+    let require_attestation = flags.require_attestation;
+    let state_dir = flags
+        .state_dir
+        .clone()
+        .or_else(|| std::env::var_os("GAIT_DIR").map(PathBuf::from));
+    if require_attestation && state_dir.is_none() {
+        let error = coded_error::into_anyhow(ConfigError::AttestationNeedsStateDir);
+        eprintln!("{error:#}");
+        return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
+    }
     if require_attestation && identity.is_none() {
         let error = coded_error::into_anyhow(ConfigError::AttestationNeedsIdentity);
         eprintln!("{error:#}");
         return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
     }
-    let attestor = match identity.as_ref() {
-        Some(ctx) => match Attestor::open(ctx.agent_dir(), trusted_keys) {
-            Ok(attestor) => Some(Arc::new(attestor.with_extra_recipients(recipient_keys))),
+    if let Some(ctx) = identity.as_ref() {
+        gait_state::session::retrace::install_process_self_id(ctx.agent_id().to_string());
+    }
+    let attestor = match (identity.as_ref(), state_dir.as_deref()) {
+        (Some(ctx), Some(state_dir)) => match Attestor::open(
+            ctx.agent_dir(),
+            state_dir,
+            flags.trusted_deliverers.clone(),
+        ) {
+            Ok(attestor) => Some(Arc::new(attestor)),
             Err(error) => {
                 eprintln!("{error:#}");
                 return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
             }
         },
-        None => None,
+        _ => None,
     };
     let telemetry = {
         let mut config = concord_telemetry::Config::new("gait-acp", env!("CARGO_PKG_VERSION"));
@@ -155,124 +191,85 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use identity_crypto::jwk_duo::{GenerationService, KeyDuoSerializer};
+    use identity_crypto::jwk_duo::GenerationService;
+    use identity_crypto::principal_id;
 
-    fn public_jwk_file(dir: &Path, name: &str) -> String {
-        let path = dir.join(name);
-        let duo = GenerationService::generate_key_duo();
-        std::fs::write(
-            &path,
-            KeyDuoSerializer::export_public_key_duo_jwk(&duo).unwrap(),
-        )
-        .unwrap();
-        path.display().to_string()
+    fn principal() -> String {
+        principal_id(&GenerationService::generate_key_duo()).to_string()
+    }
+
+    fn code(error: &anyhow::Error) -> String {
+        coded_error::facts_anyhow(error).code.to_string()
     }
 
     #[test]
     fn parses_require_attestation_flag() {
-        let argv = vec!["--require-attestation".to_string()];
-        let (require, keys, _) = parse_attestation_flags(&argv).unwrap();
-        assert!(require);
-        assert!(keys.is_empty());
+        let flags = parse_attestation_flags(&["--require-attestation".to_string()]).unwrap();
+        assert!(flags.require_attestation);
+        assert!(flags.trusted_deliverers.is_empty());
     }
 
     #[test]
-    fn parses_repeated_trusted_multimatrix_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = public_jwk_file(dir.path(), "mm-key-1.jwk.json");
-        let second = public_jwk_file(dir.path(), "mm-key-2.jwk.json");
-        let argv = vec![
-            "--trusted-multimatrix-key".to_string(),
-            first,
-            "--trusted-multimatrix-key".to_string(),
-            second,
-        ];
-        let (require, keys, _) = parse_attestation_flags(&argv).unwrap();
-        assert!(!require);
-        assert_eq!(keys.len(), 2);
-        assert_ne!(keys[0].0, keys[1].0, "each key is keyed by its own thumbprint");
-        assert_eq!(keys[0].0, keys[0].1.thumbprint());
-        assert_eq!(keys[1].0, keys[1].1.thumbprint());
+    fn parses_repeated_trusted_deliverers() {
+        let (a, b) = (principal(), principal());
+        let argv: Vec<String> = ["--trusted-deliverer", &a, "--trusted-deliverer", &b]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let flags = parse_attestation_flags(&argv).unwrap();
+        let got: Vec<String> = flags.trusted_deliverers.iter().map(|p| p.to_string()).collect();
+        assert_eq!(got, vec![a, b], "order kept");
     }
 
     #[test]
-    fn parses_repeated_trusted_recipient_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = public_jwk_file(dir.path(), "r1.jwk.json");
-        let second = public_jwk_file(dir.path(), "r2.jwk.json");
-        let argv = vec![
-            "--trusted-recipient-key".to_string(),
-            first,
-            "--trusted-recipient-key".to_string(),
-            second,
-        ];
-        let (_, delivery, recipients) = parse_attestation_flags(&argv).unwrap();
-        assert!(delivery.is_empty(), "a recipient key is not a delivery key");
-        assert_eq!(recipients.len(), 2);
-        assert_ne!(recipients[0].thumbprint(), recipients[1].thumbprint());
-    }
-
-    #[test]
-    fn trusted_recipient_key_needs_a_path_and_a_public_key() {
-        let missing = parse_attestation_flags(&["--trusted-recipient-key".into()])
-            .expect_err("a missing path must fail");
-        assert_eq!(
-            coded_error::facts_anyhow(&missing).code,
-            "gait.acp.config.trusted_recipient_key_path_missing"
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let private = dir.path().join("private.jwk.json");
-        let duo = GenerationService::generate_key_duo();
-        std::fs::write(&private, KeyDuoSerializer::export_key_duo_jwk(&duo).unwrap()).unwrap();
+    fn jwk_path_value_is_rejected() {
         let error = parse_attestation_flags(&[
-            "--trusted-recipient-key".into(),
-            private.display().to_string(),
+            "--trusted-deliverer".into(),
+            "/service-key-public/central.jwk".into(),
         ])
-        .expect_err("a private JWK must be refused");
-        assert!(format!("{error:#}").contains("private key material"));
+        .expect_err("a file path is not a principal");
+        assert_eq!(code(&error), "gait.acp.config.trusted_deliverer_invalid");
     }
 
     #[test]
-    fn missing_trusted_key_file_is_a_startup_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("absent.jwk.json").display().to_string();
-        let argv = vec!["--trusted-multimatrix-key".to_string(), missing.clone()];
-        let error = parse_attestation_flags(&argv)
-            .err()
-            .expect("a missing key file must not start the process");
-        assert!(
-            format!("{error:#}").contains(&missing),
-            "the error names the missing file: {error:#}"
-        );
+    fn malformed_principal_is_rejected() {
+        for bad in ["p256:", "p256:zz", "p256:00", ""] {
+            let error = parse_attestation_flags(&["--trusted-deliverer".into(), bad.into()])
+                .expect_err("a malformed principal must fail");
+            assert_eq!(code(&error), "gait.acp.config.trusted_deliverer_invalid", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn trusted_deliverer_needs_a_value() {
+        let error = parse_attestation_flags(&["--trusted-deliverer".into()]).unwrap_err();
+        assert_eq!(code(&error), "gait.acp.config.trusted_deliverer_missing");
+    }
+
+    #[test]
+    fn removed_flags_are_refused() {
+        for flag in ["--trusted-multimatrix-key", "--trusted-recipient-key"] {
+            let error = parse_attestation_flags(&[flag.into(), "x".into()])
+                .expect_err("a removed flag must fail");
+            assert_eq!(code(&error), "gait.acp.config.removed_flag", "{flag}");
+        }
+    }
+
+    #[test]
+    fn parses_state_dir() {
+        let flags = parse_attestation_flags(&["--state-dir".into(), "/var/gait".into()]).unwrap();
+        assert_eq!(flags.state_dir, Some(PathBuf::from("/var/gait")));
+        let error = parse_attestation_flags(&["--state-dir".into()]).unwrap_err();
+        assert_eq!(code(&error), "gait.acp.config.state_dir_missing");
     }
 
     #[test]
     fn no_attestation_flags_yields_permissive_defaults() {
-        let argv: Vec<String> = vec![];
-        let (require, keys, _) = parse_attestation_flags(&argv).unwrap();
-        assert!(!require);
-        assert!(keys.is_empty());
-    }
-
-    #[test]
-    fn attestation_flag_errors_are_coded() {
-        let missing_path = parse_attestation_flags(&["--trusted-multimatrix-key".into()])
-            .expect_err("missing trusted key path must fail");
-        let missing_identity = coded_error::into_anyhow(ConfigError::AttestationNeedsIdentity);
-        let path_error = coded_error::downcast_ref::<ConfigError>(&missing_path)
-            .expect("missing path retains ConfigError");
-        let identity_error = coded_error::downcast_ref::<ConfigError>(&missing_identity)
-            .expect("missing identity retains ConfigError");
-        assert_eq!(path_error.to_string(), "--trusted-multimatrix-key needs the path of a public key-duo JWK");
-        assert_eq!(identity_error.to_string(), "--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory");
-        assert_eq!(coded_error::facts_anyhow(&missing_path).code, "gait.acp.config.trusted_key_path_missing");
-        assert_eq!(coded_error::facts_anyhow(&missing_identity).code, "gait.acp.config.attestation_needs_identity");
+        assert_eq!(parse_attestation_flags(&[]).unwrap(), AttestationFlags::default());
     }
 
     #[test]
     fn config_error_codes_are_unique() {
-        use coded_error::CodedError;
         coded_error::check_codes("gait.acp.config.", &[ConfigError::ALL_CODES]).unwrap();
-        assert_ne!(ConfigError::TrustedKeyPathMissing.code(), ConfigError::AttestationNeedsIdentity.code());
     }
 }

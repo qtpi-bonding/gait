@@ -43,7 +43,7 @@ fn render_sender(p: &pb::Provenance, principal: Option<&str>) -> String {
     if let Some(principal) = principal {
         return principal.to_string();
     }
-    if let Some(author) = &p.verified_author_id {
+    if let Some(author) = &p.author_id {
         return author.clone();
     }
     "unknown".to_string()
@@ -703,12 +703,10 @@ impl Projection for ActiveMessages {
             payload::Kind::UserText(u) if provenance_unsigned(ev) => {
                 st.push_user(u.content.clone(), &ev.id)
             }
-            payload::Kind::IncomingMessage(m)
-                if !m.rejected_provenance_claim
-                    && !ev.provenance.is_empty()
-                    && provenance_unsigned(ev) =>
-            {
-                st.push_user(m.content.clone(), &ev.id)
+            payload::Kind::IncomingMessage(m) if provenance_unsigned(ev) => {
+                if let Some(text) = incoming::rendered(ev, m) {
+                    st.push_user(text, &ev.id)
+                }
             }
             payload::Kind::UserText(_) | payload::Kind::IncomingMessage(_) => {}
             payload::Kind::AssistantText(a) => st.push_assistant(a.content.clone(), &ev.id),
@@ -812,13 +810,13 @@ impl ActiveRawMessages {
     }
 
     /// Trust decision for one provenance entry. A signed entry is trusted only
-    /// through the verifier, and the stored `verified_author_id` is ignored.
+    /// through the verifier, and the stored `author_id` is ignored.
     /// An unsigned entry is trusted when ingress attested an author id.
     fn trusted_author(&self, ev: &Event, p: &pb::Provenance, session_id: &str) -> Option<String> {
         if p.signed_message.is_some() {
             self.verified_author(ev, session_id)
         } else {
-            p.verified_author_id.clone()
+            p.author_id.clone()
         }
     }
 
@@ -830,17 +828,7 @@ impl ActiveRawMessages {
         signed && self.verified_author(ev, session_id).is_none()
     }
 
-    fn fold_user_text(
-        &self,
-        st: &mut RawMessagesState,
-        ev: &Event,
-        content: &str,
-        rejected_claim: bool,
-        provenance_required: bool,
-    ) {
-        if rejected_claim || (provenance_required && ev.provenance.is_empty()) {
-            return;
-        }
+    fn fold_user_text(&self, st: &mut RawMessagesState, ev: &Event, content: &str) {
         // An unverifiable signed message is still folded, as Unverified, so
         // the model sees that someone spoke. Dropping it would be silent.
         let mut attribution = Vec::new();
@@ -849,12 +837,6 @@ impl ActiveRawMessages {
             let trust = if author.is_some() { Trust::Verified } else { Trust::Unverified };
             attribution.push(Attribution {
                 author_id: author.unwrap_or_else(|| "unverified".to_string()),
-                // `context` is unsigned, so a signed entry never renders it.
-                context: if p.signed_message.is_some() {
-                    String::new()
-                } else {
-                    p.context.clone()
-                },
                 trust,
             });
         }
@@ -891,10 +873,18 @@ impl Projection for ActiveRawMessages {
                 *self.session_id.borrow_mut() = ss.session_id.clone();
             }
             payload::Kind::UserText(u) => {
-                self.fold_user_text(st, ev, &u.content, false, false);
+                self.fold_user_text(st, ev, &u.content);
             }
             payload::Kind::IncomingMessage(m) => {
-                self.fold_user_text(st, ev, &m.content, m.rejected_provenance_claim, true);
+                // Only a structured (verified) Message reaches the model, as
+                // its re-rendered text with no extra attribution wrapper.
+                if let Some(text) = incoming::rendered(ev, m) {
+                    st.base.push(Message::User {
+                        content: MessageContent::Text(text),
+                        id: ev.id.clone(),
+                        attribution: Vec::new(),
+                    });
+                }
             }
             payload::Kind::AssistantText(a) => st.base.push(Message::Assistant {
                 content: AssistantContent::Text(a.content.clone()),
@@ -1586,6 +1576,9 @@ pub fn last_turn_blocks(events: &[Event]) -> Vec<String> {
     }
     out
 }
+
+mod incoming;
+pub use incoming::install_process_self_id;
 
 #[cfg(test)]
 mod tests;

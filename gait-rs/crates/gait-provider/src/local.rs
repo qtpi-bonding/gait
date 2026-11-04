@@ -268,7 +268,6 @@ mod tests {
             id: "u".into(),
             attribution: vec![gait_types::types::Attribution {
                 author_id: "agent-2".into(),
-                context: "room-general".into(),
                 trust: gait_types::types::Trust::Unverified,
             }],
         }];
@@ -280,7 +279,7 @@ mod tests {
         };
         assert_eq!(
             content,
-            "<incoming-message from=\"agent-2\" context=\"room-general\" trust=\"unverified\">hello</incoming-message>\n"
+            "<incoming-message from=\"agent-2\" trust=\"unverified\">hello</incoming-message>\n"
         );
     }
 }

@@ -20,9 +20,9 @@ agent-client-protocol = { version = "1.1", features = ["unstable_elicitation"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "signal"] }
 tokio-util = "0.7"
 anyhow = "1"
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "2b3c82cd6e74c086b0fd13648457e3e4fcd2c139" }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "2b3c82cd6e74c086b0fd13648457e3e4fcd2c139" }
-message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "1fed46dbc112c54555631abb0e93ee786e59d79c" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "feb5d585a77c6ba45eedc16fd08c2bd7feeff782" }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "feb5d585a77c6ba45eedc16fd08c2bd7feeff782" }
+message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "57a4dbf04b4552a515c2efc7aa4ff894f7989bc3" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -41,5 +41,5 @@ gait-proto = { path = "../gait-proto" }
 git2 = "0.20"
 pbjson-types = "0.7"
 prost = "0.13"
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "2b3c82cd6e74c086b0fd13648457e3e4fcd2c139", features = ["testkit"] }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "2b3c82cd6e74c086b0fd13648457e3e4fcd2c139", features = ["testkit"] }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "feb5d585a77c6ba45eedc16fd08c2bd7feeff782", features = ["testkit"] }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "feb5d585a77c6ba45eedc16fd08c2bd7feeff782", features = ["testkit"] }

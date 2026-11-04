@@ -2099,6 +2099,7 @@ dependencies = [
  "identity-crypto",
  "identity-keyfile",
  "libc",
+ "message-attestation",
  "pbjson-types",
  "prost 0.13.5",
  "regex",
@@ -2683,8 +2684,8 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "identity-crypto"
-version = "0.8.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=2b3c82cd6e74c086b0fd13648457e3e4fcd2c139#2b3c82cd6e74c086b0fd13648457e3e4fcd2c139"
+version = "0.9.0"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=feb5d585a77c6ba45eedc16fd08c2bd7feeff782#feb5d585a77c6ba45eedc16fd08c2bd7feeff782"
 dependencies = [
  "chrono",
  "hex",
@@ -2701,8 +2702,8 @@ dependencies = [
 
 [[package]]
 name = "identity-keyfile"
-version = "0.8.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=2b3c82cd6e74c086b0fd13648457e3e4fcd2c139#2b3c82cd6e74c086b0fd13648457e3e4fcd2c139"
+version = "0.9.0"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=feb5d585a77c6ba45eedc16fd08c2bd7feeff782#feb5d585a77c6ba45eedc16fd08c2bd7feeff782"
 dependencies = [
  "identity-crypto",
  "libc",
@@ -3208,10 +3209,11 @@ dependencies = [
 
 [[package]]
 name = "message-attestation"
-version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=1fed46dbc112c54555631abb0e93ee786e59d79c#1fed46dbc112c54555631abb0e93ee786e59d79c"
+version = "0.2.0"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=57a4dbf04b4552a515c2efc7aa4ff894f7989bc3#57a4dbf04b4552a515c2efc7aa4ff894f7989bc3"
 dependencies = [
  "identity-crypto",
+ "prost 0.13.5",
  "serde_json",
  "thiserror 2.0.18",
 ]

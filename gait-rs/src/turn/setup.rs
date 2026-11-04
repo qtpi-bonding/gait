@@ -305,7 +305,7 @@ pub(crate) fn init(
                         // agent itself for spawn/notify. Only attested ingress
                         // carries an author id that means "a remote sender".
                         .filter(|p| p.signed_message.is_none())
-                        .and_then(|p| p.verified_author_id.clone())
+                        .and_then(|p| p.author_id.clone())
                 });
                 Some((event.run?, event.turn?, agent_id))
             }

@@ -633,7 +633,6 @@ mod tests {
             content: MessageContent::Text("Hello, world!".into()),
             attribution: vec![gait_types::types::Attribution {
                 author_id: "agent-2".into(),
-                context: "room-general".into(),
                 trust: gait_types::types::Trust::Unverified,
             }],
         };
@@ -642,7 +641,7 @@ mod tests {
         let content_str = chat_msgs[0].content.as_ref().unwrap().as_str().unwrap();
         assert_eq!(
             content_str,
-            "<incoming-message from=\"agent-2\" context=\"room-general\" trust=\"unverified\">Hello, world!</incoming-message>\n"
+            "<incoming-message from=\"agent-2\" trust=\"unverified\">Hello, world!</incoming-message>\n"
         );
     }
 }
