@@ -20,3 +20,12 @@
 ## Log fields
 
 `IncomingMessage` stores `message_id`, `to`, `reply_to`, `references`, `mentions`, `via` and `render_version`; the author is `Provenance.author_id`. The model sees `<incoming-message …>` rendered from those fields at fold time (an unknown `render_version` or an unstructured message is left out of context). `Provenance.context` was removed.
+
+## Known test gaps
+
+Not written yet (covered only by the concordium batch stack run):
+
+- Unit tests for `attestation.rs` itself (its verify paths are exercised by `crates/gait-acp/tests/prompt_provenance.rs`).
+- Two gait-acp starts racing on one state dir mint a single identity.
+- An event signed by a device renewed after start verifies after `DirectVerifier::refresh`.
+- Integration tests for the self-identity block (once per session; absent without identity). Only the block builder is unit-tested.
