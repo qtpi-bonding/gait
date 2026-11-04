@@ -80,6 +80,8 @@ jsonschema     = { version = "0.18", default-features = false }
 tempfile       = "3"
 base64         = "0.22"
 hex            = "0.4"
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "feb5d585a77c6ba45eedc16fd08c2bd7feeff782" }
+message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "6d7586e6bff7b8f370b877fa6852b686b039d936" }
 
 [features]
 testing = []

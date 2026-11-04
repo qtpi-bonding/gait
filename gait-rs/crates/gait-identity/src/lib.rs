@@ -184,6 +184,23 @@ pub fn sign_direct_event(
     Ok(Provenance { signed_message: Some(signed), ..Default::default() })
 }
 
+/// A fresh device-signed session credential and the root->device delegation that
+/// vouches for it, for signing a message in the spine. Never returns the root.
+pub fn device_session(
+    ctx: &IdentityContext,
+    ttl_secs: i64,
+    now: i64,
+) -> Result<(identity_crypto::SessionCredential, identity_crypto::pb::KeyDelegation)> {
+    let keys = ctx.keys()?;
+    let session = mint_session(
+        keys.device.signing_key_pair(),
+        keys.principal_id.genesis(),
+        now,
+        now.checked_add(ttl_secs).context("session expiry overflow")?,
+    )?;
+    Ok((session, keys.delegation.clone()))
+}
+
 pub trait ProvenanceVerifier: Send + Sync {
     fn verify_direct(&self, ev: &Event, session_id: &str) -> Option<PrincipalId>;
 }

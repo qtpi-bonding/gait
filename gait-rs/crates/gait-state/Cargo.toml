@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "57a4dbf04b4552a515c2efc7aa4ff894f7989bc3" }
+message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "6d7586e6bff7b8f370b877fa6852b686b039d936" }
 coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "be55165013f5d557ecf8e1b1cf784fb3d07e9753" }
 gait-proto    = { path = "../gait-proto" }
 gait-identity = { path = "../gait-identity" }

@@ -570,6 +570,25 @@ pub async fn relay_brain_turn(
                         );
                         handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
                     });
+                } else if impulse.tool == message_attestation::SEND_MESSAGE_TOOL
+                    && crate::send::config().is_some()
+                {
+                    let ctx = ctx.clone();
+                    let gd = gait_dir.to_path_buf();
+                    let sid = session_id.to_string();
+                    state.inflight.spawn(async move {
+                        let input = handlers::send_message::parse_send_input(&impulse);
+                        let feedback = handlers::send_message::handle_send_message(input, ctx).await;
+                        let feedback = handlers::output::finalize_feedback(
+                            feedback,
+                            &gd,
+                            &sid,
+                            "send_message",
+                            None,
+                            crate::types::OutputPresentation::ModelPreview,
+                        );
+                        handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
+                    });
                 } else {
                     let cfg = sandbox_cfg.clone();
                     let gd = gait_dir.to_path_buf();

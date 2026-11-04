@@ -52,7 +52,8 @@ pub(crate) mod mcp;
 #[cfg(test)]
 mod permissions_invariant_tests;
 pub(crate) mod prompt;
-pub use prompt::install_reply_instructions;
+pub use prompt::{install_self_identity, SelfIdentity};
+pub mod send;
 #[cfg(test)]
 mod test_utils;
 pub(crate) mod wasm_plugins;
@@ -174,6 +175,16 @@ pub async fn __dispatch_role(argv: &[String]) {
             // `BrainArgs` lives in `launch.rs` (hoisted out of this match arm
             // so `launch::BrainLaunch`'s round-trip test can call it).
             let args = crate::launch::BrainArgs::parse_from(&argv[1..]);
+            if let Some(agent_id) = args.self_id.clone() {
+                crate::prompt::install_self_identity(crate::prompt::SelfIdentity {
+                    agent_id,
+                    name: args.self_name.clone(),
+                    reply_instructions: args.reply_instructions.clone(),
+                });
+            }
+            if args.send_message {
+                crate::send::install_offered();
+            }
             let config = BrainConfig {
                 session_id: args.session_id,
                 auto: args.auto,

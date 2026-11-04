@@ -149,7 +149,7 @@ pub(crate) fn brain_argv(
     sandbox_on: bool,
     profile: &ProfileInputs,
 ) -> Vec<String> {
-    crate::launch::BrainLaunch {
+    let mut argv = crate::launch::BrainLaunch {
         gait_dir: gait_dir.to_path_buf(),
         codebase: codebase.to_path_buf(),
         session_id: session_id.to_string(),
@@ -159,7 +159,24 @@ pub(crate) fn brain_argv(
         allow: profile.allow.clone(),
         deny: profile.deny.clone(),
     }
-    .to_argv()
+    .to_argv();
+    // What the sealed brain needs to build its prompt and tool list.
+    if let Some(si) = crate::prompt::installed_self_identity() {
+        argv.push("--self-id".to_string());
+        argv.push(si.agent_id.clone());
+        if let Some(name) = &si.name {
+            argv.push("--self-name".to_string());
+            argv.push(name.clone());
+        }
+        if let Some(reply) = &si.reply_instructions {
+            argv.push("--reply-instructions".to_string());
+            argv.push(reply.clone());
+        }
+    }
+    if crate::send::config().is_some() {
+        argv.push("--send-message".to_string());
+    }
+    argv
 }
 
 /// Give in-flight Impulse-handler tasks (spawn_agent and every other tool

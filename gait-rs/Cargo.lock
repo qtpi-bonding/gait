@@ -1869,10 +1869,12 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "hex",
+ "identity-crypto",
  "identity-keyfile",
  "ignore",
  "jsonschema",
  "libc",
+ "message-attestation",
  "pbjson-types",
  "portable-pty",
  "prost 0.13.5",
@@ -3209,13 +3211,16 @@ dependencies = [
 
 [[package]]
 name = "message-attestation"
-version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=57a4dbf04b4552a515c2efc7aa4ff894f7989bc3#57a4dbf04b4552a515c2efc7aa4ff894f7989bc3"
+version = "0.3.0"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=6d7586e6bff7b8f370b877fa6852b686b039d936#6d7586e6bff7b8f370b877fa6852b686b039d936"
 dependencies = [
+ "getrandom 0.4.2",
  "identity-crypto",
+ "libc",
  "prost 0.13.5",
  "serde_json",
  "thiserror 2.0.18",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -5658,6 +5663,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "231fdcd7ef3037e8330d8e17e61011a2c244126acc0a982f4040ac3f9f0bc077"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "wait-timeout"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

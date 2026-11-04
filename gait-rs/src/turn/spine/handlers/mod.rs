@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod output;
+pub mod send_message;
 pub mod tool;
 
 use crate::proto::gait::sandbox::v1::Feedback;

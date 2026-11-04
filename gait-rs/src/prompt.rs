@@ -101,12 +101,24 @@ fn ensure_codebase_dir(gait_dir: &Path, codebase: &Path) -> PathBuf {
     dir
 }
 
-static REPLY_INSTRUCTIONS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// Who this process speaks as: set by the top gait-acp process, and by the
+/// sealed brain from the argv the spine hands it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelfIdentity {
+    pub agent_id: String,
+    pub name: Option<String>,
+    pub reply_instructions: Option<String>,
+}
 
-/// Installs the process-wide reply instructions (text read from
-/// `--reply-instructions-file`). The first call wins.
-pub fn install_reply_instructions(text: impl Into<String>) {
-    let _ = REPLY_INSTRUCTIONS.set(text.into());
+static SELF_IDENTITY: std::sync::OnceLock<SelfIdentity> = std::sync::OnceLock::new();
+
+/// Installs the process-wide self identity. The first call wins.
+pub fn install_self_identity(identity: SelfIdentity) {
+    let _ = SELF_IDENTITY.set(identity);
+}
+
+pub(crate) fn installed_self_identity() -> Option<&'static SelfIdentity> {
+    SELF_IDENTITY.get()
 }
 
 /// The self-identity block, added to the system prompt once per session:
@@ -129,11 +141,10 @@ pub fn self_identity_block(agent_id: &str, name: Option<&str>, reply: Option<&st
     block
 }
 
-/// The block for the current process: `GAIT_AGENT_NAME` and the installed
-/// reply instructions.
-pub fn process_self_identity_block(agent_id: &str) -> String {
-    let name = std::env::var("GAIT_AGENT_NAME").ok();
-    self_identity_block(agent_id, name.as_deref(), REPLY_INSTRUCTIONS.get().map(String::as_str))
+/// The block for the current process, when a self identity is installed.
+pub fn process_self_identity_block() -> Option<String> {
+    let si = SELF_IDENTITY.get()?;
+    Some(self_identity_block(&si.agent_id, si.name.as_deref(), si.reply_instructions.as_deref()))
 }
 
 pub fn content_hash_short(s: &str) -> String {

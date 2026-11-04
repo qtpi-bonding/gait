@@ -321,6 +321,16 @@ pub struct BrainArgs {
     pub result_schema_path: Option<String>,
     #[arg(long = "cascade-group", hide = true)]
     pub cascade_group: Option<String>,
+    /// The agent's own principal, for the self-identity block (public).
+    #[arg(long = "self-id", hide = true)]
+    pub self_id: Option<String>,
+    #[arg(long = "self-name", hide = true)]
+    pub self_name: Option<String>,
+    #[arg(long = "reply-instructions", hide = true)]
+    pub reply_instructions: Option<String>,
+    /// The spine has a send command configured: offer `send_message`.
+    #[arg(long = "send-message", hide = true)]
+    pub send_message: bool,
 }
 
 // ── DaemonExitLaunch (site 6 — `tools/shell/mod.rs` daemon wrapper) ─────────

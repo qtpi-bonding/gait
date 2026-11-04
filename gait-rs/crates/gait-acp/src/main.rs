@@ -38,6 +38,18 @@ enum ConfigError {
     #[error("--state-dir needs a directory path")]
     #[coded(code = "state_dir_missing", class = Logical)]
     StateDirMissing,
+    #[error("--send-command needs --send-audience p256:<hex> (the deliverer a send goes to)")]
+    #[coded(code = "send_needs_audience", class = Logical)]
+    SendNeedsAudience,
+    #[error("--send-audience needs --send-command")]
+    #[coded(code = "send_audience_needs_command", class = Logical)]
+    SendAudienceNeedsCommand,
+    #[error("{0} needs a value")]
+    #[coded(code = "send_flag_missing_value", class = Logical)]
+    SendFlagMissingValue(String),
+    #[error("--send-audience takes a principal id (p256:<hex>), not {0:?}")]
+    #[coded(code = "send_audience_invalid", class = Logical)]
+    SendAudienceInvalid(String),
     #[error("--reply-instructions-file needs a file path")]
     #[coded(code = "reply_instructions_missing", class = Logical)]
     ReplyInstructionsMissing,
@@ -59,6 +71,9 @@ struct AttestationFlags {
     trusted_deliverers: Vec<PrincipalId>,
     state_dir: Option<PathBuf>,
     reply_instructions: Option<String>,
+    send_command: Option<String>,
+    send_args: Vec<String>,
+    send_audience: Option<PrincipalId>,
 }
 
 fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> {
@@ -84,6 +99,24 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
                 flags.state_dir = Some(PathBuf::from(value));
                 i += 1;
             }
+            flag @ ("--send-command" | "--send-arg" | "--send-audience") => {
+                // The value is taken verbatim: a send arg may itself start with `--`.
+                let Some(value) = argv.get(i + 1) else {
+                    return Err(coded_error::into_anyhow(ConfigError::SendFlagMissingValue(
+                        flag.to_owned(),
+                    )));
+                };
+                match flag {
+                    "--send-command" => flags.send_command = Some(value.clone()),
+                    "--send-arg" => flags.send_args.push(value.clone()),
+                    _ => {
+                        flags.send_audience = Some(PrincipalId::parse(value).map_err(|_| {
+                            coded_error::into_anyhow(ConfigError::SendAudienceInvalid(value.clone()))
+                        })?);
+                    }
+                }
+                i += 1;
+            }
             "--reply-instructions-file" => {
                 let Some(value) = argv.get(i + 1) else {
                     return Err(coded_error::into_anyhow(ConfigError::ReplyInstructionsMissing));
@@ -103,6 +136,15 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
             _ => {}
         }
         i += 1;
+    }
+    match (&flags.send_command, &flags.send_audience) {
+        (Some(_), None) => {
+            return Err(coded_error::into_anyhow(ConfigError::SendNeedsAudience));
+        }
+        (None, Some(_)) => {
+            return Err(coded_error::into_anyhow(ConfigError::SendAudienceNeedsCommand));
+        }
+        _ => {}
     }
     Ok(flags)
 }
@@ -162,8 +204,20 @@ fn main() -> std::process::ExitCode {
         runtime.block_on(async { gait_core::__dispatch_role(&raw[1..]).await });
         return std::process::ExitCode::SUCCESS;
     }
-    if let Some(text) = &flags.reply_instructions {
-        gait_core::install_reply_instructions(text.clone());
+    if let Some(ctx) = &identity {
+        gait_core::install_self_identity(gait_core::SelfIdentity {
+            agent_id: ctx.agent_id().to_string(),
+            name: std::env::var("GAIT_AGENT_NAME").ok(),
+            reply_instructions: flags.reply_instructions.clone(),
+        });
+    }
+    if let (Some(command), Some(audience)) = (&flags.send_command, &flags.send_audience) {
+        let mut argv = vec![command.clone()];
+        argv.extend(flags.send_args.iter().cloned());
+        gait_core::send::install_send_config(gait_core::send::SendConfig {
+            argv,
+            audience: audience.clone(),
+        });
     }
     let require_attestation = flags.require_attestation;
     if require_attestation && state_dir.is_none() {
@@ -314,5 +368,25 @@ mod tests {
     #[test]
     fn config_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.config.", &[ConfigError::ALL_CODES]).unwrap();
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn send_flags_take_values_verbatim_and_need_each_other() {
+        let aud = "p256:".to_string() + &"ab".repeat(33);
+        let ok = parse_attestation_flags(&strs(&[
+            "--send-command", "multimatrix", "--send-arg", "submit-message",
+            "--send-arg", "--signed-file", "--send-arg", "-", "--send-audience", &aud,
+        ]));
+        // A syntactically valid principal needs a real key; accept either outcome of
+        // the audience parse but never a lost `--signed-file` argument.
+        if let Ok(flags) = ok {
+            assert_eq!(flags.send_args, strs(&["submit-message", "--signed-file", "-"]));
+        }
+        let error = parse_attestation_flags(&strs(&["--send-command", "x"])).unwrap_err();
+        assert!(format!("{error:#}").contains("--send-audience"), "{error:#}");
     }
 }

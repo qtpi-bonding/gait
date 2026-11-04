@@ -382,9 +382,7 @@ impl Profile {
     ) -> anyhow::Result<ResolvedProfile> {
         self.context_policy.validate()?;
         // Told once per session, in the system prompt; absent without identity.
-        let identity_block = identity
-            .as_ref()
-            .map(|ctx| crate::prompt::process_self_identity_block(&ctx.agent_id().to_string()));
+        let identity_block = crate::prompt::process_self_identity_block();
         // Provider (no network until .stream()).
         let provider: std::sync::Arc<dyn gait_provider::provider::Provider> = std::sync::Arc::from(
             gait_provider::factory::load_provider_with_credential_params_and_gait_dir(
@@ -456,6 +454,9 @@ impl Profile {
             );
             for ct in &self.config_tools {
                 tools.push(build_config_tool(ct, &gait_dir, &codebase_path));
+            }
+            if crate::send::offered() {
+                tools.push(std::sync::Arc::new(crate::send::SendMessageTool::new()));
             }
             if let Some(schema) = &self.result_schema {
                 if let Some(pos) = tools.iter().position(|t| t.name() == "structured_done") {
