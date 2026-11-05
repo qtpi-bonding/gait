@@ -59,18 +59,27 @@ fn notice_reason(notice: &serde_json::Map<String, serde_json::Value>) -> Option<
 
 /// Appends the turn's `CancellationSignal` after an ACP cancel. The brain is
 /// killed by the cascade before it can finalize, so nothing else records one.
-/// Skipped when the log already ends in one, so there is never more than one.
+/// Skipped when this turn's log already holds one, so there is never more than one.
 pub fn record_cancellation(
     gait_dir: &std::path::Path,
     session_id: &str,
     cause: Option<&CancelCause>,
 ) -> anyhow::Result<()> {
     let path = gait_core::session::live::log_path(gait_dir, session_id);
+    // Any signal since the last user trigger counts: finalize may have appended
+    // bookkeeping after one the brain wrote before it died.
     let already = gait_core::session::log::read_events(&path)
         .ok()
-        .and_then(|events| events.last().and_then(|e| gait_core::proto::event_kind(e).cloned()))
-        .is_some_and(|k| {
-            matches!(k, gait_core::proto::gait::log::v1::payload::Kind::CancellationSignal(_))
+        .is_some_and(|events| {
+            use gait_core::proto::gait::log::v1::payload::Kind;
+            for e in events.iter().rev() {
+                match gait_core::proto::event_kind(e) {
+                    Some(Kind::CancellationSignal(_)) => return true,
+                    Some(Kind::UserText(_) | Kind::IncomingMessage(_)) => return false,
+                    _ => {}
+                }
+            }
+            false
         });
     if already {
         return Ok(());

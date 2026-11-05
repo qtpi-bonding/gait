@@ -479,7 +479,10 @@ pub fn build_agent_with_attestation(
                                 .instrument(span),
                             );
                             map_thread.take_cascade(&sid_thread);
-                            if map_thread.was_cancelled(&sid_thread) {
+                            // Read once: the recorded signal and the stop reason must agree
+                            // even if a cancel lands between the two uses.
+                            let cancelled = map_thread.was_cancelled(&sid_thread);
+                            if cancelled {
                                 let cause = map_thread.cancel_cause(&sid_thread);
                                 if let Err(e) = crate::notice_meta::record_cancellation(
                                     &gait_dir_signal,
@@ -498,7 +501,7 @@ pub fn build_agent_with_attestation(
                                     map_thread.forget_idempotency_key(&sid_thread, key);
                                 }
                             }
-                            let stop = if map_thread.was_cancelled(&sid_thread) {
+                            let stop = if cancelled {
                                 // Cancel wins over whatever the sink captured (or didn't):
                                 // spec requires Cancelled "even if cancellation causes
                                 // exceptions in underlying operations".
