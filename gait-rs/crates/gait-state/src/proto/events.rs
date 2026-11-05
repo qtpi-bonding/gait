@@ -100,12 +100,27 @@ pub fn verified_goal(
     )
 }
 
-/// Turn cancellation signal — emitted when the user presses Esc mid-turn.
-/// Retrace folds this into `[turn interrupted by user]` in the next transcript.
-pub fn cancellation_signal() -> pb::event::Body {
-    wire::body(pb::payload::Kind::CancellationSignal(
-        pb::CancellationSignal {},
-    ))
+/// Who cancelled a turn, and why, when the canceller said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelCause {
+    pub kind: pb::CancelActorKind,
+    pub id: String,
+    pub reason: Option<String>,
+}
+
+/// Turn cancellation signal. `None` means no cause was recorded (the user's Esc).
+/// Retrace folds it into `[turn interrupted by user]` or
+/// `[turn cancelled by <actor>: <reason>]` in the next transcript.
+pub fn cancellation_signal(cause: Option<&CancelCause>) -> pb::event::Body {
+    let signal = match cause {
+        Some(c) => pb::CancellationSignal {
+            actor_kind: c.kind as i32,
+            actor_id: c.id.clone(),
+            reason: c.reason.clone(),
+        },
+        None => pb::CancellationSignal::default(),
+    };
+    wire::body(pb::payload::Kind::CancellationSignal(signal))
 }
 
 /// `Toggle` — capability enable/disable delta (skill | mcp | tool | plugin), folded by ActiveAgent.

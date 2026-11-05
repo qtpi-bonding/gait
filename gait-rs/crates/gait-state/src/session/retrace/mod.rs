@@ -29,6 +29,23 @@ fn struct_to_value(s: &Option<pbjson_types::Struct>) -> serde_json::Value {
     }
 }
 
+/// Transcript text for a turn cancellation: today's wording unless the cause
+/// names a canceller other than the user (or the user gave a reason).
+fn cancellation_text(sig: &pb::CancellationSignal) -> String {
+    let who = match pb::CancelActorKind::try_from(sig.actor_kind) {
+        Ok(pb::CancelActorKind::Orchestrator) => "orchestrator",
+        Ok(pb::CancelActorKind::Policy) => "policy",
+        Ok(pb::CancelActorKind::System) => "system",
+        Ok(pb::CancelActorKind::User) => "user",
+        _ => return "[turn interrupted by user]".to_string(),
+    };
+    match sig.reason.as_deref() {
+        Some(r) => format!("[turn cancelled by {who}: {r}]"),
+        None if who == "user" => "[turn interrupted by user]".to_string(),
+        None => format!("[turn cancelled by {who}]"),
+    }
+}
+
 fn clarify_kind_str(k: i32) -> &'static str {
     match ClarifyKind::try_from(k).unwrap_or(ClarifyKind::Unspecified) {
         ClarifyKind::Is => "is",
@@ -740,8 +757,8 @@ impl Projection for ActiveMessages {
             | payload::Kind::LlmCallStarted(_)
             | payload::Kind::LlmCallCompleted(_) => {}
 
-            payload::Kind::CancellationSignal(_) => {
-                st.push_user("[turn interrupted by user]".to_string(), &ev.id);
+            payload::Kind::CancellationSignal(sig) => {
+                st.push_user(cancellation_text(sig), &ev.id);
             }
             // SessionStart, RunComplete, Raw, InformConvergence, Manifest,
             // Permissions/PermissionsReply — not model context; break any tool run.
@@ -928,8 +945,8 @@ impl Projection for ActiveRawMessages {
                 st.base.push(msg);
             }
             payload::Kind::ContextStatus(_) => {} // metadata only
-            payload::Kind::CancellationSignal(_) => st.base.push(Message::User {
-                content: MessageContent::Text("[turn interrupted by user]".to_string()),
+            payload::Kind::CancellationSignal(sig) => st.base.push(Message::User {
+                content: MessageContent::Text(cancellation_text(sig)),
                 id: ev.id.clone(),
                 attribution: Vec::new(),
             }),
@@ -1605,7 +1622,7 @@ mod cancel_tests {
                 envelope::EventScope::Turn { run: 0, turn: 0 },
             ),
             envelope::mint(
-                events::cancellation_signal(),
+                events::cancellation_signal(None),
                 None,
                 envelope::EventScope::Turn { run: 0, turn: 0 },
             ),
@@ -1627,5 +1644,67 @@ mod cancel_tests {
 
             other => panic!("expected User message, got {other:?}"),
         }
+    }
+
+    fn cancel_transcript(cause: Option<&events::CancelCause>) -> (String, String) {
+        let log: Vec<crate::proto::gait::log::v1::Event> = vec![
+            envelope::mint(
+                events::session_start("s1".into(), None, None, false),
+                None,
+                envelope::EventScope::Session,
+            ),
+            envelope::mint(
+                events::user_text("hello".into()),
+                None,
+                envelope::EventScope::Turn { run: 0, turn: 0 },
+            ),
+            envelope::mint(
+                events::cancellation_signal(cause),
+                None,
+                envelope::EventScope::Turn { run: 0, turn: 0 },
+            ),
+        ];
+        let text = |m: Vec<crate::types::Message>| match m.last() {
+            Some(crate::types::Message::User {
+                content: crate::types::MessageContent::Text(t),
+                ..
+            }) => t.clone(),
+            other => panic!("expected User message, got {other:?}"),
+        };
+        (
+            text(super::messages(&log).expect("messages")),
+            text(super::transcript(&log).expect("transcript")),
+        )
+    }
+
+    fn cause(kind: crate::proto::gait::log::v1::CancelActorKind, reason: Option<&str>) -> events::CancelCause {
+        events::CancelCause {
+            kind,
+            id: "svc".into(),
+            reason: reason.map(String::from),
+        }
+    }
+
+    #[test]
+    fn a_cancellation_without_a_cause_keeps_interrupted_by_user() {
+        let (a, b) = cancel_transcript(None);
+        assert_eq!(a, "[turn interrupted by user]");
+        assert_eq!(b, "[turn interrupted by user]");
+    }
+
+    #[test]
+    fn an_orchestrator_cancellation_names_who_and_why() {
+        let c = cause(crate::proto::gait::log::v1::CancelActorKind::Orchestrator, Some("Action 7: fix login"));
+        let (a, b) = cancel_transcript(Some(&c));
+        assert_eq!(a, "[turn cancelled by orchestrator: Action 7: fix login]");
+        assert_eq!(b, a);
+    }
+
+    #[test]
+    fn a_policy_cancellation_without_reason_names_who() {
+        let c = cause(crate::proto::gait::log::v1::CancelActorKind::Policy, None);
+        let (a, b) = cancel_transcript(Some(&c));
+        assert_eq!(a, "[turn cancelled by policy]");
+        assert_eq!(b, a);
     }
 }

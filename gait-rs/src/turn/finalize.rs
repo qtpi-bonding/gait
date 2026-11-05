@@ -163,7 +163,7 @@ pub(crate) async fn finalize(
         }
 
         StepOutcome::Cancelled => {
-            env.emitter.record(events::cancellation_signal())?;
+            env.emitter.record(events::cancellation_signal(None))?;
             persist.commit(&build_trace_message(
                 &format!("session({}): cancelled", env.session_id),
                 &TraceTrailers {

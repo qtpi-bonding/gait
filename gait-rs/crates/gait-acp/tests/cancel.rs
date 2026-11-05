@@ -241,7 +241,7 @@ async fn cancel_running_brain_resolves_cancelled() {
     let (channel, server) = gait_acp::build_agent(map).into_channel_and_future();
     tokio::spawn(server);
 
-    let stop = Client
+    let (stop, sid) = Client
         .builder()
         .connect_with(channel, async |cx| {
             let sid = cx
@@ -255,20 +255,23 @@ async fn cancel_running_brain_resolves_cancelled() {
             // LocalSet, and the send future is Send.
             let cx2 = cx.clone();
             let sid2 = sid.clone();
+            let sid_str = sid.0.to_string();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 let _ = cx2.send_notification(CancelNotification::new(sid2));
             });
             let resp = cx
-                .send_request(PromptRequest::new(sid, vec!["run it".to_string().into()]))
+                .send_request(PromptRequest::new(sid.clone(), vec!["run it".to_string().into()]))
                 .block_task()
                 .await?;
-            Ok(resp.stop_reason)
+            Ok((resp.stop_reason, sid_str))
         })
         .await
         .expect("connection stays alive");
 
     assert_eq!(stop, StopReason::Cancelled);
+    let log = std::fs::read_to_string(gait_core::session::live::log_path(&gait_dir, &sid)).unwrap_or_default();
+    eprintln!("PROBE count={}", log.matches("cancellationSignal").count());
 }
 
 #[tokio::test]

@@ -232,9 +232,21 @@ message ClassifyDecision {
   double availability_risk    = 7;
   string inference            = 8;  // which named inference profile answered
 }
-// User-initiated turn cancellation (Esc key). ActiveMessages folds this into
-// [turn interrupted by user] in the next turn's transcript.
-message CancellationSignal {}
+// Turn cancellation. ActiveMessages folds this into the next turn's transcript:
+// "[turn interrupted by user]" when the cancel came from the user (or has no
+// recorded cause), "[turn cancelled by <actor>: <reason>]" otherwise.
+enum CancelActorKind {
+  CANCEL_ACTOR_KIND_UNSPECIFIED = 0;
+  CANCEL_ACTOR_KIND_USER = 1;
+  CANCEL_ACTOR_KIND_ORCHESTRATOR = 2;
+  CANCEL_ACTOR_KIND_POLICY = 3;
+  CANCEL_ACTOR_KIND_SYSTEM = 4;
+}
+message CancellationSignal {
+  CancelActorKind actor_kind = 1;
+  string actor_id = 2;
+  optional string reason = 3;
+}
 
 
 
