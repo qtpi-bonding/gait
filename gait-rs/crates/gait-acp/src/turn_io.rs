@@ -324,9 +324,27 @@ pub struct AcpTurnSource {
     /// Shared per-turn cancel signal (a clone of the SessionEntry token). Tripped
     /// by the cancel handler and, on the compliant Cancelled outcome, by us.
     cancel: tokio_util::sync::CancellationToken,
+    /// Where cancels this source initiates (a declined question, a cancelled
+    /// permission) record who and why. First cause wins.
+    cause: crate::notice_meta::CauseSlot,
 }
 
 impl AcpTurnSource {
+    fn note_cause(&self, meta: Option<&serde_json::Map<String, serde_json::Value>>) {
+        crate::notice_meta::record_cause(&self.cause, crate::notice_meta::cancel_cause(meta));
+    }
+
+    fn cancel_with(&self, meta: Option<&serde_json::Map<String, serde_json::Value>>) {
+        self.note_cause(meta);
+        self.cancel.cancel();
+    }
+
+    /// Share the session's per-turn cancel-cause slot with this source.
+    pub fn with_cause_slot(mut self, slot: crate::notice_meta::CauseSlot) -> Self {
+        self.cause = slot;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         text: String,
@@ -394,6 +412,7 @@ impl AcpTurnSource {
             sid,
             gait_dir,
             cancel,
+            cause: Default::default(),
         }
     }
 
@@ -428,6 +447,7 @@ impl AcpTurnSource {
             sid,
             gait_dir,
             cancel,
+            cause: Default::default(),
         }
     }
     /// Sends one `elicitation/create` request (a single free-text field) and
@@ -468,7 +488,10 @@ impl AcpTurnSource {
                     _ => None,
                 }
             }
-            _ => None,
+            _ => {
+                self.note_cause(resp.meta.as_ref());
+                None
+            }
         }
     }
 
@@ -504,7 +527,10 @@ impl AcpTurnSource {
                     _ => None,
                 }
             }
-            _ => None,
+            _ => {
+                self.note_cause(resp.meta.as_ref());
+                None
+            }
         }
     }
 }
@@ -639,12 +665,12 @@ impl TurnSource for AcpTurnSource {
                         // The client cancelled while we awaited: trip the shared token so the
                         // completion path reports StopReason::Cancelled, then finalize (no reply).
                         RequestPermissionOutcome::Cancelled => {
-                            self.cancel.cancel();
+                            self.cancel_with(resp.meta.as_ref());
                             return None;
                         }
                         // Future-proof: any new outcome is treated like cancelled.
                         _ => {
-                            self.cancel.cancel();
+                            self.cancel_with(resp.meta.as_ref());
                             return None;
                         }
                     }

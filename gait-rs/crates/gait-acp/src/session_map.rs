@@ -23,6 +23,9 @@ pub struct SessionEntry {
     /// `CancellationToken` cannot be un-cancelled, so it MUST be per-turn, not
     /// per-session, or a cancelled turn would poison later prompts.
     pub cancel: tokio_util::sync::CancellationToken,
+    /// Who cancelled the current turn and why, replaced by `set_cancel` with the
+    /// token so a prior turn's cause never leaks into the next.
+    pub cancel_cause: crate::notice_meta::CauseSlot,
     pub join: Option<std::thread::JoinHandle<()>>,
     /// `gait/idempotency_key` values already seen for this session's whole
     /// lifetime (not just the current turn) — see `record_idempotency_key`.
@@ -48,6 +51,7 @@ impl SessionMap {
                 codebase,
                 cascade: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
+                cancel_cause: Default::default(),
                 join: None,
                 seen_idempotency_keys: std::collections::HashSet::new(),
             },
@@ -73,6 +77,7 @@ impl SessionMap {
                     codebase,
                     cascade: None,
                     cancel: tokio_util::sync::CancellationToken::new(),
+                    cancel_cause: Default::default(),
                     join: None,
                     seen_idempotency_keys: std::collections::HashSet::new(),
                 },
@@ -121,16 +126,42 @@ impl SessionMap {
     pub fn set_cancel(&self, session_id: &str, token: tokio_util::sync::CancellationToken) {
         if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
             e.cancel = token;
+            e.cancel_cause = Default::default();
         }
+    }
+
+    /// The current turn's cancel-cause slot, to hand to the turn source so
+    /// cancels it initiates (a declined elicitation) record into the same place.
+    pub fn cancel_cause_slot(&self, session_id: &str) -> crate::notice_meta::CauseSlot {
+        self.0
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|e| e.cancel_cause.clone())
+            .unwrap_or_default()
+    }
+
+    /// Who cancelled the current turn and why, if a cause was recorded.
+    pub fn cancel_cause(&self, session_id: &str) -> Option<gait_state::proto::events::CancelCause> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|e| e.cancel_cause.lock().unwrap().clone())
     }
 
     /// Fire both cancel signals for an in-flight turn: trip the token (unblocks a
     /// pending permission await) and `kill()` the cascade (SIGTERM a running
     /// brain). Peeks — does NOT take the cascade, which the turn thread's own
     /// completion path still calls `take_cascade` on. No-op on unknown session.
-    pub fn cancel(&self, session_id: &str) {
+    pub fn cancel(
+        &self,
+        session_id: &str,
+        cause: Option<gait_state::proto::events::CancelCause>,
+    ) {
         let guard = self.0.lock().unwrap();
         if let Some(entry) = guard.get(session_id) {
+            crate::notice_meta::record_cause(&entry.cancel_cause, cause);
             entry.cancel.cancel();
             if let Some(c) = &entry.cascade {
                 c.kill();
@@ -363,7 +394,7 @@ mod tests {
     #[test]
     fn cancel_unknown_session_is_noop() {
         let m = SessionMap::new();
-        m.cancel("nope"); // must not panic
+        m.cancel("nope", None); // must not panic
         assert!(!m.was_cancelled("nope"));
     }
 
@@ -373,7 +404,7 @@ mod tests {
         m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
         m.set_cancel("s", tokio_util::sync::CancellationToken::new());
         assert!(!m.was_cancelled("s"), "fresh token is not cancelled");
-        m.cancel("s");
+        m.cancel("s", None);
         assert!(m.was_cancelled("s"), "cancel() trips the entry token");
     }
 
@@ -382,7 +413,7 @@ mod tests {
         let m = SessionMap::new();
         m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
         m.set_cascade("s", gait_core::embed::CascadeKillHandle::new());
-        m.cancel("s");
+        m.cancel("s", None);
         assert!(
             m.take_cascade("s").is_some(),
             "cancel() must not consume the cascade the turn thread still takes"
@@ -394,7 +425,7 @@ mod tests {
         let m = SessionMap::new();
         m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
         m.set_cancel("s", tokio_util::sync::CancellationToken::new());
-        m.cancel("s");
+        m.cancel("s", None);
         assert!(m.was_cancelled("s"));
         // Next prompt mints a fresh token -> the session is no longer cancelled.
         m.set_cancel("s", tokio_util::sync::CancellationToken::new());

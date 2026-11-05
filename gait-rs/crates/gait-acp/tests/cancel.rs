@@ -241,7 +241,7 @@ async fn cancel_running_brain_resolves_cancelled() {
     let (channel, server) = gait_acp::build_agent(map).into_channel_and_future();
     tokio::spawn(server);
 
-    let (stop, sid) = Client
+    let stop = Client
         .builder()
         .connect_with(channel, async |cx| {
             let sid = cx
@@ -255,23 +255,20 @@ async fn cancel_running_brain_resolves_cancelled() {
             // LocalSet, and the send future is Send.
             let cx2 = cx.clone();
             let sid2 = sid.clone();
-            let sid_str = sid.0.to_string();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 let _ = cx2.send_notification(CancelNotification::new(sid2));
             });
             let resp = cx
-                .send_request(PromptRequest::new(sid.clone(), vec!["run it".to_string().into()]))
+                .send_request(PromptRequest::new(sid, vec!["run it".to_string().into()]))
                 .block_task()
                 .await?;
-            Ok((resp.stop_reason, sid_str))
+            Ok(resp.stop_reason)
         })
         .await
         .expect("connection stays alive");
 
     assert_eq!(stop, StopReason::Cancelled);
-    let log = std::fs::read_to_string(gait_core::session::live::log_path(&gait_dir, &sid)).unwrap_or_default();
-    eprintln!("PROBE count={}", log.matches("cancellationSignal").count());
 }
 
 #[tokio::test]
@@ -306,4 +303,154 @@ async fn cancel_unknown_session_is_noop() {
         })
         .await
         .expect("connection stays alive");
+}
+
+fn meta(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    v.as_object().unwrap().clone()
+}
+
+/// The session's CancellationSignals and the retrace text of its last message.
+fn cancel_record(gait_dir: &Path, sid: &str) -> (Vec<gait_core::proto::gait::log::v1::CancellationSignal>, String) {
+    use gait_core::proto::gait::log::v1::payload::Kind;
+    let events = gait_core::session::log::read_events(&gait_core::session::live::log_path(gait_dir, sid))
+        .expect("read log");
+    let signals = events
+        .iter()
+        .filter_map(|e| match gait_core::proto::event_kind(e) {
+            Some(Kind::CancellationSignal(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    let text = match gait_state::session::retrace::transcript(&events).expect("retrace").last() {
+        Some(gait_core::types::Message::User {
+            content: gait_core::types::MessageContent::Text(t),
+            ..
+        }) => t.clone(),
+        other => panic!("expected a trailing user message, got {other:?}"),
+    };
+    (signals, text)
+}
+
+/// Runs a prompt against a hanging brain and cancels it with `cancel_meta`.
+async fn cancel_hanging_turn(cancel_meta: Option<serde_json::Map<String, serde_json::Value>>) -> (std::path::PathBuf, String, tempfile::TempDir) {
+    let (t, gait_dir, repo) = workspace();
+    write_frames(
+        &gait_dir,
+        0,
+        &[forward_event(gait_core::proto::events::assistant_text("working".into()))],
+    );
+    std::fs::write(gait_dir.join("mock_hang_ms"), "10000").unwrap();
+    let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
+    tokio::spawn(server);
+    let (stop, sid) = Client
+        .builder()
+        .connect_with(channel, async |cx| {
+            let sid = cx.send_request(NewSessionRequest::new(repo.clone())).block_task().await?.session_id;
+            let (cx2, sid2) = (cx.clone(), sid.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let mut n = CancelNotification::new(sid2);
+                n.meta = cancel_meta;
+                let _ = cx2.send_notification(n);
+            });
+            let resp = cx
+                .send_request(PromptRequest::new(sid.clone(), vec!["run it".to_string().into()]))
+                .block_task()
+                .await?;
+            Ok((resp.stop_reason, sid.0.to_string()))
+        })
+        .await
+        .expect("connection stays alive");
+    assert_eq!(stop, StopReason::Cancelled);
+    (gait_dir, sid, t)
+}
+
+#[tokio::test]
+async fn initialize_advertises_session_notices() {
+    use agent_client_protocol::schema::ProtocolVersion;
+    use agent_client_protocol::schema::v1::InitializeRequest;
+    let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
+    tokio::spawn(server);
+    let resp = Client
+        .builder()
+        .connect_with(channel, async |cx| {
+            Ok(cx
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?)
+        })
+        .await
+        .expect("initialize");
+    assert_eq!(
+        resp.meta.as_ref().and_then(|m| m.get("qtpi.app/sessionNotices")),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
+
+#[tokio::test]
+async fn a_cancel_with_actor_meta_records_who_and_why() {
+    let m = meta(serde_json::json!({"qtpi.app/actor":
+        {"kind": "orchestrator", "id": "svc", "reason": "Action 7: x"}}));
+    let (gait_dir, sid, _t) = cancel_hanging_turn(Some(m)).await;
+    let (signals, text) = cancel_record(&gait_dir, &sid);
+    assert_eq!(signals.len(), 1, "exactly one CancellationSignal");
+    let s = &signals[0];
+    assert_eq!(s.actor_kind, gait_core::proto::gait::log::v1::CancelActorKind::Orchestrator as i32);
+    assert_eq!(s.actor_id, "svc");
+    assert_eq!(s.reason.as_deref(), Some("Action 7: x"));
+    assert_eq!(text, "[turn cancelled by orchestrator: Action 7: x]");
+}
+
+#[tokio::test]
+async fn a_cancel_without_meta_records_no_cause() {
+    let (gait_dir, sid, _t) = cancel_hanging_turn(None).await;
+    let (signals, text) = cancel_record(&gait_dir, &sid);
+    assert_eq!(signals.len(), 1, "exactly one CancellationSignal");
+    assert_eq!(signals[0].actor_kind, gait_core::proto::gait::log::v1::CancelActorKind::Unspecified as i32);
+    assert_eq!(text, "[turn interrupted by user]");
+}
+
+#[tokio::test]
+async fn a_permission_cancelled_by_policy_records_the_policy_cause() {
+    let (_t, gait_dir, repo) = workspace();
+    write_frames(
+        &gait_dir,
+        0,
+        &[
+            append_event(gait_core::proto::events::permissions(&[perm_item("tc1", "ls", &["ls"])])),
+            terminated(r#"{"permissions":{}}"#),
+        ],
+    );
+    let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
+    tokio::spawn(server);
+    let (stop, sid) = Client
+        .builder()
+        .on_receive_request(
+            move |_req: RequestPermissionRequest,
+                  responder: Responder<RequestPermissionResponse>,
+                  _cx: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| async move {
+                let mut resp = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+                resp.meta = Some(meta(serde_json::json!({
+                    "qtpi.app/actor": {"kind": "policy", "id": "lib"},
+                    "qtpi.app/notice": {"kind": "permission_denied_by_policy", "tool": "Bash"},
+                })));
+                responder.respond(resp)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(channel, async |cx| {
+            let sid = cx.send_request(NewSessionRequest::new(repo.clone())).block_task().await?.session_id;
+            let resp = cx
+                .send_request(PromptRequest::new(sid.clone(), vec!["run it".to_string().into()]))
+                .block_task()
+                .await?;
+            Ok((resp.stop_reason, sid.0.to_string()))
+        })
+        .await
+        .expect("connection stays alive");
+    assert_eq!(stop, StopReason::Cancelled);
+    let (signals, text) = cancel_record(&gait_dir, &sid);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].reason.as_deref(), Some("a rule refused permission for `Bash`"));
+    assert_eq!(text, "[turn cancelled by policy: a rule refused permission for `Bash`]");
 }

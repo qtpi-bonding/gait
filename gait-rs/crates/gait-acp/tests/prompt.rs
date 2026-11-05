@@ -558,7 +558,7 @@ async fn cancel_after_rejected_concurrent_prompt_reaches_the_first_turns_real_st
             );
             // Simulate the `session/cancel` notification handler, which calls
             // exactly this method on the session_map.
-            map_for_cancel.cancel(sid.0.as_ref());
+            map_for_cancel.cancel(sid.0.as_ref(), None);
             let resp = first.block_task().await?;
             Ok((sid.0.to_string(), resp))
         })

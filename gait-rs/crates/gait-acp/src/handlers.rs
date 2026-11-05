@@ -184,7 +184,11 @@ pub fn build_agent_with_attestation(
                             .session_capabilities(session_caps);
                         responder.respond(
                             InitializeResponse::new(req.protocol_version)
-                                .agent_capabilities(agent_caps),
+                                .agent_capabilities(agent_caps)
+                                .meta(serde_json::Map::from_iter([(
+                                    crate::notice_meta::SESSION_NOTICES_KEY.to_string(),
+                                    serde_json::Value::Bool(true),
+                                )])),
                         )
                     }
                 }
@@ -395,6 +399,7 @@ pub fn build_agent_with_attestation(
                         map.set_cascade(&sid, handle.clone());
                         let cancel = tokio_util::sync::CancellationToken::new();
                         map.set_cancel(&sid, cancel.clone());
+                        let cause_slot = map.cancel_cause_slot(&sid);
                         let map_thread = map.clone();
                         let sid_thread = sid.clone();
                         let key_thread = idempotency_key.clone();
@@ -426,6 +431,7 @@ pub fn build_agent_with_attestation(
                             } else {
                                 None
                             };
+                            let gait_dir_signal = gait_dir.clone();
                             let source: AcpTurnSource = match turn_input {
                                 TurnInput::Prompt { text, provenance } => AcpTurnSource::new_with_claim(
                                     text,
@@ -445,7 +451,8 @@ pub fn build_agent_with_attestation(
                                     gait_dir.clone(),
                                     cancel,
                                 ),
-                            };
+                            }
+                            .with_cause_slot(cause_slot);
                             let opts = gait_turn_runner::TurnRunOpts {
                                 run_id: format!("acp-{sid_thread}"),
                                 session_id: sid_thread.clone(),
@@ -472,6 +479,16 @@ pub fn build_agent_with_attestation(
                                 .instrument(span),
                             );
                             map_thread.take_cascade(&sid_thread);
+                            if map_thread.was_cancelled(&sid_thread) {
+                                let cause = map_thread.cancel_cause(&sid_thread);
+                                if let Err(e) = crate::notice_meta::record_cancellation(
+                                    &gait_dir_signal,
+                                    &sid_thread,
+                                    cause.as_ref(),
+                                ) {
+                                    tracing::warn!(error = %e, "could not record the cancellation");
+                                }
+                            }
                             // A failed turn whose trigger never became durable did not
                             // run, so release its idempotency key for the retry.
                             if outcome.is_err()
@@ -597,7 +614,10 @@ pub fn build_agent_with_attestation(
                     async move {
                         // Fire both signals; each no-ops if its state isn't the live
                         // one. Return immediately — this runs inside the dispatch loop.
-                        map.cancel(n.session_id.0.as_ref());
+                        map.cancel(
+                            n.session_id.0.as_ref(),
+                            crate::notice_meta::cancel_cause(n.meta.as_ref()),
+                        );
                         Ok(())
                     }
                 }
