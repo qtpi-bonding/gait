@@ -433,11 +433,13 @@ mod strict_tool_tests {
 
     #[test]
     fn strict_tool_gets_strict_flag_and_transformed_schema() {
-        // schema with one required + one optional field
+        // schema with one required + one optional field. An object must
+        // already be closed: an open one is sent plain (see `strict.rs`).
         let base = serde_json::json!({
             "type": "object",
             "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
-            "required": ["a"]
+            "required": ["a"],
+            "additionalProperties": false
         });
         let strict = to_strict_schema(&base, StrictDialect::Anthropic).unwrap();
         let tool = AnthropicTool {
