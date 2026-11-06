@@ -274,7 +274,7 @@ impl Tool for ShellTool {
             .envs(std::env::vars().filter(|(k, _)| {
                 matches!(
                     k.as_str(),
-                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT"
+                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT" | "BAGGAGE"
                 )
             }))
             // Suppress colour output: programs check TERM and NO_COLOR before emitting ANSI.
@@ -460,7 +460,7 @@ impl ShellTool {
             .envs(std::env::vars().filter(|(k, _)| {
                 matches!(
                     k.as_str(),
-                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT"
+                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT" | "BAGGAGE"
                 )
             }))
             .env("TERM", "dumb")

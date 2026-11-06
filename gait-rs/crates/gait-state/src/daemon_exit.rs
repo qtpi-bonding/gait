@@ -59,19 +59,22 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeReques
         .join(format!("{}.log", args.name));
     // `started_at` disambiguates pid-reuse across separate runs of a
     // same-named daemon — exactly the field DaemonStart carries it for.
-    let started_at = daemons::history(&args.gait_dir)
+    let start = daemons::history(&args.gait_dir)
         .ok()
         .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == args.name))
-        .map(|(rec, _)| rec.started_at)
-        .unwrap_or(0);
-    let idempotency_key = format!("{}@{}", args.name, started_at);
+        .map(|(rec, _)| rec)
+        .unwrap_or_default();
+    let idempotency_key = format!("{}@{}", args.name, start.started_at);
     let c = Completion {
-        payload: crate::proto::events::daemon_update(
-            args.name.clone(),
-            args.exit,
-            status,
-            log_path.to_string_lossy().into_owned(),
-            idempotency_key.clone(),
+        payload: crate::proto::events::with_daemon_trace(
+            crate::proto::events::daemon_update(
+                args.name.clone(),
+                args.exit,
+                status,
+                log_path.to_string_lossy().into_owned(),
+                idempotency_key.clone(),
+            ),
+            &start,
         ),
         idempotency_key,
     };

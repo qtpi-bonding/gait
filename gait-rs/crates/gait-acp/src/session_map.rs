@@ -27,6 +27,8 @@ pub struct SessionEntry {
     /// token so a prior turn's cause never leaks into the next.
     pub cancel_cause: crate::notice_meta::CauseSlot,
     pub join: Option<std::thread::JoinHandle<()>>,
+    /// The running turn's `acp.prompt` span, so a cancel can note itself on it.
+    pub prompt_span: Option<tracing::Span>,
     /// `gait/idempotency_key` values already seen for this session's whole
     /// lifetime (not just the current turn) — see `record_idempotency_key`.
     pub seen_idempotency_keys: std::collections::HashSet<String>,
@@ -53,6 +55,7 @@ impl SessionMap {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 cancel_cause: Default::default(),
                 join: None,
+                prompt_span: None,
                 seen_idempotency_keys: std::collections::HashSet::new(),
             },
         );
@@ -79,6 +82,7 @@ impl SessionMap {
                     cancel: tokio_util::sync::CancellationToken::new(),
                     cancel_cause: Default::default(),
                     join: None,
+                    prompt_span: None,
                     seen_idempotency_keys: std::collections::HashSet::new(),
                 },
             );
@@ -139,6 +143,26 @@ impl SessionMap {
             .get(session_id)
             .map(|e| e.cancel_cause.clone())
             .unwrap_or_default()
+    }
+
+    /// Remember the running turn's `acp.prompt` span (replaced each prompt).
+    pub fn set_prompt_span(&self, session_id: &str, span: tracing::Span) {
+        if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
+            e.prompt_span = Some(span);
+        }
+    }
+
+    /// Drop the turn's `acp.prompt` span handle once the turn is over, so the
+    /// span can close.
+    pub fn clear_prompt_span(&self, session_id: &str) {
+        if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
+            e.prompt_span = None;
+        }
+    }
+
+    /// The current turn's `acp.prompt` span, if the session has one.
+    pub fn prompt_span(&self, session_id: &str) -> Option<tracing::Span> {
+        self.0.lock().unwrap().get(session_id).and_then(|e| e.prompt_span.clone())
     }
 
     /// Who cancelled the current turn and why, if a cause was recorded.

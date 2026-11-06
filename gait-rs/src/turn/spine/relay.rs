@@ -597,13 +597,14 @@ pub async fn relay_brain_turn(
                     let exe_c = exe.to_path_buf();
                     let grp = Arc::clone(&group);
                     let del = fs_delegate.clone();
-                    state.inflight.spawn(async move {
+                    let span = crate::trace::tool_span(&impulse.tool);
+                    state.inflight.spawn(crate::trace::within(span, async move {
                         let feedback = run_tool_as_spine(
                             impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp, del,
                         )
                         .await;
                         handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
-                    });
+                    }));
                 }
             }
             Some(signal::Body::ArchiveOutput(request)) => {
@@ -1241,7 +1242,7 @@ mod telemetry_tests {
     }
 
     #[test]
-    fn spine_records_a_coded_brain_failure_as_one_error_record() {
+    fn spine_records_a_coded_brain_failure_as_one_error_record_with_its_text() {
         let capture = concord_telemetry::testing::capture_exclusive();
         let session_id = "task10-spine-coded-failure";
         record_terminal_failure(
@@ -1266,7 +1267,8 @@ mod telemetry_tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].code, "gait.provider.timeout");
         assert_eq!(records[0].class, "transient");
-        assert!(!records[0]
+        // CONCORD_ERROR_TEXT defaults to full: the message text is recorded.
+        assert!(records[0]
             .fields
             .values()
             .any(|value| {

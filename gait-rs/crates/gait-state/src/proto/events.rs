@@ -294,7 +294,22 @@ pub fn daemon_update(
         status: daemon_status(status),
         log_path,
         idempotency_key,
+        ..Default::default()
     }))
+}
+
+/// Copies the trace carrier of the turn that started a daemon onto its
+/// `DaemonUpdate`, so the wake on exit links back to that turn. Any other
+/// body is returned unchanged.
+pub fn with_daemon_trace(mut body: pb::event::Body, start: &pb::DaemonStart) -> pb::event::Body {
+    if let pb::event::Body::Payload(payload) = &mut body {
+        if let Some(pb::payload::Kind::DaemonUpdate(update)) = payload.kind.as_mut() {
+            update.traceparent = start.traceparent.clone();
+            update.tracestate = start.tracestate.clone();
+            update.baggage = start.baggage.clone();
+        }
+    }
+    body
 }
 
 /// `Permissions`.

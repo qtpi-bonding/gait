@@ -63,6 +63,12 @@ pub enum PromptError {
     #[error("{0}")]
     #[coded(code = "invalid_request", class = Logical)]
     InvalidRequest(String),
+    #[error("could not record the cancellation: {0}")]
+    #[coded(code = "cancel_record_failed", class = Infrastructure)]
+    CancelRecordFailed(String),
+    #[error("answer transport failed: {0}")]
+    #[coded(code = "answer_transport_failed", class = Infrastructure)]
+    AnswerTransportFailed(String),
     #[error("{0}")]
     #[coded(code = "internal", class = Infrastructure)]
     Internal(String),
@@ -89,7 +95,7 @@ mod tests {
     #[test]
     fn prompt_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.prompt.", &[PromptError::ALL_CODES]).unwrap();
-        assert_eq!(PromptError::ALL_CODES.len(), 18);
+        assert_eq!(PromptError::ALL_CODES.len(), 20);
     }
 
     #[test]
@@ -137,7 +143,8 @@ mod tests {
         let fingerprint = wire.data.as_ref().unwrap()["fingerprint"].clone();
         let records = capture.errors_where(|record| record.fingerprint == fingerprint);
         assert_eq!(records.len(), 1);
-        assert!(!records[0]
+        // Error text is recorded by default (CONCORD_ERROR_TEXT=full).
+        assert!(records[0]
             .fields
             .values()
             .any(|value| format!("{value:?}").contains("not-for-record")));

@@ -65,12 +65,13 @@ fn attested_on_durable(
 /// from the verified `Message`, never from `req.prompt`: the structured fields
 /// are logged and the model-facing text is re-rendered from them on fold.
 fn incoming_body(
+    owner: Option<String>,
     incoming: crate::attestation::VerifiedIncoming,
 ) -> (
     gait_core::proto::gait::log::v1::event::Body,
     Option<gait_core::proto::gait::log::v1::Provenance>,
 ) {
-    let crate::attestation::VerifiedIncoming { author_id, message, via } = incoming;
+    let crate::attestation::VerifiedIncoming { author_id, message, via, author_name } = incoming;
     let body = gait_core::proto::wire::body(
         gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(
             gait_core::proto::gait::log::v1::IncomingMessage {
@@ -82,6 +83,8 @@ fn incoming_body(
                 mentions: message.mentions,
                 via,
                 render_version: message_attestation::RENDER_VERSION,
+                from_name: author_name,
+                owner_id: owner,
                 ..Default::default()
             },
         ),
@@ -99,17 +102,6 @@ fn incoming_body(
 /// error. Returns that wire error so callers and tests can see its code.
 fn reject_attestation(err: &anyhow::Error) -> agent_client_protocol::Error {
     error::acp_error(err, error::PROMPT)
-}
-
-fn meta_getter(
-    meta: &Option<serde_json::Map<String, serde_json::Value>>,
-) -> impl Fn(&str) -> Option<String> + '_ {
-    move |key| {
-        meta.as_ref()
-            .and_then(|values| values.get(key))
-            .and_then(|value| value.as_str())
-            .map(str::to_owned)
-    }
 }
 
 /// Build the gait-acp agent: registers `initialize` and `session/new` against
@@ -256,7 +248,11 @@ pub fn build_agent_with_attestation(
                             return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::PROMPT));
                         };
                         let span = tracing::info_span!("acp.prompt", session_id = %sid);
-                        concord_telemetry::propagation::set_parent(&span, meta_getter(&req.meta));
+                        concord_telemetry::carrier::extract_required(
+                            "gait.acp.prompt",
+                            &span,
+                            &crate::trace_meta::carrier_from_meta(req.meta.as_ref()),
+                        );
                         // Reject a resend of an already-admitted idempotency
                         // key immediately, before every other admission check
                         // below -- this must run FIRST so the key is never
@@ -359,6 +355,7 @@ pub fn build_agent_with_attestation(
                             // prompt content must never have that different
                             // text executed.
                             Ok(Some(batch)) => {
+                                let owner = crate::attestation::owner_from_meta(&req.meta);
                                 let (messages, confirm) = batch.into_parts();
                                 // Every message was already delivered in an
                                 // earlier Delivery: nothing to run. Advance
@@ -389,7 +386,10 @@ pub fn build_agent_with_attestation(
                                     confirm,
                                 );
                                 TurnInput::AttestedMessages {
-                                    bodies: messages.into_iter().map(incoming_body).collect(),
+                                    bodies: messages
+                                        .into_iter()
+                                        .map(|m| incoming_body(owner.clone(), m))
+                                        .collect(),
                                     on_durable,
                                 }
                             }
@@ -399,6 +399,7 @@ pub fn build_agent_with_attestation(
                         map.set_cascade(&sid, handle.clone());
                         let cancel = tokio_util::sync::CancellationToken::new();
                         map.set_cancel(&sid, cancel.clone());
+                        map.set_prompt_span(&sid, span.clone());
                         let cause_slot = map.cancel_cause_slot(&sid);
                         let map_thread = map.clone();
                         let sid_thread = sid.clone();
@@ -479,6 +480,7 @@ pub fn build_agent_with_attestation(
                                 .instrument(span),
                             );
                             map_thread.take_cascade(&sid_thread);
+                            map_thread.clear_prompt_span(&sid_thread);
                             // Read once: the recorded signal and the stop reason must agree
                             // even if a cancel lands between the two uses.
                             let cancelled = map_thread.was_cancelled(&sid_thread);
@@ -489,7 +491,13 @@ pub fn build_agent_with_attestation(
                                     &sid_thread,
                                     cause.as_ref(),
                                 ) {
-                                    tracing::warn!(error = %e, "could not record the cancellation");
+                                    concord_telemetry::error_anyhow!(
+                                        &coded_error::into_anyhow(PromptError::CancelRecordFailed(
+                                            format!("{e:#}")
+                                        )),
+                                        source = "acp.cancel.record",
+                                        session_id = %sid_thread
+                                    );
                                 }
                             }
                             // A failed turn whose trigger never became durable did not
@@ -617,10 +625,19 @@ pub fn build_agent_with_attestation(
                     async move {
                         // Fire both signals; each no-ops if its state isn't the live
                         // one. Return immediately — this runs inside the dispatch loop.
-                        map.cancel(
-                            n.session_id.0.as_ref(),
-                            crate::notice_meta::cancel_cause(n.meta.as_ref()),
+                        let sid = n.session_id.0.as_ref();
+                        let span = tracing::info_span!("acp.cancel", session_id = %sid);
+                        concord_telemetry::carrier::extract_required(
+                            "gait.acp.cancel",
+                            &span,
+                            &crate::trace_meta::carrier_from_meta(n.meta.as_ref()),
                         );
+                        span.in_scope(|| {
+                            if let Some(prompt) = map.prompt_span(sid) {
+                                crate::trace_meta::note_cancel_requested(&prompt, &span);
+                            }
+                            map.cancel(sid, crate::notice_meta::cancel_cause(n.meta.as_ref()));
+                        });
                         Ok(())
                     }
                 }
@@ -632,18 +649,6 @@ pub fn build_agent_with_attestation(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn meta_getter_reads_string_values_only() {
-        let mut meta = serde_json::Map::new();
-        meta.insert("traceparent".into(), serde_json::json!("00-abc-def-01"));
-        meta.insert("number".into(), serde_json::json!(7));
-        let meta = Some(meta);
-        let getter = meta_getter(&meta);
-        assert_eq!(getter("traceparent"), Some("00-abc-def-01".into()));
-        assert_eq!(getter("missing"), None);
-        assert_eq!(getter("number"), None);
-    }
 
     #[test]
     fn prompt_accepted_emits_once_for_a_direct_prompt() {

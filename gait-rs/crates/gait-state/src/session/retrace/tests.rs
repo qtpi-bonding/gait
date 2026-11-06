@@ -2459,3 +2459,70 @@ fn an_incoming_message_without_structured_fields_is_not_shown() {
     .unwrap();
     assert!(messages(&read_events(&path).unwrap()).unwrap().is_empty());
 }
+
+fn named_incoming(
+    name: Option<&str>,
+    owner: Option<&str>,
+    version: u32,
+) -> pb::IncomingMessage {
+    pb::IncomingMessage {
+        from_name: name.map(str::to_owned),
+        owner_id: owner.map(str::to_owned),
+        ..structured_incoming("m-1", "hi", vec![room("room-a")], version)
+    }
+}
+
+fn rendered_incoming(m: pb::IncomingMessage, author: &str) -> Option<String> {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("tx.jsonl");
+    append_incoming(&path, m, author);
+    messages(&read_events(&path).unwrap())
+        .unwrap()
+        .first()
+        .map(user_text_of)
+}
+
+#[test]
+fn incoming_message_logs_and_renders_from_name() {
+    let author = real_principal();
+    let text = rendered_incoming(named_incoming(Some("gp"), None, 2), &author).unwrap();
+    assert!(text.contains(&format!("from=\"{author}\" from-name=\"gp\" to=")), "{text}");
+    assert!(!text.contains("owner="), "{text}");
+}
+
+#[test]
+fn v1_logged_message_renders_unchanged() {
+    let author = real_principal();
+    let text = rendered_incoming(named_incoming(None, None, 1), &author).unwrap();
+    assert!(text.contains(&format!("from=\"{author}\" to=")), "{text}");
+    assert!(!text.contains("from-name") && !text.contains("owner="), "{text}");
+}
+
+#[test]
+fn tampered_logged_name_is_left_out_of_context() {
+    let author = real_principal();
+    for bad in ["a\"b", "a<b", "line\nbreak", "p256:abc", &"x".repeat(65), ""] {
+        assert!(
+            rendered_incoming(named_incoming(Some(bad), None, 2), &author).is_none(),
+            "name {bad:?} must keep the message out of context"
+        );
+    }
+    // A name on a version-1 record cannot have been logged by this code.
+    assert!(rendered_incoming(named_incoming(Some("gp"), None, 1), &author).is_none());
+}
+
+#[test]
+fn owner_from_the_log_renders_owner_true_for_that_author_only() {
+    let author = real_principal();
+    let other = real_principal();
+    let text = rendered_incoming(named_incoming(Some("gp"), Some(&author), 2), &author).unwrap();
+    assert!(text.contains("from-name=\"gp\" owner=\"true\" to="), "{text}");
+    let text = rendered_incoming(named_incoming(Some("ada"), Some(&other), 2), &author).unwrap();
+    assert!(!text.contains("owner="), "{text}");
+    // An owner with no registered name still gets the marker.
+    let text = rendered_incoming(named_incoming(None, Some(&author), 2), &author).unwrap();
+    assert!(text.contains(" owner=\"true\" to="), "{text}");
+    // A malformed logged owner withholds the marker and still renders.
+    let text = rendered_incoming(named_incoming(None, Some("not-a-principal"), 2), &author).unwrap();
+    assert!(!text.contains("owner="), "{text}");
+}

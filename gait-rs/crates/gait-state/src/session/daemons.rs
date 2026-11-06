@@ -257,6 +257,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/daemon.log".to_owned(),
             session: String::new(),
+            ..Default::default()
         }
     }
 
@@ -313,6 +314,7 @@ mod tests {
             cwd: "".to_owned(),
             log_path: "".to_owned(),
             session: String::new(),
+            ..Default::default()
         };
         assert!(is_alive(&rec), "current process should be alive");
     }
@@ -329,6 +331,7 @@ mod tests {
             cwd: "".to_owned(),
             log_path: "".to_owned(),
             session: String::new(),
+            ..Default::default()
         };
         assert!(
             !is_alive(&rec),
@@ -375,6 +378,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/test-sleep.log".to_owned(),
             session: String::new(),
+            ..Default::default()
         };
 
         append_start(dir.path(), &rec).unwrap();
@@ -424,6 +428,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/test-sleep-stop.log".to_owned(),
             session: String::new(),
+            ..Default::default()
         };
 
         append_start(dir.path(), &rec).unwrap();

@@ -1,0 +1,159 @@
+1	crates/gait-acp/src/attestation.rs: ratchet.error_to_string: error converted to string
+1	crates/gait-acp/src/delivery_state.rs: ratchet.error_to_string: error formatted as string
+4	crates/gait-acp/src/handlers.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-acp/src/lib.rs: ratchet.error_to_string: error converted to string
+1	crates/gait-acp/src/renew.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+2	crates/gait-acp/src/session_map.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-acp/src/turn_io.rs: ratchet.dropped_result: result is discarded
+4	crates/gait-auth/src/signin.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-auth/src/signin.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-auth/src/sources/codex.rs: ratchet.error_to_string: error formatted as string
+2	crates/gait-auth/src/testing.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+1	crates/gait-bin/src/main.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-bin/src/main.rs: ratchet.error_to_string: error converted to string
+1	crates/gait-bin/src/min_main.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-bin/src/min_main.rs: ratchet.error_to_string: error converted to string
+1	crates/gait-cli/src/cli/admin.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/admin.rs: ratchet.result_string: Result error type is String
+1	crates/gait-cli/src/cli/args.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/daemons.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/exec.rs: ratchet.dropped_result: result is discarded
+4	crates/gait-cli/src/cli/exec.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/init.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/link.rs: ratchet.error_to_string: error formatted as string
+2	crates/gait-cli/src/cli/run.rs: ratchet.dropped_result: result is discarded
+6	crates/gait-cli/src/cli/run.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/run.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+1	crates/gait-cli/src/cli/session.rs: ratchet.dropped_result: result is discarded
+4	crates/gait-cli/src/cli/session.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/session.rs: ratchet.result_string: Result error type is String
+2	crates/gait-cli/src/cli/workflow.rs: ratchet.error_to_string: error converted to string
+10	crates/gait-cli/src/cli/workflow.rs: ratchet.error_to_string: error formatted as string
+6	crates/gait-codemode/src/quickjs.rs: ratchet.dropped_result: result is discarded
+68	crates/gait-codemode/src/quickjs.rs: ratchet.error_to_string: error converted to string
+3	crates/gait-codemode/src/quickjs.rs: ratchet.error_to_string: error formatted as string
+11	crates/gait-llama-cpp/src/lib.rs: ratchet.dropped_result: result is discarded
+26	crates/gait-llama-cpp/src/lib.rs: ratchet.error_to_string: error formatted as string
+2	crates/gait-llama-cpp/src/lib.rs: ratchet.raw_channel: raw tokio channel
+1	crates/gait-llama-cpp/src/lib.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+4	crates/gait-ops/src/config.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-ops/src/daemon.rs: ratchet.dropped_result: result is discarded
+39	crates/gait-ops/src/extension.rs: ratchet.error_to_string: error formatted as string
+2	crates/gait-ops/src/mode.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-ops/src/session.rs: ratchet.error_to_string: error converted to string
+2	crates/gait-ops/src/session.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-ops/src/workspace.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-ops/src/workspace.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-proto/src/textproto.rs: ratchet.error_to_string: error converted to string
+3	crates/gait-proto/src/textproto.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-proto/src/textproto.rs: ratchet.result_string: Result error type is String
+1	crates/gait-repl/src/chat.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-repl/src/chat.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+1	crates/gait-repl/src/plain.rs: ratchet.dropped_result: result is discarded
+10	crates/gait-repl/src/plain.rs: ratchet.error_to_string: error formatted as string
+3	crates/gait-repl/src/repl/driver.rs: ratchet.dropped_result: result is discarded
+19	crates/gait-repl/src/repl/driver.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-repl/src/repl/skill.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-repl/src/repl/skill.rs: ratchet.result_string: Result error type is String
+2	crates/gait-repl/src/turn_script.rs: ratchet.dropped_result: result is discarded
+3	crates/gait-repl/src/ui/builder.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-repl/src/ui/capture.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-repl/src/ui/renderer.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-repl/src/ui/state.rs: ratchet.dropped_result: result is discarded
+3	crates/gait-repl/src/ui/timer.rs: ratchet.dropped_result: result is discarded
+5	crates/gait-sandbox/src/process/mod.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-sandbox/src/process/mod.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+5	crates/gait-state/src/auth_file.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-state/src/auth_store.rs: ratchet.dropped_result: result is discarded
+7	crates/gait-state/src/auth_store.rs: ratchet.error_to_string: error converted to string
+1	crates/gait-state/src/config_hook.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-state/src/daemon_exit.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-state/src/gait_dir.rs: ratchet.error_to_string: error converted to string
+2	crates/gait-state/src/git/checkpoint/mod.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-state/src/git/codebase.rs: ratchet.error_to_string: error converted to string
+6	crates/gait-state/src/git/trace.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-state/src/models.rs: ratchet.dropped_result: result is discarded
+5	crates/gait-state/src/proto/emitter.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-state/src/proto/emitter.rs: ratchet.raw_channel: raw tokio channel
+1	crates/gait-state/src/session/completion.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-state/src/session/daemons.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-state/src/session/lock.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-state/src/session/retrace/incoming.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-state/src/session/retrace/mod.rs: ratchet.dropped_result: result is discarded
+5	crates/gait-testkit/src/mock_brain.rs: ratchet.dropped_result: result is discarded
+4	crates/gait-types/src/config/mod.rs: ratchet.error_to_string: error formatted as string
+2	crates/gait-watch/src/hub.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-watch/src/hub.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+1	crates/gait-watch/src/tail.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-watch/src/tail.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+6	crates/gait-workflow/src/exec_prompt.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-workflow/src/hooks.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-workflow/src/observer.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-workflow/src/output.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-workflow/src/record.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-workflow/src/runner.rs: ratchet.error_to_string: error converted to string
+1	crates/gait-workflow/src/runner.rs: ratchet.error_to_string: error formatted as string
+2	crates/gait-workflow/src/runner.rs: ratchet.raw_channel: raw tokio channel
+4	crates/gait-workflow/src/vars.rs: ratchet.error_to_string: error converted to string
+2	crates/gait-workflow/src/vars.rs: ratchet.result_string: Result error type is String
+1	src/embed.rs: ratchet.dropped_result: result is discarded
+1	src/harness.rs: ratchet.dropped_result: result is discarded
+2	src/input/expand.rs: ratchet.error_to_string: error formatted as string
+3	src/input/pty.rs: ratchet.dropped_result: result is discarded
+3	src/prompt.rs: ratchet.dropped_result: result is discarded
+1	src/send.rs: ratchet.dropped_result: result is discarded
+1	src/tools/apply_patch.rs: ratchet.error_to_string: error converted to string
+1	src/tools/code.rs: ratchet.error_to_string: error converted to string
+1	src/tools/code.rs: ratchet.error_to_string: error formatted as string
+1	src/tools/codesearch.rs: ratchet.error_to_string: error converted to string
+2	src/tools/codesearch.rs: ratchet.error_to_string: error formatted as string
+1	src/tools/glob.rs: ratchet.error_to_string: error converted to string
+2	src/tools/glob.rs: ratchet.error_to_string: error formatted as string
+1	src/tools/grep.rs: ratchet.error_to_string: error converted to string
+1	src/tools/ls.rs: ratchet.error_to_string: error converted to string
+3	src/tools/prune.rs: ratchet.error_to_string: error formatted as string
+2	src/tools/read.rs: ratchet.error_to_string: error converted to string
+3	src/tools/shell/mod.rs: ratchet.dropped_result: result is discarded
+1	src/tools/shell/mod.rs: ratchet.error_to_string: error converted to string
+2	src/tools/shell/mod.rs: ratchet.raw_channel: raw tokio channel
+4	src/tools/shell/mod.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+1	src/tools/webfetch.rs: ratchet.error_to_string: error converted to string
+1	src/tools/write.rs: ratchet.error_to_string: error converted to string
+4	src/turn/brain.rs: ratchet.dropped_result: result is discarded
+1	src/turn/brain.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/brain.rs: ratchet.raw_channel: raw tokio channel
+5	src/turn/brain.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+2	src/turn/capabilities.rs: ratchet.error_to_string: error converted to string
+1	src/turn/capabilities.rs: ratchet.error_to_string: error formatted as string
+3	src/turn/curate.rs: ratchet.dropped_result: result is discarded
+1	src/turn/curate.rs: ratchet.raw_channel: raw tokio channel
+1	src/turn/diag_sink.rs: ratchet.dropped_result: result is discarded
+2	src/turn/exec.rs: ratchet.dropped_result: result is discarded
+1	src/turn/exec.rs: ratchet.error_to_string: error converted to string
+4	src/turn/exec.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/execute.rs: ratchet.error_to_string: error converted to string
+2	src/turn/execute.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/finalize.rs: ratchet.dropped_result: result is discarded
+1	src/turn/golden_tests.rs: ratchet.raw_channel: raw tokio channel
+2	src/turn/hand.rs: ratchet.dropped_result: result is discarded
+1	src/turn/hand.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/hand.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+6	src/turn/mod.rs: ratchet.dropped_result: result is discarded
+2	src/turn/mod.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/mod.rs: ratchet.result_string: Result error type is String
+1	src/turn/nerve.rs: ratchet.dropped_result: result is discarded
+1	src/turn/nerve.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
+1	src/turn/persist.rs: ratchet.dropped_result: result is discarded
+1	src/turn/prompt.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/resume.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/setup.rs: ratchet.dropped_result: result is discarded
+2	src/turn/spine/handlers/agent.rs: ratchet.error_to_string: error formatted as string
+2	src/turn/spine/handlers/mod.rs: ratchet.dropped_result: result is discarded
+1	src/turn/spine/handlers/output.rs: ratchet.error_to_string: error converted to string
+2	src/turn/spine/handlers/output.rs: ratchet.error_to_string: error formatted as string
+1	src/turn/spine/handlers/send_message.rs: ratchet.error_to_string: error formatted as string
+13	src/turn/spine/handlers/tool.rs: ratchet.dropped_result: result is discarded
+1	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error converted to string
+6	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error formatted as string
+2	src/turn/spine/lifecycle.rs: ratchet.dropped_result: result is discarded
+3	src/turn/spine/relay.rs: ratchet.dropped_result: result is discarded

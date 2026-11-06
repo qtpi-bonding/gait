@@ -533,7 +533,9 @@ pub async fn run_tool_as_spine(
             cwd: rec.cwd.clone(),
             log_path: rec.log_path.clone(),
             session: rec.session.clone(),
+            ..Default::default()
         };
+        let dr = crate::trace::with_start_carrier(dr);
         let _ = crate::session::daemons::append_start(gait_dir, &dr);
     }
 

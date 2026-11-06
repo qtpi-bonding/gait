@@ -29,17 +29,31 @@ use std::path::PathBuf;
 /// (the same name `concord_telemetry::propagation::TRACEPARENT_ENV` carries).
 #[cfg(any(feature = "telemetry", test))]
 pub(crate) const TRACEPARENT_ENV: &str = "TRACEPARENT";
+/// The W3C baggage variable: the domain ids (action, delivery, turn...) that
+/// ride beside the trace.
+#[cfg(any(feature = "telemetry", test))]
+pub(crate) const BAGGAGE_ENV: &str = "BAGGAGE";
 
 #[cfg(any(feature = "telemetry", test))]
-pub(crate) fn with_trace_env_from(cmd: &mut std::process::Command, traceparent: Option<String>) {
+pub(crate) fn with_trace_env_from(
+    cmd: &mut std::process::Command,
+    traceparent: Option<String>,
+    baggage: Option<String>,
+) {
     if let Some(tp) = traceparent {
         cmd.env(TRACEPARENT_ENV, tp);
+    }
+    if let Some(bag) = baggage {
+        cmd.env(BAGGAGE_ENV, bag);
     }
 }
 
 pub(crate) fn with_trace_env(cmd: &mut std::process::Command) {
     #[cfg(feature = "telemetry")]
-    with_trace_env_from(cmd, concord_telemetry::propagation::traceparent());
+    {
+        let carrier = concord_telemetry::carrier::capture();
+        with_trace_env_from(cmd, carrier.traceparent, carrier.baggage);
+    }
     #[cfg(not(feature = "telemetry"))]
     let _ = cmd;
 }
@@ -410,21 +424,28 @@ mod tests {
     #[test]
     fn with_trace_env_adds_nothing_without_a_trace() {
         let mut cmd = std::process::Command::new("gait");
-        with_trace_env_from(&mut cmd, None);
-        assert!(cmd.get_envs().all(|(key, _)| key != "TRACEPARENT"));
+        with_trace_env_from(&mut cmd, None, None);
+        assert!(cmd.get_envs().all(|(key, _)| key != "TRACEPARENT" && key != "BAGGAGE"));
     }
 
     #[test]
     fn with_trace_env_sets_traceparent_when_present() {
         let value = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
         let mut cmd = std::process::Command::new("gait");
-        with_trace_env_from(&mut cmd, Some(value.to_string()));
+        with_trace_env_from(&mut cmd, Some(value.to_string()), Some("action_id=A1".to_string()));
         assert_eq!(
             cmd.get_envs()
                 .find(|(key, _)| *key == "TRACEPARENT")
                 .and_then(|(_, value)| value)
                 .and_then(|value| value.to_str()),
             Some(value)
+        );
+        assert_eq!(
+            cmd.get_envs()
+                .find(|(key, _)| *key == "BAGGAGE")
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str()),
+            Some("action_id=A1")
         );
     }
 
@@ -452,6 +473,7 @@ mod tests {
     #[test]
     fn traceparent_is_the_only_new_env_var_passed() {
         assert!(crate::env_passes_to_children("TRACEPARENT"));
+        assert!(crate::env_passes_to_children("BAGGAGE"));
         assert!(!crate::env_passes_to_children("AWS_SECRET_ACCESS_KEY"));
         assert!(!crate::env_passes_to_children("GAIT_AGENT_DIR"));
         assert!(!crate::env_passes_to_children("OPENAI_API_KEY"));

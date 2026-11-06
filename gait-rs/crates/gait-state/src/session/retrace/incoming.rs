@@ -9,7 +9,8 @@
 use std::sync::OnceLock;
 
 use gait_proto::gait::log::v1::{Event, IncomingMessage};
-use message_attestation::{MessageView, Trust, render_message};
+use identity_crypto::PrincipalId;
+use message_attestation::{MessageView, RenderOptions, Trust, render_message};
 
 /// The agent id this process runs as, for `to="you"` and `mentions-you`.
 /// Installed once by the entry point that owns the identity; a second install
@@ -42,10 +43,15 @@ pub(crate) fn rendered(ev: &Event, m: &IncomingMessage) -> Option<String> {
         reply_to: m.reply_to.as_deref(),
         references: &m.references,
         mentions: &m.mentions,
+        author_name: m.from_name.as_deref(),
         body: &m.content,
     };
+    // The owner was logged as a string; one that no longer parses as a
+    // canonical id is dropped, so it can only withhold the marker.
+    let owner = m.owner_id.as_deref().and_then(|id| PrincipalId::parse_canonical(id).ok());
+    let options = RenderOptions { owner: owner.as_ref() };
     let self_id = PROCESS_SELF_ID.get().map(String::as_str).unwrap_or("");
-    match render_message(&view, self_id, Trust::Verified, m.render_version) {
+    match render_message(&view, self_id, Trust::Verified, m.render_version, &options) {
         Ok(text) => Some(text),
         Err(error) => {
             eprintln!(

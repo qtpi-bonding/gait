@@ -1040,6 +1040,7 @@ async fn detached_daemon_start_record_lands_in_daemons_jsonl() {
             .expect("log_path")
             .to_owned(),
         session: String::new(),
+        ..Default::default()
     };
 
     // Teardown: kill before we assert so the process doesn't linger on failure.
@@ -1302,4 +1303,24 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
         })
         .expect("a daemon_update event");
     assert!(update.provenance.is_empty(), "the daemon-exit notice must be unsigned");
+}
+
+/// The domain ids ride into a command's environment beside `TRACEPARENT`, so
+/// a tool the agent runs can keep the trace's labels.
+#[tokio::test]
+#[serial_test::serial]
+async fn baggage_env_reaches_shell_children() {
+    std::env::set_var("BAGGAGE", "action_id=A1");
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({ "cmd": "echo \"bag=$BAGGAGE\"", "reason": "test" }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    std::env::remove_var("BAGGAGE");
+    let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+    assert!(output.contains("bag=action_id=A1"), "got: {output}");
 }

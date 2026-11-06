@@ -64,7 +64,8 @@ pub fn pending_daemon_completions(
     let mut out = Vec::new();
     // 1. Explicit stops — exit code is the recorded one.
     for (name, exit_code) in crate::session::daemons::stopped_for_session(gait_dir, session_id) {
-        if already.contains(&format!("{name}@{}", started_at_for(gait_dir, &name))) {
+        let start = start_for(gait_dir, &name);
+        if already.contains(&format!("{name}@{}", start.started_at)) {
             continue;
         }
         // exit_code on the event still lets the agent reason precisely; the
@@ -77,15 +78,18 @@ pub fn pending_daemon_completions(
             .join(format!("{name}.log"))
             .to_string_lossy()
             .into_owned();
-        let started_at = started_at_for(gait_dir, &name);
+        let started_at = start.started_at;
         let idempotency_key = format!("{name}@{started_at}");
         out.push(Completion {
-            payload: crate::proto::events::daemon_update(
-                name,
-                exit_code,
-                status,
-                log_path,
-                idempotency_key.clone(),
+            payload: crate::proto::events::with_daemon_trace(
+                crate::proto::events::daemon_update(
+                    name,
+                    exit_code,
+                    status,
+                    log_path,
+                    idempotency_key.clone(),
+                ),
+                &start,
             ),
             idempotency_key,
         });
@@ -103,12 +107,15 @@ pub fn pending_daemon_completions(
             if !crate::session::daemons::is_alive(&rec) {
                 let idempotency_key = format!("{}@{}", rec.name, rec.started_at);
                 out.push(Completion {
-                    payload: crate::proto::events::daemon_update(
-                        rec.name.clone(),
-                        -9,
-                        crate::session::daemons::classify_exit(-9),
-                        rec.log_path.clone(),
-                        idempotency_key.clone(),
+                    payload: crate::proto::events::with_daemon_trace(
+                        crate::proto::events::daemon_update(
+                            rec.name.clone(),
+                            -9,
+                            crate::session::daemons::classify_exit(-9),
+                            rec.log_path.clone(),
+                            idempotency_key.clone(),
+                        ),
+                        &rec,
                     ),
                     idempotency_key,
                 });
@@ -122,13 +129,14 @@ pub fn pending_daemon_completions(
 /// 0 if the registry is unreadable or the daemon is not present (the latter
 /// shouldn't happen for a `stopped_for_session` entry, but matching the
 /// previous behavior keeps tests passing).
-fn started_at_for(gait_dir: &Path, name: &str) -> u64 {
+fn start_for(gait_dir: &Path, name: &str) -> crate::proto::gait::log::v1::DaemonStart {
     crate::session::daemons::history(gait_dir)
         .ok()
         .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == name))
-        .map(|(rec, _)| rec.started_at)
-        .unwrap_or(0)
+        .map(|(rec, _)| rec)
+        .unwrap_or_default()
 }
+
 
 /// Idempotency keys (see `Completion`) for child agents that already have an
 /// `AgentUpdate` event in this session's log.
@@ -288,6 +296,7 @@ mod tests {
             cwd: "/tmp".into(),
             log_path: "/tmp/done1.log".into(),
             session: "S".into(),
+            ..Default::default()
         };
         daemons::append_start(gait_dir, &start1).unwrap();
         daemons::append_stop(gait_dir, "done1", 0).unwrap();
@@ -317,6 +326,7 @@ mod tests {
             cwd: "/tmp".into(),
             log_path: "/tmp/live1.log".into(),
             session: "S".into(),
+            ..Default::default()
         };
         daemons::append_start(gait_dir, &start2).unwrap();
 
@@ -331,6 +341,7 @@ mod tests {
             cwd: "/tmp".into(),
             log_path: "/tmp/other.log".into(),
             session: "T".into(),
+            ..Default::default()
         };
         daemons::append_start(gait_dir, &start3).unwrap();
         daemons::append_stop(gait_dir, "other", 0).unwrap();
@@ -411,6 +422,7 @@ mod tests {
             cwd: "/tmp".into(),
             log_path: "/tmp/dead-killed.log".into(),
             session: "S".into(),
+            ..Default::default()
         };
         daemons::append_start(gait_dir, &start).unwrap();
 

@@ -43,6 +43,23 @@ pub struct VerifiedIncoming {
     pub author_id: String,
     pub message: pb::Message,
     pub via: Vec<pb::Target>,
+    /// The author's registered name, as signed into the Delivery.
+    pub author_name: Option<String>,
+}
+
+/// The `_meta` key under which the daemon hands over its owner principal.
+/// It sits beside the Delivery, outside the signed bytes: a local fact at the
+/// same trust as everything else the daemon passes in.
+pub const OWNER_META_KEY: &str = "structmux/owner";
+
+/// The owner principal in a prompt's `_meta`, kept only when it parses as a
+/// canonical principal id. Anything else is ignored: a bad value can only
+/// withhold the `owner` marker, never grant it.
+pub fn owner_from_meta(
+    meta: &Option<serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    let raw = meta.as_ref()?.get(OWNER_META_KEY)?.as_str()?;
+    PrincipalId::parse_canonical(raw).ok().map(|id| id.to_string())
 }
 
 /// Process-wide attestation state for the agent this process runs as. The
@@ -181,6 +198,7 @@ impl Attestor {
                 author_id: message.author().to_string(),
                 message: message.message().clone(),
                 via: message.via().to_vec(),
+                author_name: message.author_name().map(|name| name.as_str().to_owned()),
             });
         }
         Ok(Some(VerifiedBatch {

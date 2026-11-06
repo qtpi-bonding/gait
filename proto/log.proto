@@ -331,6 +331,12 @@ message IncomingMessage {
   repeated string                mentions       = 9;
   repeated identitycrypto.v1.Target via         = 10;
   uint32                         render_version = 11;
+  // The author's registered name, signed into the Delivery. Absent when the
+  // author had none. Rendered at render_version 2 and later.
+  optional string                from_name      = 12;
+  // The recipient's owner principal (canonical p256:...), a local fact handed
+  // over beside the Delivery and not part of it. Absent when there is none.
+  optional string                owner_id       = 13;
 }
 
 message Inject {
@@ -809,6 +815,11 @@ message DaemonStart {
   string cwd        = 6;
   string log_path   = 7;
   string session    = 8;  // owning session id — which parent to notify/wake on exit
+  // The trace carrier of the turn that started the daemon (W3C keys), so the
+  // wake on its exit links back to that turn. Absent without telemetry.
+  optional string traceparent = 9;
+  optional string tracestate  = 10;
+  optional string baggage     = 11;
 }
 
 // DaemonStop carries the exit code so consumers (retrace / cli) can tell apart
@@ -833,4 +844,8 @@ message DaemonUpdate {
   // `{name}@{started_at}` — disambiguates pid-reuse across separate runs of a
   // same-named daemon (DaemonStart.started_at already exists for exactly this).
   string       idempotency_key = 5;
+  // The carrier of the turn that started the daemon, copied from DaemonStart.
+  optional string traceparent = 6;
+  optional string tracestate  = 7;
+  optional string baggage     = 8;
 }

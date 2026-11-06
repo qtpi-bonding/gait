@@ -477,7 +477,14 @@ impl AcpTurnSource {
             schema,
         ));
         let req = CreateElicitationRequest::new(mode, message);
-        let resp = self.cx.send_request(req).block_task().await.ok()?;
+        let resp = match self.cx.send_request(req).block_task().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                answer_transport_failed("elicitation", &e);
+                return None;
+            }
+        };
+        note_answer("elicitation", resp.meta.as_ref());
         match resp.action {
             ElicitationAction::Accept(accept) => {
                 let content = accept.content?;
@@ -518,7 +525,14 @@ impl AcpTurnSource {
         );
         let req =
             RequestPermissionRequest::new(self.session_id.clone(), tool_call, vec![once, session]);
-        let resp = self.cx.send_request(req).block_task().await.ok()?;
+        let resp = match self.cx.send_request(req).block_task().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                answer_transport_failed("unlock", &e);
+                return None;
+            }
+        };
+        note_answer("permission", resp.meta.as_ref());
         match resp.outcome {
             RequestPermissionOutcome::Selected(SelectedPermissionOutcome { option_id, .. }) => {
                 match option_id.0.as_ref() {
@@ -533,6 +547,22 @@ impl AcpTurnSource {
             }
         }
     }
+}
+
+/// A transport failure while waiting for the client's answer: the turn is
+/// abandoned, and the failure is recorded with its code.
+fn answer_transport_failed(kind: &str, error: &agent_client_protocol::Error) {
+    concord_telemetry::error_anyhow!(
+        &coded_error::into_anyhow(crate::error::PromptError::AnswerTransportFailed(format!(
+            "{kind}: {error}"
+        ))),
+        source = "acp.answer"
+    );
+}
+
+/// Opens and closes the span for a received answer, linked to its carrier.
+fn note_answer(kind: &'static str, meta: Option<&serde_json::Map<String, serde_json::Value>>) {
+    drop(crate::trace_meta::answer_span(kind, meta));
 }
 
 /// A durable pause a session is currently awaiting a reply for, read
@@ -648,9 +678,13 @@ impl TurnSource for AcpTurnSource {
                         r = self.cx.send_request(req).block_task() => match r {
                             Ok(r) => r,
                             // Transport/connection error: abandon the turn (drain reaps it).
-                            Err(_) => return None,
+                            Err(e) => {
+                                answer_transport_failed("permission", &e);
+                                return None;
+                            }
                         },
                     };
+                    note_answer("permission", resp.meta.as_ref());
                     match resp.outcome {
                         RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
                             option_id,

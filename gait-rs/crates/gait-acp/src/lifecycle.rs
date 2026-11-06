@@ -86,6 +86,13 @@ pub fn load_session(
     cx: ConnectionTo<Client>,
 ) -> Result<(), agent_client_protocol::Error> {
     let sid = req.session_id.0.to_string();
+    let span = tracing::info_span!("acp.load", session_id = %sid);
+    concord_telemetry::carrier::extract_required(
+        "gait.acp.load",
+        &span,
+        &crate::trace_meta::carrier_from_meta(req.meta.as_ref()),
+    );
+    let _entered = span.enter();
     if let Err(e) = validate_load_options(
         req.mcp_servers.is_empty(),
         req.additional_directories.is_empty(),

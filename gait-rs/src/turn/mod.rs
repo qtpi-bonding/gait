@@ -383,6 +383,7 @@ pub async fn run_turn(
                 &session_id,
                 &already_d,
             ) {
+                crate::trace::note_daemon_wake_body(&c.body());
                 let _ = emitter.record(c.body());
             }
             // Child-agent completions (Stage 4, Task 4)
@@ -566,7 +567,12 @@ pub async fn run_turn(
             post_tool_text,
             mut step_thinking_text,
             mut step_thinking_signature,
-        } = match stream::run_step(&env, &mut state, &outgoing, session_state_body.as_str()).await {
+        } = match crate::trace::within(
+            crate::trace::step_span(step_index),
+            stream::run_step(&env, &mut state, &outgoing, session_state_body.as_str()),
+        )
+        .await
+        {
             Ok(y) => y,
             Err(e) => break 'turn finalize::StepOutcome::Fail(e),
         };

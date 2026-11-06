@@ -190,6 +190,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: format!("/tmp/{}.log", name),
             session: String::new(),
+            ..Default::default()
         }
     }
 
@@ -226,6 +227,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/alive-daemon.log".to_owned(),
             session: String::new(),
+            ..Default::default()
         };
         append_start(dir.path(), &alive).unwrap();
 
@@ -239,6 +241,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/dead-daemon.log".to_owned(),
             session: String::new(),
+            ..Default::default()
         };
         append_start(dir.path(), &dead).unwrap();
 
@@ -307,6 +310,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/zombie.log".to_owned(),
             session: "some-old-session".to_owned(),
+            ..Default::default()
         };
         append_start(dir.path(), &rec).unwrap();
 
@@ -344,6 +348,7 @@ mod tests {
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/dead.log".to_owned(),
             session: String::new(),
+            ..Default::default()
         };
         append_start(dir.path(), &rec).unwrap();
 

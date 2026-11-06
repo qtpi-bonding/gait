@@ -17,11 +17,11 @@ pub mod embed;
 pub mod launch;
 
 /// The environment a hand or a shell command inherits (everything else is
-/// cleared). `TRACEPARENT` is the only variable added for tracing.
+/// cleared). `TRACEPARENT` and `BAGGAGE` are the only variables added for tracing.
 pub(crate) fn env_passes_to_children(key: &str) -> bool {
     matches!(
         key,
-        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT"
+        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT" | "BAGGAGE"
     )
 }
 pub mod modes;
@@ -54,6 +54,7 @@ mod permissions_invariant_tests;
 pub(crate) mod prompt;
 pub use prompt::{install_self_identity, SelfIdentity};
 pub mod send;
+pub(crate) mod trace;
 #[cfg(test)]
 mod test_utils;
 pub(crate) mod wasm_plugins;

@@ -704,7 +704,7 @@ dependencies = [
 [[package]]
 name = "coded-error"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=be55165013f5d557ecf8e1b1cf784fb3d07e9753#be55165013f5d557ecf8e1b1cf784fb3d07e9753"
+source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=ffeaf3949230a8883b56c75e7031346a4f28ed4d#ffeaf3949230a8883b56c75e7031346a4f28ed4d"
 dependencies = [
  "anyhow",
  "coded-error-derive",
@@ -716,7 +716,7 @@ dependencies = [
 [[package]]
 name = "coded-error-derive"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=be55165013f5d557ecf8e1b1cf784fb3d07e9753#be55165013f5d557ecf8e1b1cf784fb3d07e9753"
+source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=ffeaf3949230a8883b56c75e7031346a4f28ed4d#ffeaf3949230a8883b56c75e7031346a4f28ed4d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -732,7 +732,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "concord-telemetry"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a884cce4deb9a0c9baa8e5640519f93f78022668#a884cce4deb9a0c9baa8e5640519f93f78022668"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=5a704b375a6560435a78fc41cc61f5dbf66a5316#5a704b375a6560435a78fc41cc61f5dbf66a5316"
 dependencies = [
  "anyhow",
  "coded-error",
@@ -755,7 +755,7 @@ dependencies = [
 [[package]]
 name = "concord-telemetry-derive"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a884cce4deb9a0c9baa8e5640519f93f78022668#a884cce4deb9a0c9baa8e5640519f93f78022668"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=5a704b375a6560435a78fc41cc61f5dbf66a5316#5a704b375a6560435a78fc41cc61f5dbf66a5316"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -765,7 +765,7 @@ dependencies = [
 [[package]]
 name = "concord-telemetry-proto"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a884cce4deb9a0c9baa8e5640519f93f78022668#a884cce4deb9a0c9baa8e5640519f93f78022668"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=5a704b375a6560435a78fc41cc61f5dbf66a5316#5a704b375a6560435a78fc41cc61f5dbf66a5316"
 
 [[package]]
 name = "concurrent-queue"
@@ -2686,8 +2686,8 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "identity-crypto"
-version = "0.9.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=feb5d585a77c6ba45eedc16fd08c2bd7feeff782#feb5d585a77c6ba45eedc16fd08c2bd7feeff782"
+version = "0.10.0"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=eeea2904d5bdc976116d94b7ded917009e169784#eeea2904d5bdc976116d94b7ded917009e169784"
 dependencies = [
  "chrono",
  "hex",
@@ -2705,7 +2705,7 @@ dependencies = [
 [[package]]
 name = "identity-keyfile"
 version = "0.9.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=feb5d585a77c6ba45eedc16fd08c2bd7feeff782#feb5d585a77c6ba45eedc16fd08c2bd7feeff782"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=eeea2904d5bdc976116d94b7ded917009e169784#eeea2904d5bdc976116d94b7ded917009e169784"
 dependencies = [
  "identity-crypto",
  "libc",
@@ -3211,8 +3211,8 @@ dependencies = [
 
 [[package]]
 name = "message-attestation"
-version = "0.3.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=6d7586e6bff7b8f370b877fa6852b686b039d936#6d7586e6bff7b8f370b877fa6852b686b039d936"
+version = "0.4.0"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=2c7f1ff037aa02c2e850a7aa4d7422304d139737#2c7f1ff037aa02c2e850a7aa4d7422304d139737"
 dependencies = [
  "getrandom 0.4.2",
  "identity-crypto",

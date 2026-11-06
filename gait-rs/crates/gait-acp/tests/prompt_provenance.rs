@@ -281,6 +281,22 @@ impl Fixture {
         audience: &PrincipalId,
         recipient: &PrincipalId,
     ) -> Map<String, Value> {
+        self.meta_named(sequence, bodies, ids, audience, recipient, &[])
+    }
+
+    /// [`Fixture::meta_with`] with names signed into the Delivery. Gait cannot
+    /// mint a `ResolvedPrincipal` (it must not enable `resolver`), so the names
+    /// are set on the signed Delivery by hand and the raw transcript is
+    /// re-signed, as a deliverer holding the registry's answer would.
+    fn meta_named(
+        &self,
+        sequence: u64,
+        bodies: &[&str],
+        ids: &[String],
+        audience: &PrincipalId,
+        recipient: &PrincipalId,
+        names: &[(String, &str)],
+    ) -> Map<String, Value> {
         let now = now_unix();
         let messages = bodies
             .iter()
@@ -308,7 +324,7 @@ impl Fixture {
                 }
             })
             .collect();
-        let delivery = sign_delivery(
+        let mut delivery = sign_delivery(
             self.deliverer.device.signing_key_pair(),
             &self.deliverer.delegation,
             UnsignedDelivery {
@@ -318,9 +334,29 @@ impl Fixture {
                 sequence,
                 attested_at: Timestamp { seconds: now, nanos: 0 },
                 messages,
+                names: vec![],
             },
         )
         .unwrap();
+        if !names.is_empty() {
+            let mut sorted: Vec<_> = names.to_vec();
+            sorted.sort();
+            delivery.names = sorted
+                .into_iter()
+                .map(|(principal_id, name)| pb::PrincipalName {
+                    principal_id,
+                    name: name.to_owned(),
+                })
+                .collect();
+            let transcript = identity_crypto::transcripts::delivery_transcript(&delivery).unwrap();
+            delivery.signature = self
+                .deliverer
+                .device
+                .signing_key_pair()
+                .sign_bytes(&transcript)
+                .unwrap()
+                .to_vec();
+        }
         let mut meta = Map::new();
         attach(&mut meta, DEFAULT_META_KEY, &delivery).unwrap();
         meta
@@ -840,4 +876,129 @@ async fn the_model_sees_the_rendered_message_not_the_prompt_text() {
     assert!(text.contains("id=\"m1\"") && text.contains("trust=\"verified\""), "{text}");
     assert_eq!(text.matches("<incoming-message ").count(), 1, "body cannot forge a tag: {text}");
     assert!(!text.contains("untrusted text"));
+}
+
+fn rendered_incoming(events: &[Event]) -> String {
+    gait_state::session::retrace::messages(events)
+        .unwrap()
+        .iter()
+        .find_map(|m| match m {
+            gait_core::types::Message::User {
+                content: gait_core::types::MessageContent::Text(t), ..
+            } if t.starts_with("<incoming-message ") => Some(t.clone()),
+            _ => None,
+        })
+        .expect("the rendered message reaches the model")
+}
+
+fn logged_incoming(events: &[Event]) -> gait_proto::gait::log::v1::IncomingMessage {
+    events
+        .iter()
+        .find_map(|event| match event.body.as_ref() {
+            Some(event::Body::Payload(payload)) => match payload.kind.as_ref() {
+                Some(payload::Kind::IncomingMessage(m)) if !m.message_id.is_empty() => {
+                    Some(m.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("the structured message is logged")
+}
+
+/// A name signed into the Delivery is logged beside the structured fields and
+/// shown to the model next to `from`; the log records render version 2.
+#[tokio::test]
+async fn incoming_message_logs_and_renders_from_name_end_to_end() {
+    let fixture = Fixture::new();
+    let me = fixture.agent.load().unwrap().principal_id.clone();
+    let meta = fixture.meta_named(
+        1,
+        &["hello"],
+        &["m1".into()],
+        &fixture.deliverer.id,
+        &me,
+        &[(fixture.author.id.to_string(), "gp")],
+    );
+    let events = deliver(fixture.attestor(), meta).await;
+    let logged = logged_incoming(&events);
+    assert_eq!(logged.from_name.as_deref(), Some("gp"));
+    assert_eq!(logged.render_version, 2);
+    let text = rendered_incoming(&events);
+    assert!(
+        text.contains(&format!("from=\"{}\" from-name=\"gp\" to=", fixture.author.id)),
+        "{text}"
+    );
+}
+
+/// A delivery that names nobody logs no name, and renders as before.
+#[tokio::test]
+async fn an_unnamed_author_logs_and_renders_no_name() {
+    let fixture = Fixture::new();
+    let events = deliver(fixture.attestor(), fixture.meta(1, &["hello"])).await;
+    assert_eq!(logged_incoming(&events).from_name, None);
+    assert!(!rendered_incoming(&events).contains("from-name"));
+}
+
+/// A tampered name inside a signed Delivery is refused at verify, so nothing
+/// reaches the log or the model.
+#[tokio::test]
+async fn a_hostile_signed_name_is_rejected_at_verify() {
+    let fixture = Fixture::new();
+    let me = fixture.agent.load().unwrap().principal_id.clone();
+    let meta = fixture.meta_named(
+        1,
+        &["hello"],
+        &["m1".into()],
+        &fixture.deliverer.id,
+        &me,
+        &[(fixture.author.id.to_string(), "a\"b")],
+    );
+    let events = deliver(fixture.attestor(), meta).await;
+    assert_rejected(&fixture, &events);
+}
+
+/// `structmux/owner` in `_meta` marks the owner's messages, and only theirs.
+#[tokio::test]
+async fn owner_from_meta_renders_owner_true_for_that_author_only() {
+    let fixture = Fixture::new();
+    let mut meta = fixture.meta(1, &["hello"]);
+    meta.insert("structmux/owner".into(), Value::String(fixture.author.id.to_string()));
+    let events = deliver(fixture.attestor(), meta).await;
+    assert_eq!(
+        logged_incoming(&events).owner_id.as_deref(),
+        Some(fixture.author.id.to_string().as_str())
+    );
+    assert!(rendered_incoming(&events).contains(" owner=\"true\" to="));
+
+    let stranger = new_author(now_unix()).id;
+    let other = Fixture::new();
+    let mut meta = other.meta(1, &["hello"]);
+    meta.insert("structmux/owner".into(), Value::String(stranger.to_string()));
+    let events = deliver(other.attestor(), meta).await;
+    assert!(!rendered_incoming(&events).contains("owner="));
+}
+
+/// A malformed `structmux/owner` is ignored: nothing is logged, no marker.
+#[tokio::test]
+async fn a_malformed_owner_meta_is_ignored() {
+    for bad in [
+        Value::String("not-a-principal".into()),
+        Value::String(String::new()),
+        Value::Bool(true),
+    ] {
+        let fixture = Fixture::new();
+        let mut meta = fixture.meta(1, &["hello"]);
+        meta.insert("structmux/owner".into(), bad);
+        let events = deliver(fixture.attestor(), meta).await;
+        assert_eq!(logged_incoming(&events).owner_id, None);
+        assert!(!rendered_incoming(&events).contains("owner="));
+    }
+    // A non-canonical (uppercase hex) id is not kept either.
+    let fixture = Fixture::new();
+    let upper = format!("p256:{}", fixture.author.id.to_string()[5..].to_uppercase());
+    let mut meta = fixture.meta(1, &["hello"]);
+    meta.insert("structmux/owner".into(), Value::String(upper));
+    let events = deliver(fixture.attestor(), meta).await;
+    assert_eq!(logged_incoming(&events).owner_id, None);
 }
