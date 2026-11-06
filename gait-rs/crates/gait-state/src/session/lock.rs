@@ -22,34 +22,70 @@ fn pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+/// Start time of `pid` in clock ticks since boot (field 22 of `/proc/<pid>/stat`).
+/// `None` where `/proc` is unavailable (macOS) or the process is gone.
+fn proc_starttime(pid: u32) -> Option<u64> {
+    starttime_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// The command name may contain spaces and parentheses; fields resume after
+/// the last ')'. After it, `state` is field 3, so field 22 is index 19.
+fn starttime_from_stat(stat: &str) -> Option<u64> {
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Is the process recorded in a lock file still the one that wrote it? A pid
+/// alone is not enough: the lock lives in a workspace that outlives its
+/// container, and pids restart from the same numbers, so a lock left by a
+/// killed process can name a pid that a different live process (even this
+/// one) now holds. The recorded start time tells them apart.
+fn holder_is_live(
+    raw: &str,
+    alive: impl Fn(u32) -> bool,
+    starttime: impl Fn(u32) -> Option<u64>,
+) -> bool {
+    let mut fields = raw.split_whitespace();
+    let Some(pid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    if !alive(pid) {
+        return false;
+    }
+    match (fields.next().and_then(|s| s.parse::<u64>().ok()), starttime(pid)) {
+        (Some(recorded), Some(current)) => recorded == current,
+        _ => true,
+    }
+}
+
+fn lock_is_held(raw: &str) -> bool {
+    holder_is_live(raw, pid_alive, proc_starttime)
+}
+
 impl SessionLock {
     /// Read-only peek used by bulk classification. No side effects.
     pub fn is_running(session_dir: &std::path::Path) -> bool {
         let path = session_dir.join("lock");
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return false;
-        };
-        match raw.trim().parse::<u32>() {
-            Ok(pid) => pid_alive(pid),
-            Err(_) => false,
-        }
+        std::fs::read_to_string(&path).is_ok_and(|raw| lock_is_held(&raw))
     }
 
     pub fn acquire(session_dir: &Path) -> anyhow::Result<Self> {
         let path = session_dir.join("lock");
         if path.exists() {
             let raw = std::fs::read_to_string(&path).unwrap_or_default();
-            if let Ok(pid) = raw.trim().parse::<u32>() {
-                if pid_alive(pid) {
-                    anyhow::bail!(
-                        "session {} is already running (PID {})",
-                        session_dir.display(),
-                        pid
-                    );
-                }
+            if lock_is_held(&raw) {
+                anyhow::bail!(
+                    "session {} is already running (PID {})",
+                    session_dir.display(),
+                    raw.split_whitespace().next().unwrap_or("?")
+                );
             }
         }
-        std::fs::write(&path, std::process::id().to_string())?;
+        let pid = std::process::id();
+        let contents = match proc_starttime(pid) {
+            Some(start) => format!("{pid} {start}"),
+            None => pid.to_string(),
+        };
+        std::fs::write(&path, contents)?;
         Ok(Self { path })
     }
 }
@@ -83,6 +119,28 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("lock"), std::process::id().to_string()).unwrap();
         assert!(SessionLock::is_running(dir.path()));
+    }
+
+    #[test]
+    fn a_lock_naming_a_reused_pid_is_stale() {
+        // Same pid, different start time: a different process now holds the number.
+        assert!(!super::holder_is_live("7 100", |_| true, |_| Some(200)));
+        assert!(super::holder_is_live("7 100", |_| true, |_| Some(100)));
+    }
+
+    #[test]
+    fn a_lock_without_a_start_time_falls_back_to_the_pid() {
+        assert!(super::holder_is_live("7", |_| true, |_| Some(200)));
+        assert!(super::holder_is_live("7 100", |_| true, |_| None));
+        assert!(!super::holder_is_live("7 100", |_| false, |_| Some(100)));
+    }
+
+    #[test]
+    fn starttime_parses_a_command_name_with_spaces_and_parens() {
+        // After "(name)": state, then fields 4..=21 (18 numbers), then starttime.
+        let stat = format!("42 (a b) c) S {} 777 23", (4..=21).map(|n| n.to_string()).collect::<Vec<_>>().join(" "));
+        assert_eq!(super::starttime_from_stat(&stat), Some(777));
+        assert_eq!(super::starttime_from_stat("42 (short) S 1"), None);
     }
 
     #[test]
