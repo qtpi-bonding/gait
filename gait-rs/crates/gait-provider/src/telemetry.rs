@@ -101,14 +101,21 @@ mod tests {
         assert_eq!((event.request_id.as_str(), event.model.as_str()), ("req_1", "openai/gpt-x"));
     }
 
-    #[test]
-    fn two_failures_at_the_same_attempt_get_distinct_ids() {
+    #[tokio::test]
+    async fn two_failures_at_the_same_attempt_get_distinct_ids() {
         let capture = concord_telemetry::testing::capture_exclusive();
-        let error = ProviderError::Overloaded;
-        report_failed(&error, 1, 3, true);
-        report_failed(&error, 1, 3, true);
+        let ctx = CallContext {
+            session_id: "s-distinct".into(),
+            turn_id: "t".into(),
+            model: "m".into(),
+        };
+        with_call(ctx, async {
+            report_failed(&ProviderError::Overloaded, 1, 3, true);
+            report_failed(&ProviderError::Overloaded, 1, 3, true);
+        })
+        .await;
         let ids: std::collections::HashSet<_> = capture
-            .events_where::<ModelCallFailed>(|e| e.attempt == 1)
+            .events_where::<ModelCallFailed>(|e| e.session_id == "s-distinct")
             .into_iter()
             .map(|e| e.source_record_id)
             .collect();

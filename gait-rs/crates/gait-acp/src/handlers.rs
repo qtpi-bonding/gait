@@ -791,7 +791,9 @@ mod tests {
         let records = cap.errors_where(|record| record.fingerprint == fingerprint);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].code, "gait.acp.prompt.attestation_missing_own_devices");
-        assert_eq!(cap.errors_where(|_| true).len(), 1);
+        // Not a count of every error record in the process: other tests in this
+        // binary run in parallel and emit their own. The fingerprint above is
+        // what ties a record to this rejection.
     }
 
     #[test]
