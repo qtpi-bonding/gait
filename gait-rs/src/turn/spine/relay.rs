@@ -76,7 +76,12 @@ pub(crate) fn emit_agent_reported(
 }
 
 #[cfg(feature = "telemetry")]
-pub(crate) fn emit_turn_completed(session_id: &str, turn: &crate::proto::gait::sandbox::v1::FinalizedTurn) {
+pub(crate) fn emit_turn_completed(
+    session_id: &str,
+    turn_id: &str,
+    model: &str,
+    turn: &crate::proto::gait::sandbox::v1::FinalizedTurn,
+) {
     let outcome = crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::try_from(turn.outcome)
         .unwrap_or(crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed);
     let elapsed_ms = turn
@@ -87,11 +92,19 @@ pub(crate) fn emit_turn_completed(session_id: &str, turn: &crate::proto::gait::s
                 + (duration.nanos.max(0) as u64 / 1_000_000)
         })
         .unwrap_or(0);
+    let usage = turn.usage.clone().unwrap_or_default();
     let event = gait_events::gait::events::v1::TurnCompleted {
         source_record_id: format!("{session_id}:{}", turn.started_ms),
         session_id: session_id.to_owned(),
         outcome: turn_outcome(outcome) as i32,
         elapsed_ms,
+        started_ms: turn.started_ms,
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+        cache_read_tokens: usage.cache_read,
+        cache_write_tokens: usage.cache_write,
+        model: model.to_owned(),
+        turn_id: turn_id.to_owned(),
     };
     concord_telemetry::event!(event);
 }
@@ -216,6 +229,48 @@ impl RelayState {
     }
 }
 
+/// One turn in the spine, inside a `gait.turn` span.
+#[allow(clippy::too_many_arguments)]
+pub async fn relay_brain_turn(
+    gait_dir: &Path,
+    codebase: &Path,
+    session_id: &str,
+    exe: &Path,
+    sandbox_cfg: &SandboxConfig,
+    sandbox_on: bool,
+    auto: bool,
+    max_iter: Option<usize>,
+    profile_inputs: &ProfileInputs,
+    sink: &mut dyn TurnSink,
+    cascade_group_arg: Option<String>,
+    signal_slot: Option<&SignalSlot>,
+    repos: &crate::git::Repos,
+    mode: &mut TurnMode,
+    fs_delegate: Option<std::sync::Arc<dyn crate::embed::FsDelegate>>,
+) -> anyhow::Result<crate::proto::gait::log::v1::RunResult> {
+    crate::trace::within(
+        crate::trace::turn_span(session_id),
+        relay_brain_turn_inner(
+            gait_dir,
+            codebase,
+            session_id,
+            exe,
+            sandbox_cfg,
+            sandbox_on,
+            auto,
+            max_iter,
+            profile_inputs,
+            sink,
+            cascade_group_arg,
+            signal_slot,
+            repos,
+            mode,
+            fs_delegate,
+        ),
+    )
+    .await
+}
+
 /// Spawn `gait __brain` for one turn and relay its Nerve signals.
 ///
 /// * `Impulse`       → `run_tool_as_spine` (spawned task) → `Feedback`
@@ -232,7 +287,7 @@ impl RelayState {
 ///
 /// Returns `Ok(true)` if the brain signalled failure, `Ok(false)` on success.
 #[allow(clippy::too_many_arguments)]
-pub async fn relay_brain_turn(
+async fn relay_brain_turn_inner(
     gait_dir: &Path,
     codebase: &Path,
     session_id: &str,
@@ -374,6 +429,9 @@ pub async fn relay_brain_turn(
             }
         }
     }
+    let turn_id = crate::trace::turn_id(session_id, started.started_ms);
+    let model = profile.model.clone();
+    crate::trace::note_turn(&turn_id, &model);
     let provider = profile
         .model
         .split_once('/')
@@ -401,6 +459,8 @@ pub async fn relay_brain_turn(
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit());
+        // The brain continues this turn's trace (TRACEPARENT/BAGGAGE).
+        crate::launch::with_trace_env(&mut std_cmd);
         // Set up cascade group enrollment hooks (setsid for brain = first call).
         group
             .configure_enrolled(&mut std_cmd)
@@ -814,6 +874,8 @@ pub async fn relay_brain_turn(
         git,
         codebase,
         session_id,
+        &turn_id,
+        &model,
         &log,
         &started,
         state.finalized_turn,
@@ -1188,10 +1250,18 @@ mod telemetry_tests {
         let id = format!("turn-test-{}", std::process::id());
         emit_turn_completed(
             &id,
+            "turn-7",
+            "openai/gpt-test",
             &FinalizedTurn {
                 outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::StructuredDone as i32,
                 started_ms: 42,
                 active_duration: Some(pbjson_types::Duration { seconds: 1, nanos: 2_000_000 }),
+                usage: Some(crate::proto::gait::log::v1::TurnTokenUsage {
+                    input: 11,
+                    output: 22,
+                    cache_read: 33,
+                    cache_write: 44,
+                }),
                 ..Default::default()
             },
         );
@@ -1201,6 +1271,13 @@ mod telemetry_tests {
         assert_eq!(event.source_record_id, format!("{id}:42"));
         assert_eq!(event.outcome, gait_events::gait::events::v1::TurnOutcome::Done as i32);
         assert_eq!(event.elapsed_ms, 1002);
+        assert_eq!(event.started_ms, 42);
+        assert_eq!(
+            (event.input_tokens, event.output_tokens, event.cache_read_tokens, event.cache_write_tokens),
+            (11, 22, 33, 44)
+        );
+        assert_eq!(event.model, "openai/gpt-test");
+        assert_eq!(event.turn_id, "turn-7");
     }
 
     #[test]

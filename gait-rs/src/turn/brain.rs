@@ -152,7 +152,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                 {
                     eprintln!("[brain] error: expected BrainInit as first frame, got {other:?}");
                 }
-                std::process::exit(1);
+                crate::trace::exit(1);
             }
         },
         Err(e) => {
@@ -161,7 +161,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             {
                 eprintln!("[brain] error: failed to read BrainInit frame: {e}");
             }
-            std::process::exit(1);
+            crate::trace::exit(1);
         }
     };
 
@@ -196,7 +196,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             {
                 eprintln!("[brain] error: --session is required for __brain");
             }
-            std::process::exit(1);
+            crate::trace::exit(1);
         }
     };
 
@@ -278,14 +278,14 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             {
                 eprintln!("[brain] error: bad profile_json in BrainInit: {e}");
             }
-            std::process::exit(1);
+            crate::trace::exit(1);
         });
     let credential = parse_bootstrap_credential(&init.credential_json).unwrap_or_else(|error| {
         #[allow(clippy::print_stderr)]
         {
             eprintln!("[brain] error: invalid private credential bootstrap: {error}");
         }
-        std::process::exit(1);
+        crate::trace::exit(1);
     });
 
     let repos = crate::git::Repos::production();
@@ -375,6 +375,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     //
     // MUST KEEP: relay handle in turn_config, make_recorder, drive, sink.result,
     // after_turn (Scheduler/Harness post-turn policy).
+    let brain_span = crate::trace::brain_span(&session_id);
     let (run_result_json, failed) = {
         // 1. Resolve profile (single-shot).
         let profile_result = driver.resolve_profile().await;
@@ -407,9 +408,14 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                 // 4. Spawn run_turn; drain the stream channel; collect result.
                 crate::diagnostic::set_phase(crate::diagnostic::Phase::TurnBegin);
                 let session_for_turn = session.clone();
-                let handle = tokio::spawn(async move {
-                    crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
-                });
+                // The turn task runs on another worker, so it carries the brain's
+                // root span explicitly: that parents every gait.step below it.
+                let handle = tokio::spawn(crate::trace::within(
+                    brain_span.clone(),
+                    async move {
+                        crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
+                    },
+                ));
                 sink.begin_turn();
                 // drive() drains rx so emitter drops, closing the channel.
                 // NOTE: for the brain the Recorder emits via stream_fwd (Nerve), so rx is
@@ -453,6 +459,10 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     // their tasks guarantees Append/StreamForward signals already
     // queued by finalization are written before Terminated can overtake them.
     drop(driver);
+    // Close the brain's root span and export, before `Terminated` goes out: the
+    // spine kills this process group right after it sees that signal.
+    drop(brain_span);
+    crate::telemetry::flush();
     let terminated = Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
@@ -472,7 +482,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     // Explicit exit, not a plain return: the long-lived Nerve feedback reader
     // and 15s ping loop only stop when their pipes close. The finite relays have
     // already drained above, so forced exit cannot discard queued turn events.
-    std::process::exit(0);
+    crate::trace::exit(0);
 }
 
 // ── BrainSink ─────────────────────────────────────────────────────────────────

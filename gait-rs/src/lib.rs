@@ -25,6 +25,7 @@ pub(crate) fn env_passes_to_children(key: &str) -> bool {
     )
 }
 pub mod modes;
+pub mod telemetry;
 pub mod port;
 pub mod profile;
 

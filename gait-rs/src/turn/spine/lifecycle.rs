@@ -335,6 +335,8 @@ pub(crate) async fn teardown(
     git: crate::turn::SessionGit,
     codebase: &Path,
     session_id: &str,
+    turn_id: &str,
+    model: &str,
     log: &crate::turn::SessionLog,
     started: &crate::turn::run_lifecycle::StartedTurn,
     finalized_turn: Option<crate::proto::gait::sandbox::v1::FinalizedTurn>,
@@ -393,7 +395,7 @@ pub(crate) async fn teardown(
         },
     )?;
     #[cfg(feature = "telemetry")]
-    crate::turn::spine::relay::emit_turn_completed(session_id, &draft_for_event);
+    crate::turn::spine::relay::emit_turn_completed(session_id, turn_id, model, &draft_for_event);
 
     use crate::proto::gait::log::v1 as pb;
     use pb::turn_result::Outcome;

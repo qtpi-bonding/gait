@@ -182,6 +182,15 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
         }
     };
+    // Telemetry comes up before anything below that can fail, and for the role
+    // subprocesses too (the spine spawns `current_exe() __brain`). Only the top
+    // process also writes JSON log lines to stderr.
+    gait_core::telemetry::init(
+        gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), "gait-acp"),
+        identity.as_ref().map(|ctx| ctx.agent_id().to_string()),
+        !is_role,
+    );
+    let _telemetry = gait_core::telemetry::FlushGuard;
     let mut verifier = None;
     if let Some(ctx) = &identity {
         if !is_role && std::env::var_os("GAIT_AGENT_DIR").is_none() {
@@ -247,35 +256,29 @@ fn main() -> std::process::ExitCode {
         },
         _ => None,
     };
-    let telemetry = {
-        let mut config = concord_telemetry::Config::new("gait-acp", env!("CARGO_PKG_VERSION"));
-        config.local = concord_telemetry::LocalOutput::Json;
-        config.principal = identity.as_ref().map(|ctx| concord_telemetry::Principal::new(
-            concord_telemetry::PrincipalKind::Agent, ctx.agent_id().to_string()));
-        match concord_telemetry::init(config) {
-            Ok(guard) => Some(guard),
-            Err(error) => {
-                eprintln!("failed to initialise telemetry: {error}");
-                None
-            }
-        }
-    };
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
         .expect("failed to start the tokio runtime");
     let result = runtime.block_on(async move {
+        gait_acp::service::started();
+        gait_acp::service::spawn_alive();
         if let (Some(ctx), Some(verifier)) = (identity.clone(), verifier) {
             gait_acp::renew::spawn(ctx, verifier);
         }
-        tokio::select! {
+        let result = tokio::select! {
             result = gait_acp::run_with_attestation(require_attestation, attestor) => result,
             _ = async {
                 let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
                 let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("SIGINT handler");
                 tokio::select! { _ = term.recv() => (), _ = interrupt.recv() => () }
-            } => return Ok(()),
-        }
+            } => {
+                gait_acp::service::stopping("signal");
+                return Ok(());
+            }
+        };
+        gait_acp::service::stopping(if result.is_ok() { "input_closed" } else { "error" });
+        result
     });
-    drop(telemetry);
+    drop(_telemetry);
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

@@ -16,3 +16,11 @@ phase = { type = "str", meaning = "Operation phase" }
 status_code = { type = "int", meaning = "Status code" }
 agent_name = { type = "str", meaning = "Spawned agent name" }
 status = { type = "str", meaning = "Agent report status" }
+started_ms = { type = "int", meaning = "Start time of the turn, epoch milliseconds" }
+input_tokens = { type = "int", meaning = "Input tokens the turn used" }
+output_tokens = { type = "int", meaning = "Output tokens the turn produced" }
+cache_read_tokens = { type = "int", meaning = "Input tokens served from the provider cache" }
+cache_write_tokens = { type = "int", meaning = "Input tokens written to the provider cache" }
+version = { type = "str", meaning = "Build version of the running binary" }
+reason = { type = "str", meaning = "Why the service is stopping" }
+uptime_ms = { type = "int", meaning = "Milliseconds since the service started" }

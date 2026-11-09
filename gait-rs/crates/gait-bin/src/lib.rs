@@ -6,9 +6,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::process::ExitCode;
 
-#[cfg(feature = "telemetry")]
-use concord_telemetry::{Config as TelemetryConfig, LocalOutput, Principal, PrincipalKind};
-
 #[cfg(feature = "local")]
 use gait_cli::cli::admin::LocalArgs;
 use gait_cli::cli::admin::{
@@ -180,33 +177,14 @@ pub fn install_agent_identity(
     Ok(())
 }
 
-/// Keeps telemetry alive until the command's runtime has finished.
-pub struct TelemetryGuard {
-    // Held only so its Drop flushes at the end of main.
-    #[cfg(feature = "telemetry")]
-    #[allow(dead_code)]
-    guard: Option<concord_telemetry::Guard>,
-}
+pub use gait_core::telemetry::FlushGuard as TelemetryGuard;
 
 /// Initialise process telemetry without ever disturbing `gait run`'s stderr
-/// JSONL protocol. Telemetry is deliberately optional for the lean binary.
-pub fn init_telemetry(
-    service: &'static str,
-    version: &'static str,
-    agent_id: Option<String>,
-) -> TelemetryGuard {
-    #[cfg(feature = "telemetry")]
-    {
-        let mut config = TelemetryConfig::new(service, version);
-        config.local = LocalOutput::Off;
-        config.principal = agent_id.map(|id| Principal::new(PrincipalKind::Agent, id));
-        return TelemetryGuard { guard: concord_telemetry::init(config).ok() };
-    }
-    #[cfg(not(feature = "telemetry"))]
-    {
-        let _ = (service, version, agent_id);
-        TelemetryGuard {}
-    }
+/// JSONL protocol (local output stays off). Telemetry is deliberately optional
+/// for the lean binary.
+pub fn init_telemetry(service: &'static str, agent_id: Option<String>) -> TelemetryGuard {
+    gait_core::telemetry::init(service, agent_id, false);
+    gait_core::telemetry::FlushGuard
 }
 
 #[cfg(test)]
@@ -247,22 +225,18 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn init_telemetry_without_endpoint_is_silent_and_a_second_init_yields_an_inert_guard() {
+    fn init_telemetry_without_endpoint_is_silent_and_a_second_init_is_refused() {
         let previous = std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT");
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        let _first = init_telemetry("gait-test", "0", None);
-        let second = init_telemetry("gait-test", "0", Some("agent".to_string()));
+        let _first = init_telemetry("gait-test", None);
+        // A global subscriber is installed by now (by the first call, or by
+        // whoever got there first), so this init is refused: it reports on
+        // stderr, keeps running, and hands nothing to gait-core.
+        let _second = init_telemetry("gait-test", Some("agent".to_string()));
         match previous {
             Some(value) => std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", value),
             None => std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"),
         }
-        // A global subscriber is installed by now (by the first call, or by
-        // whoever got there first), so the second init is refused and the
-        // guard it returns holds nothing.
-        #[cfg(feature = "telemetry")]
-        assert!(second.guard.is_none());
-        #[cfg(not(feature = "telemetry"))]
-        let _ = second;
     }
 
     #[test]

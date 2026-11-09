@@ -15,12 +15,13 @@ fn main() -> ExitCode {
     if let Err(error) = gait_bin::install_agent_identity(identity) {
         return gait_bin::report(&error);
     }
-    let is_role = raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]);
-    let _guard = if !is_role {
-        Some(gait_bin::init_telemetry("gait-min", env!("CARGO_PKG_VERSION"), agent_id))
-    } else {
-        None
-    };
+    // Every process initialises telemetry, the hidden role subprocesses too,
+    // each under its own service name. The spine hands the brain and the hand
+    // their parent trace through TRACEPARENT/BAGGAGE.
+    let _guard = gait_bin::init_telemetry(
+        gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), "gait-min"),
+        agent_id,
+    );
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

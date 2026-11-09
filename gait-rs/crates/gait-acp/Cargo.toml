@@ -12,7 +12,7 @@ gait-state = { path = "../gait-state" }
 gait-identity = { path = "../gait-identity" }
 gait-proto = { path = "../gait-proto" }
 gait-events = { path = "../gait-events" }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "5a704b375a6560435a78fc41cc61f5dbf66a5316" }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "bd4a62ccf3d4f48884a58babdd75f0e8c53d0d17" }
 tracing = "0.1"
 coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d", features = ["cli", "acp"] }
 thiserror = "1"
@@ -35,7 +35,7 @@ name = "mock_brain_acp"
 path = "src/bin/mock_brain_acp.rs"
 
 [dev-dependencies]
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "5a704b375a6560435a78fc41cc61f5dbf66a5316", features = ["testing"] }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "bd4a62ccf3d4f48884a58babdd75f0e8c53d0d17", features = ["testing"] }
 tempfile = "3"
 gait-proto = { path = "../gait-proto" }
 git2 = "0.20"

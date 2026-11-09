@@ -42,7 +42,14 @@ message TurnCompleted {
   string source_record_id = 1;
   string session_id = 2;
   TurnOutcome outcome = 3;
-  uint64 elapsed_ms = 4;
+  uint64 elapsed_ms = 4;          // active time: waits for permission are excluded
+  uint64 started_ms = 5;          // the turn's start; its end is this event's own timestamp
+  uint64 input_tokens = 6;
+  uint64 output_tokens = 7;
+  uint64 cache_read_tokens = 8;
+  uint64 cache_write_tokens = 9;
+  string model = 10;              // "provider/model-id" the turn ran on
+  string turn_id = 11;
 }
 
 message AgentSpawned {
@@ -96,4 +103,22 @@ message SessionDisposed {
   string source_record_id = 1;
   string session_id = 2;
   Disposition disposition = 3;
+}
+
+// The process lifecycle of a long-running gait service (gait-acp). The service
+// name is the resource's service.name. An idle seat and a dead seat look the
+// same without these: ServiceAlive is the only way to tell them apart.
+message ServiceStarted {
+  string source_record_id = 1;  // this process run: "<service>:<pid>:<start_ms>"
+  string version = 2;
+}
+
+message ServiceStopping {
+  string source_record_id = 1;
+  string reason = 2;  // "signal" | "input_closed" | "error"
+}
+
+message ServiceAlive {
+  string source_record_id = 1;
+  uint64 uptime_ms = 2;
 }
