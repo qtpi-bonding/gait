@@ -34,7 +34,10 @@ pub(crate) fn rendered(ev: &Event, m: &IncomingMessage) -> Option<String> {
     if m.rejected_provenance_claim || !is_structured(m) {
         return None;
     }
-    let author = ev.provenance.iter().find_map(|p| p.author_id.as_deref())?;
+    let Some(author) = ev.provenance.iter().find_map(|p| p.author_id.as_deref()) else {
+        record_unrendered(&m.message_id, NoVerifiedAuthor);
+        return None;
+    };
     let view = MessageView {
         message_id: &m.message_id,
         author_id: author,
@@ -54,11 +57,42 @@ pub(crate) fn rendered(ev: &Event, m: &IncomingMessage) -> Option<String> {
     match render_message(&view, self_id, Trust::Verified, m.render_version, &options) {
         Ok(text) => Some(text),
         Err(error) => {
-            eprintln!(
-                "[gait] incoming message {:?} was not rendered into context: {error}",
-                m.message_id
-            );
+            // A delivery that does not verify never reaches the model: a security
+            // signal, so it is a coded record and not a line on stderr.
+            record_unrendered(&m.message_id, error);
             None
         }
     }
+}
+
+/// Why a logged incoming message was left out of the model's context.
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.retrace")]
+pub enum UnrenderedMessage {
+    #[error("incoming message {message_id} was not rendered into context: {source}")]
+    #[coded(code = "incoming_not_rendered", class = Logical)]
+    NotRendered {
+        message_id: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+/// The logged event names no verified author.
+#[derive(Debug, thiserror::Error)]
+#[error("the event carries no verified author")]
+struct NoVerifiedAuthor;
+
+fn record_unrendered(message_id: &str, source: impl std::error::Error + Send + Sync + 'static) {
+    let error = UnrenderedMessage::NotRendered {
+        message_id: message_id.to_owned(),
+        source: Box::new(source),
+    };
+    #[cfg(feature = "telemetry")]
+    {
+        let error = coded_error::into_anyhow(error);
+        concord_telemetry::error_anyhow!(&error, source = "gait.retrace", message_id = %message_id);
+    }
+    #[cfg(not(feature = "telemetry"))]
+    eprintln!("[gait] {error}");
 }

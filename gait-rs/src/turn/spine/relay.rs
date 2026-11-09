@@ -109,6 +109,21 @@ pub(crate) fn emit_turn_completed(
     concord_telemetry::event!(event);
 }
 
+/// `PermissionRequested` for a logged permissions request; other events pass.
+#[cfg(feature = "telemetry")]
+pub(crate) fn note_permission_requested(session_id: &str, logged: &crate::proto::gait::log::v1::Event) {
+    use crate::proto::gait::log::v1::{event::Body, payload::Kind};
+    if let Some(Body::Payload(payload)) = logged.body.as_ref() {
+        if let Some(Kind::Permissions(request)) = payload.kind.as_ref() {
+            concord_telemetry::event!(gait_events::gait::events::v1::PermissionRequested {
+                source_record_id: logged.id.clone(),
+                session_id: session_id.to_owned(),
+                item_count: request.items.len() as u32,
+            });
+        }
+    }
+}
+
 fn is_signin_credential(provider: &str, credential: &gait_auth::ResolvedCredential) -> bool {
     matches!(
         credential,
@@ -461,6 +476,7 @@ async fn relay_brain_turn_inner(
             .stderr(std::process::Stdio::inherit());
         // The brain continues this turn's trace (TRACEPARENT/BAGGAGE).
         crate::launch::with_trace_env(&mut std_cmd);
+        std_cmd.env(crate::trace::TURN_ID_ENV, &turn_id);
         // Set up cascade group enrollment hooks (setsid for brain = first call).
         group
             .configure_enrolled(&mut std_cmd)
@@ -469,7 +485,16 @@ async fn relay_brain_turn_inner(
         let mut tokio_cmd = TokioCommand::from(std_cmd);
         let child = tokio_cmd
             .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn __brain: {e}"))?;
+            .map_err(|e| {
+                super::error::raise(super::error::SpineError::BrainSpawnFailed(e), session_id)
+            })?;
+        #[cfg(feature = "telemetry")]
+        concord_telemetry::event!(gait_events::gait::events::v1::BrainSpawned {
+            source_record_id: format!("{session_id}:{turn_id}"),
+            session_id: session_id.to_owned(),
+            turn_id: turn_id.clone(),
+            pid: child.id().unwrap_or(0),
+        });
         let rec = crate::diagnostic::DiagRecord::lifecycle(
             session_id,
             crate::diagnostic::Phase::TurnBegin,
@@ -657,12 +682,13 @@ async fn relay_brain_turn_inner(
                     let exe_c = exe.to_path_buf();
                     let grp = Arc::clone(&group);
                     let del = fs_delegate.clone();
-                    let span = crate::trace::tool_span(&impulse.tool);
+                    let span = crate::trace::tool_span(&impulse.tool, session_id, &turn_id);
                     state.inflight.spawn(crate::trace::within(span, async move {
                         let feedback = run_tool_as_spine(
                             impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp, del,
                         )
                         .await;
+                        crate::trace::note_tool_outcome(crate::trace::tool_outcome_code(&feedback));
                         handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
                     }));
                 }
@@ -746,7 +772,22 @@ async fn relay_brain_turn_inner(
                         session_id,
                         sandbox_cfg,
                     );
-                    log.relay_event(&evt).ok();
+                    match log.relay_event(&evt) {
+                        Ok(logged) => {
+                            #[cfg(feature = "telemetry")]
+                            note_permission_requested(session_id, &logged);
+                            #[cfg(not(feature = "telemetry"))]
+                            let _ = logged;
+                        }
+                        Err(error) => {
+                            // The transcript lost a brain-minted event. Say so; the turn
+                            // goes on (the spine cannot repair the brain's event).
+                            super::error::record(
+                                super::error::SpineError::LogRelayFailed(error.into()),
+                                session_id,
+                            );
+                        }
+                    }
                 }
             }
             Some(signal::Body::StreamForward(fwd)) => {

@@ -12,13 +12,14 @@ const CHECK_EVERY: Duration = Duration::from_secs(3600);
 
 /// One pass: renew what gait minted (if due), then refresh the verifier.
 pub fn tick(ctx: &IdentityContext, verifier: &DirectVerifier, now: i64) {
+    let _span = tracing::info_span!("gait.identity.renew_tick").entered();
     if let Ok(layout) = split_layout_of(ctx) {
         if let Err(error) = gait_identity::renew_minted(&layout, now) {
-            eprintln!("identity renewal failed: {error:#}");
+            concord_telemetry::error_anyhow!(&error, source = "gait-acp.renew");
         }
     }
     if let Err(error) = verifier.refresh(ctx) {
-        eprintln!("identity verifier refresh failed: {error:#}");
+        concord_telemetry::error_anyhow!(&error, source = "gait-acp.renew");
     }
 }
 

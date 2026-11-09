@@ -64,19 +64,28 @@ pub(crate) async fn run_step(
     // returns a classified `ProviderError` if anything failed before the first
     // byte. We must still Esc-cancel from here, so wrap it in the same
     // cancel-select the loop below uses.
-    let stream_fut = env.provider.stream(
-        env.system_prompt,
-        outgoing,
-        &state.tools,
-        env.llm_params,
-        Some(session_state_body),
+    let stream_fut = gait_provider::telemetry::with_call(
+        gait_provider::telemetry::CallContext {
+            session_id: env.session_id.to_owned(),
+            turn_id: std::env::var(crate::trace::TURN_ID_ENV).unwrap_or_default(),
+            model: env.model.to_owned(),
+        },
+        env.provider.stream(
+            env.system_prompt,
+            outgoing,
+            &state.tools,
+            env.llm_params,
+            Some(session_state_body),
+        ),
     );
     let mut chunk_stream = tokio::select! {
         biased;
         _ = cancel_token_fut(env.cancel) => {
             return Err(anyhow::anyhow!("provider cancelled during connect"));
         }
-        res = stream_fut => res.map_err(|e| anyhow::anyhow!("provider error: {}", e))?,
+        // The coded error rides along, so a connect-phase 429 that exhausts its
+        // retries reaches the turn's error record as `gait.provider.http`.
+        res = stream_fut => res.map_err(|e| coded_error::attach(anyhow::anyhow!("provider error: {}", e), &e))?,
     };
 
     let mut step_text = String::new();

@@ -9,6 +9,7 @@ repository.workspace = true
 identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784" }
 message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "2c7f1ff037aa02c2e850a7aa4d7422304d139737" }
 coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d" }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "bd4a62ccf3d4f48884a58babdd75f0e8c53d0d17", optional = true }
 gait-proto    = { path = "../gait-proto" }
 gait-identity = { path = "../gait-identity" }
 gait-types    = { path = "../gait-types" }
@@ -37,6 +38,7 @@ hex = "0.4"
 
 [features]
 testing = []
+telemetry = ["dep:concord-telemetry"]
 
 [dev-dependencies]
 tempfile = "3"

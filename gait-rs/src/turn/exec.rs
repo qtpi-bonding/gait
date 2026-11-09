@@ -151,6 +151,17 @@ pub(super) async fn execute_capability_raw(
                     emitter.record(events::sandbox_whitelist_match(&whitelist_items))?;
                 }
                 if let Some(sd) = &sandbox_denied_item {
+                    #[cfg(feature = "telemetry")]
+                    {
+                        let (session_id, turn_id) = crate::trace::brain_ids();
+                        concord_telemetry::event!(gait_events::gait::events::v1::SandboxDenied {
+                            source_record_id: format!("{session_id}:{turn_id}:{}", tool.name()),
+                            session_id,
+                            turn_id,
+                            tool: sd.tool_name.clone(),
+                            dimension: sd.dimension.clone(),
+                        });
+                    }
                     emitter.record(events::sandbox_denied(
                         &sd.tool_name,
                         &sd.resource,

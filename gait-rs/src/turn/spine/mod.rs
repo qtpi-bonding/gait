@@ -10,6 +10,7 @@
 //! Teardown ordering is fixed in `lifecycle::teardown`: drain in-flight tasks
 //! before reaping the cascade group; both before checkpoint/commit.
 
+pub(crate) mod error;
 mod watchdog;
 #[allow(unused_imports)] // path-stable facade re-export; no in-crate caller yet
 pub(crate) use watchdog::{watchdog_breach, SpinePhase, Watchdog, WatchdogCfg};

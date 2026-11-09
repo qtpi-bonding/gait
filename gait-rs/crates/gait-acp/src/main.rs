@@ -230,14 +230,10 @@ fn main() -> std::process::ExitCode {
     }
     let require_attestation = flags.require_attestation;
     if require_attestation && state_dir.is_none() {
-        let error = coded_error::into_anyhow(ConfigError::AttestationNeedsStateDir);
-        eprintln!("{error:#}");
-        return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
+        return fatal(coded_error::into_anyhow(ConfigError::AttestationNeedsStateDir));
     }
     if require_attestation && identity.is_none() {
-        let error = coded_error::into_anyhow(ConfigError::AttestationNeedsIdentity);
-        eprintln!("{error:#}");
-        return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
+        return fatal(coded_error::into_anyhow(ConfigError::AttestationNeedsIdentity));
     }
     if let Some(ctx) = identity.as_ref() {
         gait_state::session::retrace::install_process_self_id(ctx.agent_id().to_string());
@@ -249,10 +245,7 @@ fn main() -> std::process::ExitCode {
             flags.trusted_deliverers.clone(),
         ) {
             Ok(attestor) => Some(Arc::new(attestor)),
-            Err(error) => {
-                eprintln!("{error:#}");
-                return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
-            }
+            Err(error) => return fatal(error),
         },
         _ => None,
     };
@@ -281,11 +274,17 @@ fn main() -> std::process::ExitCode {
     drop(_telemetry);
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{error:#}");
-            std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error))
-        }
+        Err(error) => fatal(error),
     }
+}
+
+/// A startup or run failure after telemetry is up: one coded error record (the
+/// monitor's signal), the same text on stderr (the supervisor's), and the exit
+/// code the error maps to. Telemetry flushes when `main` returns.
+fn fatal(error: anyhow::Error) -> std::process::ExitCode {
+    concord_telemetry::error_anyhow!(&error, source = "gait-acp.main");
+    eprintln!("{error:#}");
+    std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error))
 }
 
 #[cfg(test)]

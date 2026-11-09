@@ -155,5 +155,5 @@
 13	src/turn/spine/handlers/tool.rs: ratchet.dropped_result: result is discarded
 1	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error converted to string
 6	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error formatted as string
-2	src/turn/spine/lifecycle.rs: ratchet.dropped_result: result is discarded
-3	src/turn/spine/relay.rs: ratchet.dropped_result: result is discarded
+1	src/turn/spine/lifecycle.rs: ratchet.dropped_result: result is discarded
+2	src/turn/spine/relay.rs: ratchet.dropped_result: result is discarded

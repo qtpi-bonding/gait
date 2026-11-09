@@ -6,10 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [features]
+telemetry = ["dep:concord-telemetry", "dep:gait-events"]
 local = ["dep:gait-local"]
 local-native = ["local", "dep:gait-llama-cpp", "gait-llama-cpp/native"]
 
 [dependencies]
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "bd4a62ccf3d4f48884a58babdd75f0e8c53d0d17", optional = true }
+gait-events = { path = "../gait-events", optional = true }
 gait-types        = { path = "../gait-types" }
 gait-auth         = { path = "../gait-auth" }
 reqwest           = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
@@ -29,4 +32,6 @@ gait-local        = { path = "../gait-local", optional = true }
 gait-llama-cpp    = { path = "../gait-llama-cpp", optional = true }
 
 [dev-dependencies]
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "bd4a62ccf3d4f48884a58babdd75f0e8c53d0d17", features = ["testing"] }
+gait-events = { path = "../gait-events" }
 tokio             = { version = "1", features = ["test-util"] }

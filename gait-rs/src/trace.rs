@@ -60,13 +60,33 @@ pub(crate) fn note_turn(turn_id: &str, model: &str) {
     let _ = (turn_id, model);
 }
 
+/// How the spine tells the brain which turn it is running: the id the spine
+/// already put on `gait.turn`, so both processes name the turn the same way.
+pub(crate) const TURN_ID_ENV: &str = "GAIT_TURN_ID";
+
+/// The session and turn this brain process works on. The brain runs exactly one
+/// turn, so a process-wide value is exact; set when the root span is made.
+static BRAIN_IDS: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+/// (session_id, turn_id) of the turn this brain runs, once it has started.
+pub(crate) fn brain_ids() -> (String, String) {
+    BRAIN_IDS.get().cloned().unwrap_or_default()
+}
+
 /// The root span of the sealed brain's turn: the spine's trace continues here
 /// through `TRACEPARENT`/`BAGGAGE`, and every `gait.step` below it exports under
 /// the spine's turn.
 pub(crate) fn brain_span(session_id: &str) -> Span {
+    BRAIN_IDS.get_or_init(|| {
+        (session_id.to_owned(), std::env::var(TURN_ID_ENV).unwrap_or_default())
+    });
     #[cfg(feature = "telemetry")]
     {
-        let span = tracing::info_span!("gait.brain", session_id = %session_id);
+        let span = tracing::info_span!(
+            "gait.brain",
+            session_id = %session_id,
+            turn_id = %std::env::var(TURN_ID_ENV).unwrap_or_default(),
+        );
         concord_telemetry::propagation::set_parent_from_env(&span);
         return span;
     }
@@ -96,15 +116,51 @@ pub(crate) fn step_span(step: usize) -> Span {
     }
 }
 
-/// The span of one tool call.
-pub(crate) fn tool_span(tool: &str) -> Span {
+/// The span of one tool call. `ok` and `error_code` are recorded when it ends.
+pub(crate) fn tool_span(tool: &str, session_id: &str, turn_id: &str) -> Span {
     #[cfg(feature = "telemetry")]
-    return tracing::info_span!("gait.tool", tool);
+    return tracing::info_span!(
+        "gait.tool",
+        tool,
+        session_id = %session_id,
+        turn_id = %turn_id,
+        ok = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+    );
     #[cfg(not(feature = "telemetry"))]
     {
-        let _ = tool;
+        let _ = (tool, session_id, turn_id);
         Span
     }
+}
+
+/// How a tool call ended, from what the spine can see of its feedback: a
+/// permission denial, a sandbox denial, or a tool-reported error. A command
+/// that ran and exited non-zero is an ordinary result, not a failure here.
+pub(crate) fn tool_outcome_code(feedback: &gait_proto::gait::sandbox::v1::Feedback) -> Option<&'static str> {
+    if feedback.denied.is_some() {
+        Some("gait.tool.permission_denied")
+    } else if feedback.sandbox_denied.is_some() {
+        Some("gait.tool.sandbox_denied")
+    } else if feedback.is_error == Some(true) {
+        Some("gait.tool.failed")
+    } else {
+        None
+    }
+}
+
+/// Records the outcome on the current `gait.tool` span.
+pub(crate) fn note_tool_outcome(code: Option<&str>) {
+    #[cfg(feature = "telemetry")]
+    {
+        let span = tracing::Span::current();
+        span.record("ok", code.is_none());
+        if let Some(code) = code {
+            span.record("error_code", code);
+        }
+    }
+    #[cfg(not(feature = "telemetry"))]
+    let _ = code;
 }
 
 /// Runs `fut` inside `span`.
@@ -163,7 +219,19 @@ pub(crate) fn note_daemon_wake_body(body: &crate::proto::gait::log::v1::event::B
 
 #[cfg(test)]
 mod tests {
-    use super::turn_id_from_baggage;
+    use super::{tool_outcome_code, turn_id_from_baggage};
+    use gait_proto::gait::sandbox::v1::Feedback;
+
+    #[test]
+    fn a_tool_outcome_names_the_denial_or_error() {
+        assert_eq!(tool_outcome_code(&Feedback::default()), None);
+        let sandbox = Feedback { sandbox_denied: Some(Default::default()), ..Default::default() };
+        assert_eq!(tool_outcome_code(&sandbox), Some("gait.tool.sandbox_denied"));
+        let failed = Feedback { is_error: Some(true), ..Default::default() };
+        assert_eq!(tool_outcome_code(&failed), Some("gait.tool.failed"));
+        let denied = Feedback { denied: Some(Default::default()), ..Default::default() };
+        assert_eq!(tool_outcome_code(&denied), Some("gait.tool.permission_denied"));
+    }
 
     #[test]
     fn the_turn_id_comes_out_of_a_baggage_header() {

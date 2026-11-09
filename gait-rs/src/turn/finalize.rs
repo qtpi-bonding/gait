@@ -148,6 +148,16 @@ pub(crate) async fn finalize(
         }
 
         StepOutcome::Pause(PauseKind::SandboxUnlock(items)) => {
+            #[cfg(feature = "telemetry")]
+            {
+                let (_, turn_id) = crate::trace::brain_ids();
+                concord_telemetry::event!(gait_events::gait::events::v1::SandboxUnlockRequested {
+                    source_record_id: format!("{}:{turn_id}", env.session_id),
+                    session_id: env.session_id.to_owned(),
+                    turn_id,
+                    item_count: items.len() as u32,
+                });
+            }
             env.emitter.record(events::sandbox_unlock(&items))?;
             persist.commit(&build_trace_message(
                 &format!("session({}): unlock", env.session_id),

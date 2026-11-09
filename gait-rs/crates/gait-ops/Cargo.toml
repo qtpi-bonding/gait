@@ -21,7 +21,7 @@ libc = "0.2"      # daemon::stop killpg(SIGTERM)
 serde_yaml = "0.9"  # extension's frontmatter helpers
 
 [features]
-telemetry = ["dep:concord-telemetry", "dep:gait-events"]
+telemetry = ["dep:concord-telemetry", "dep:gait-events", "gait-state/telemetry"]
 
 [dev-dependencies]
 concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "bd4a62ccf3d4f48884a58babdd75f0e8c53d0d17", features = ["testing"] }

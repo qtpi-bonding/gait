@@ -24,3 +24,13 @@ cache_write_tokens = { type = "int", meaning = "Input tokens written to the prov
 version = { type = "str", meaning = "Build version of the running binary" }
 reason = { type = "str", meaning = "Why the service is stopping" }
 uptime_ms = { type = "int", meaning = "Milliseconds since the service started" }
+attempt_max = { type = "int", meaning = "Attempts the transport allows" }
+http_status = { type = "int", meaning = "HTTP status of a failed model call, 0 when none" }
+retry_after_ms = { type = "int", meaning = "Milliseconds the server asked to wait before a retry" }
+will_retry = { type = "bool", meaning = "Whether the failed call will be retried" }
+kind = { type = "str", meaning = "Kind of failure" }
+pid = { type = "int", meaning = "Process id" }
+finalized = { type = "bool", meaning = "Whether the turn finished cleanly" }
+tool = { type = "str", meaning = "Tool name" }
+dimension = { type = "str", meaning = "Sandbox dimension that was denied" }
+item_count = { type = "int", meaning = "Number of items in the request" }

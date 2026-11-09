@@ -42,7 +42,7 @@ pub fn spawn_alive() {
 
 fn spawn_alive_every(every: Duration) {
     let began = std::time::Instant::now();
-    tokio::spawn(async move {
+    let heartbeat = async move {
         let mut tick = tokio::time::interval(every);
         tick.tick().await; // the first tick is immediate: ServiceStarted covers it
         loop {
@@ -52,7 +52,12 @@ fn spawn_alive_every(every: Duration) {
                 uptime_ms: began.elapsed().as_millis() as u64,
             });
         }
-    });
+    };
+    // The loop runs for the life of the process; its span marks it, a root of its own.
+    tokio::spawn(tracing::Instrument::instrument(
+        heartbeat,
+        tracing::debug_span!(parent: None, "gait_acp.alive_loop"),
+    ));
 }
 
 #[cfg(test)]

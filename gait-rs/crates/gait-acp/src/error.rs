@@ -39,6 +39,9 @@ pub enum PromptError {
     #[error("replay: {0}")]
     #[coded(code = "attestation_replay", class = Logical)]
     AttestationReplay(String),
+    #[error("an attested batch #{got} was already confirmed (last {last}); its message is already logged")]
+    #[coded(code = "attestation_replay_confirmed", class = Logical)]
+    AttestationReplayConfirmed { last: u64, got: u64 },
     #[error("attestation has no messages")]
     #[coded(code = "attestation_empty", class = Logical)]
     AttestationEmpty,
@@ -95,7 +98,7 @@ mod tests {
     #[test]
     fn prompt_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.prompt.", &[PromptError::ALL_CODES]).unwrap();
-        assert_eq!(PromptError::ALL_CODES.len(), 20);
+        assert_eq!(PromptError::ALL_CODES.len(), 21);
     }
 
     #[test]

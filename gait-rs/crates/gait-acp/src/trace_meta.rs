@@ -17,6 +17,14 @@ pub fn carrier_from_meta(meta: Option<&serde_json::Map<String, serde_json::Value
     })
 }
 
+/// A span for an ACP request that changes or reads session state. It is parented
+/// on the client's carrier when `_meta` has one and is a root span when not: a
+/// missing carrier on these requests is ordinary, not a break in a trace.
+pub fn handler_span(span: Span, meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Span {
+    carrier::parent_on(&span, &carrier_from_meta(meta));
+    span
+}
+
 /// Opens the span for an answer gait receives to its own request, linked to the
 /// answerer's carrier and not parented on it.
 pub fn answer_span(kind: &'static str, meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Span {

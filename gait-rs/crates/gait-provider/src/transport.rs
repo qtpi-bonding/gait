@@ -468,8 +468,10 @@ where
                     || (!cfg.retry_429 && matches!(e, ProviderError::Http { status: 429, .. }))
                     || attempts_used >= cfg.max_attempts as u32
                 {
+                    crate::telemetry::report_failed(&e, attempts_used, cfg.max_attempts as u32, false);
                     return Err(e);
                 }
+                crate::telemetry::report_failed(&e, attempts_used, cfg.max_attempts as u32, true);
                 let delay = e
                     .retry_after()
                     .unwrap_or_else(|| backoff_delay(&cfg, attempt));

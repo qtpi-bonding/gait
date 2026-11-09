@@ -157,7 +157,8 @@ pub fn build_agent_with_attestation(
                 let caps = caps.clone();
                 move |req: InitializeRequest, responder: Responder<InitializeResponse>, _cx| {
                     let caps = caps.clone();
-                    async move {
+                    let span = crate::trace_meta::handler_span(tracing::info_span!("acp.initialize"), req.meta.as_ref());
+                    tracing::Instrument::instrument(async move {
                         // Static/minimal capabilities; zero auth methods so `authenticate`
                         // never arrives (design §5).
                         // Record the client's fs capabilities for the whole
@@ -182,7 +183,7 @@ pub fn build_agent_with_attestation(
                                     serde_json::Value::Bool(true),
                                 )])),
                         )
-                    }
+                    }, span)
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -206,7 +207,14 @@ pub fn build_agent_with_attestation(
                       responder: Responder<ResumeSessionResponse>,
                       _cx| {
                     let map = map.clone();
-                    async move { lifecycle::resume_session(&map, req, responder) }
+                    let span = crate::trace_meta::handler_span(
+                        tracing::info_span!("acp.resume", session_id = %req.session_id.0),
+                        req.meta.as_ref(),
+                    );
+                    tracing::Instrument::instrument(
+                        async move { lifecycle::resume_session(&map, req, responder) },
+                        span,
+                    )
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -216,16 +224,22 @@ pub fn build_agent_with_attestation(
                 let map = map.clone();
                 move |req: NewSessionRequest, responder: Responder<NewSessionResponse>, _cx| {
                     let map = map.clone();
-                    async move {
+                    let span = crate::trace_meta::handler_span(
+                        tracing::info_span!("acp.new_session", session_id = tracing::field::Empty),
+                        req.meta.as_ref(),
+                    );
+                    let recorded = span.clone();
+                    tracing::Instrument::instrument(async move {
                         let gait_dir = match discover_gait_dir_for_cwd(&req.cwd) {
                             Ok(dir) => dir,
                             Err(e) => return responder.respond_with_error(error::acp_error(&anyhow::anyhow!(e), error::NEW_SESSION)),
                         };
                         let session_id = gait_core::session::new_session_id();
+                        recorded.record("session_id", tracing::field::display(&session_id));
                         let modes = advertise_modes(&gait_dir);
                         map.insert(gait_dir, session_id.clone(), req.cwd.clone());
                         responder.respond(NewSessionResponse::new(session_id).modes(Some(modes)))
-                    }
+                    }, span)
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -552,7 +566,11 @@ pub fn build_agent_with_attestation(
                       responder: Responder<SetSessionModeResponse>,
                       cx: agent_client_protocol::ConnectionTo<Client>| {
                     let map = map.clone();
-                    async move {
+                    let span = crate::trace_meta::handler_span(
+                        tracing::info_span!("acp.set_mode", session_id = %req.session_id.0, mode = %req.mode_id.0),
+                        req.meta.as_ref(),
+                    );
+                    tracing::Instrument::instrument(async move {
                         let session_id = req.session_id.clone();
                         let sid = session_id.0.to_string();
                         let Some((gait_dir, _codebase)) = map.resolve(&sid) else {
@@ -580,7 +598,7 @@ pub fn build_agent_with_attestation(
                             }
                             Err(e) => responder.respond_with_error(error::acp_error(&e, error::SET_SESSION_MODE)),
                         }
-                    }
+                    }, span)
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -590,7 +608,8 @@ pub fn build_agent_with_attestation(
                 let map = map.clone();
                 move |req: ListSessionsRequest, responder: Responder<ListSessionsResponse>, _cx| {
                     let map = map.clone();
-                    async move { lifecycle::list_sessions(&map, req, responder) }
+                    let span = crate::trace_meta::handler_span(tracing::debug_span!("acp.list"), req.meta.as_ref());
+                    tracing::Instrument::instrument(async move { lifecycle::list_sessions(&map, req, responder) }, span)
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -600,7 +619,11 @@ pub fn build_agent_with_attestation(
                 let map = map.clone();
                 move |req: CloseSessionRequest, responder: Responder<CloseSessionResponse>, _cx| {
                     let map = map.clone();
-                    async move { lifecycle::close_session(&map, req, responder) }
+                    let span = crate::trace_meta::handler_span(
+                        tracing::info_span!("acp.close", session_id = %req.session_id.0),
+                        req.meta.as_ref(),
+                    );
+                    tracing::Instrument::instrument(async move { lifecycle::close_session(&map, req, responder) }, span)
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -612,7 +635,11 @@ pub fn build_agent_with_attestation(
                       responder: Responder<DeleteSessionResponse>,
                       _cx| {
                     let map = map.clone();
-                    async move { lifecycle::delete_session(&map, req, responder) }
+                    let span = crate::trace_meta::handler_span(
+                        tracing::info_span!("acp.delete", session_id = %req.session_id.0),
+                        req.meta.as_ref(),
+                    );
+                    tracing::Instrument::instrument(async move { lifecycle::delete_session(&map, req, responder) }, span)
                 }
             },
             agent_client_protocol::on_receive_request!(),

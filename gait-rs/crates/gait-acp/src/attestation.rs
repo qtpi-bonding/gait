@@ -239,10 +239,14 @@ impl VerifiedBatch {
             let _claim = claim;
             match confirm(state.replay().as_ref(), pending) {
                 Ok(()) => {}
-                Err(AttestationError::Replay { principal, last, got }) => {
-                    eprintln!(
-                        "gait-acp: attested batch {principal}#{got} was already confirmed (last {last}); its message is already logged, continuing"
-                    );
+                Err(AttestationError::Replay { last, got, .. }) => {
+                    // Already confirmed and logged: the turn goes on, and the record
+                    // says it happened.
+                    let error = coded_error::into_anyhow(crate::error::PromptError::AttestationReplayConfirmed {
+                        last: last as u64,
+                        got: got as u64,
+                    });
+                    concord_telemetry::error_anyhow!(&error, source = "gait-acp.attestation");
                 }
                 Err(error) => return Err(anyhow!("confirm attested batch: {error}")),
             }

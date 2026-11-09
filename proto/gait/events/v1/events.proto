@@ -122,3 +122,76 @@ message ServiceAlive {
   string source_record_id = 1;
   uint64 uptime_ms = 2;
 }
+
+enum ModelFailureKind {
+  MODEL_FAILURE_KIND_UNSPECIFIED = 0;
+  MODEL_FAILURE_KIND_HTTP_STATUS = 1;
+  MODEL_FAILURE_KIND_TIMEOUT_CONNECT = 2;
+  MODEL_FAILURE_KIND_TIMEOUT_TTFB = 3;
+  MODEL_FAILURE_KIND_TIMEOUT_IDLE = 4;
+  MODEL_FAILURE_KIND_TIMEOUT_ABSOLUTE = 5;
+  MODEL_FAILURE_KIND_OVERLOADED = 6;
+  MODEL_FAILURE_KIND_TRANSPORT = 7;
+}
+
+// One per failed model-call attempt, the last one included. A turn that hit two
+// 429s and then succeeded emits two of these with will_retry = true; the final
+// failure also reaches the turn's coded error record.
+message ModelCallFailed {
+  string source_record_id = 1;  // "<session_id>:<turn_id>:<attempt>"
+  string session_id = 2;
+  string turn_id = 3;
+  string model = 4;             // "provider/model-id"
+  uint32 attempt = 5;           // 1-based
+  uint32 max_attempts = 6;
+  ModelFailureKind kind = 7;
+  uint32 http_status = 8;       // 0 when the failure was not an HTTP status
+  uint64 retry_after_ms = 9;    // the server's Retry-After; 0 when it sent none
+  string request_id = 10;       // the provider's x-request-id; empty when none
+  bool will_retry = 11;
+}
+
+// A turn paused for permission. Pairs with the next PermissionDecided of the
+// session, so a monitor can measure how long a seat sat blocked. No
+// command or tool text: only how many items are waiting.
+message PermissionRequested {
+  string source_record_id = 1;  // the id of the logged permissions request
+  string session_id = 2;
+  uint32 item_count = 3;
+}
+
+// The spine started a brain subprocess for a turn.
+message BrainSpawned {
+  string source_record_id = 1;  // "<session_id>:<turn_id>"
+  string session_id = 2;
+  string turn_id = 3;
+  uint32 pid = 4;
+}
+
+// The brain is gone. finalized = false means it died, or the spine killed it,
+// before it produced a finished turn.
+message BrainExited {
+  string source_record_id = 1;
+  string session_id = 2;
+  string turn_id = 3;
+  uint32 pid = 4;
+  bool finalized = 5;
+}
+
+// The sandbox refused a tool call. Names the tool and the dimension that was
+// denied (read, write, network ...), never the path, command or host.
+message SandboxDenied {
+  string source_record_id = 1;  // "<session_id>:<turn_id>:<tool_call_id>"
+  string session_id = 2;
+  string turn_id = 3;
+  string tool = 4;
+  string dimension = 5;
+}
+
+// The turn paused to ask whether to widen the sandbox.
+message SandboxUnlockRequested {
+  string source_record_id = 1;  // "<session_id>:<turn_id>"
+  string session_id = 2;
+  string turn_id = 3;
+  uint32 item_count = 4;
+}

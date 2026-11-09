@@ -225,8 +225,24 @@ async fn drain_inflight(mut set: tokio::task::JoinSet<()>, grace: std::time::Dur
 /// Either way we move `child` in and drop it WITHOUT awaiting. Reaping before the
 /// drop means tokio's SIGCHLD reaper can't race-steal the pid; the post-drop
 /// `try_wait` then sees `ECHILD` (harmless), so there is no zombie leak.
-async fn reap_brain(group: Arc<dyn crate::process::Containment>, child: tokio::process::Child) {
-    let _ = tokio::task::spawn_blocking(move || group.kill_all()).await;
+async fn reap_brain(
+    group: Arc<dyn crate::process::Containment>,
+    child: tokio::process::Child,
+    session_id: &str,
+) {
+    let killed = tokio::task::spawn_blocking(move || group.kill_all()).await;
+    // A group that survives the kill leaves a brain running past its turn: say so.
+    match killed {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => super::error::record(
+            super::error::SpineError::BrainKillFailed(Box::new(error)),
+            session_id,
+        ),
+        Err(error) => super::error::record(
+            super::error::SpineError::BrainKillFailed(Box::new(error)),
+            session_id,
+        ),
+    }
     drop(child);
 }
 
@@ -253,7 +269,16 @@ pub(crate) fn emit_terminal_failure(
         .map(scope_of_previous_event)
         .unwrap_or(crate::proto::envelope::EventScope::Session);
     let evt = crate::proto::envelope::mint(body, prev.as_ref(), scope);
-    log.relay_event(&evt).ok();
+    if let Err(error) = log.relay_event(&evt) {
+        super::error::record(
+            super::error::SpineError::LogRelayFailed(error.into()),
+            diag.session_id(),
+        );
+    }
+    super::error::record(
+        super::error::SpineError::LlmStalled(detail.to_owned()),
+        diag.session_id(),
+    );
     *brain_failed = true;
 
     // 2) DiagRecord → diagnostic.jsonl SECOND (gated by DiagnosticSink).
@@ -359,7 +384,19 @@ pub(crate) async fn teardown(
     // Single authoritative reap for EVERY exit path (EOF / Terminated / watchdog).
     // Reaps via kill_all() + Child drop — never tokio's child.wait(), which is
     // fatal on macOS (see `reap_brain`).
-    reap_brain(group, child).await;
+    let brain_pid = child.id().unwrap_or(0);
+    reap_brain(group, child, session_id).await;
+    #[cfg(feature = "telemetry")]
+    concord_telemetry::event!(gait_events::gait::events::v1::BrainExited {
+        source_record_id: format!("{session_id}:{turn_id}"),
+        session_id: session_id.to_owned(),
+        turn_id: turn_id.to_owned(),
+        pid: brain_pid,
+        finalized: finalized_turn.is_some(),
+    });
+    if finalized_turn.is_none() {
+        super::error::record(super::error::SpineError::BrainDied, session_id);
+    }
 
     // Synthesize a ToolResult for each orphaned ToolCall (brain was killed before
     // it could emit results). Tools that completed already have real results in the
@@ -739,7 +776,7 @@ mod tests {
         // indefinitely on macOS and the timeout would trip.
         let res = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            reap_brain(group.clone(), child),
+            reap_brain(group.clone(), child, "s-test"),
         )
         .await;
         assert!(res.is_ok(), "reap_brain hung on an already-exited child");
