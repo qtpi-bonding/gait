@@ -92,7 +92,7 @@ pub(crate) fn emit_turn_completed(
                 + (duration.nanos.max(0) as u64 / 1_000_000)
         })
         .unwrap_or(0);
-    let usage = turn.usage.clone().unwrap_or_default();
+    let usage = turn.usage.unwrap_or_default();
     let event = gait_events::gait::events::v1::TurnCompleted {
         source_record_id: format!("{session_id}:{}", turn.started_ms),
         session_id: session_id.to_owned(),

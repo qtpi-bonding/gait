@@ -138,7 +138,7 @@ enum ModelFailureKind {
 // 429s and then succeeded emits two of these with will_retry = true; the final
 // failure also reaches the turn's coded error record.
 message ModelCallFailed {
-  string source_record_id = 1;  // "<session_id>:<turn_id>:<attempt>"
+  string source_record_id = 1;  // "<session_id>:<turn_id>:<n>", n counts failures in the process
   string session_id = 2;
   string turn_id = 3;
   string model = 4;             // "provider/model-id"
@@ -181,7 +181,7 @@ message BrainExited {
 // The sandbox refused a tool call. Names the tool and the dimension that was
 // denied (read, write, network ...), never the path, command or host.
 message SandboxDenied {
-  string source_record_id = 1;  // "<session_id>:<turn_id>:<tool_call_id>"
+  string source_record_id = 1;  // "<session_id>:<turn_id>:<n>", n counts denials in the process
   string session_id = 2;
   string turn_id = 3;
   string tool = 4;

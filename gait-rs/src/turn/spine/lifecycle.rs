@@ -394,9 +394,13 @@ pub(crate) async fn teardown(
         pid: brain_pid,
         finalized: finalized_turn.is_some(),
     });
-    if finalized_turn.is_none() {
+    // A brain the spine already reported as failed (a stall, a brain-reported
+    // error) has its own record; only an unexplained death gets this one.
+    if finalized_turn.is_none() && !brain_failed {
         super::error::record(super::error::SpineError::BrainDied, session_id);
     }
+    #[cfg(not(feature = "telemetry"))]
+    let _ = (brain_pid, turn_id, model);
 
     // Synthesize a ToolResult for each orphaned ToolCall (brain was killed before
     // it could emit results). Tools that completed already have real results in the

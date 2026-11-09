@@ -4,7 +4,9 @@
 //! the transport does not know the session, turn or model.
 use std::future::Future;
 
-use crate::provider::{ProviderError, TimeoutPhase};
+use crate::provider::ProviderError;
+#[cfg(feature = "telemetry")]
+use crate::provider::TimeoutPhase;
 
 /// Who a model call belongs to.
 #[derive(Clone, Debug, Default)]
@@ -18,6 +20,11 @@ pub struct CallContext {
 tokio::task_local! {
     static CALL: CallContext;
 }
+
+/// Counts failures in this process, so two steps of one turn that both fail at
+/// attempt 1 still get distinct event ids.
+#[cfg(feature = "telemetry")]
+static FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Runs `fut` with `ctx` as the owner of every model call made inside it.
 pub async fn with_call<F: Future>(ctx: CallContext, fut: F) -> F::Output {
@@ -46,7 +53,12 @@ pub(crate) fn report_failed(error: &ProviderError, attempt: u32, max_attempts: u
         _ => (K::Transport, 0, String::new()),
     };
     concord_telemetry::event!(ModelCallFailed {
-        source_record_id: format!("{}:{}:{attempt}", ctx.session_id, ctx.turn_id),
+        source_record_id: format!(
+            "{}:{}:{}",
+            ctx.session_id,
+            ctx.turn_id,
+            FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ),
         session_id: ctx.session_id,
         turn_id: ctx.turn_id,
         model: ctx.model,
@@ -87,6 +99,20 @@ mod tests {
         assert_eq!((event.http_status, event.retry_after_ms), (429, 7000));
         assert_eq!((event.attempt, event.max_attempts, event.will_retry), (1, 3, true));
         assert_eq!((event.request_id.as_str(), event.model.as_str()), ("req_1", "openai/gpt-x"));
+    }
+
+    #[test]
+    fn two_failures_at_the_same_attempt_get_distinct_ids() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let error = ProviderError::Overloaded;
+        report_failed(&error, 1, 3, true);
+        report_failed(&error, 1, 3, true);
+        let ids: std::collections::HashSet<_> = capture
+            .events_where::<ModelCallFailed>(|e| e.attempt == 1)
+            .into_iter()
+            .map(|e| e.source_record_id)
+            .collect();
+        assert_eq!(ids.len(), 2, "a monitor that dedupes on the id must see both");
     }
 
     #[test]

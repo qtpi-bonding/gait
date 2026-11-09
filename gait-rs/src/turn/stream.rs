@@ -85,7 +85,7 @@ pub(crate) async fn run_step(
         }
         // The coded error rides along, so a connect-phase 429 that exhausts its
         // retries reaches the turn's error record as `gait.provider.http`.
-        res = stream_fut => res.map_err(|e| coded_error::attach(anyhow::anyhow!("provider error: {}", e), &e))?,
+        res = stream_fut => res.map_err(|e| coded_error::attach(anyhow::anyhow!("provider error: {}", bounded(&e.to_string())), &e))?,
     };
 
     let mut step_text = String::new();
@@ -225,5 +225,36 @@ mod tests {
             assert_eq!(facts.code, coded_error::CodedError::code(&provider_error));
             assert_eq!(facts.class, coded_error::CodedError::class(&provider_error));
         }
+    }
+}
+
+/// The most of a provider's error text that is kept in the error's message. The
+/// body of a rejected request says why (quota, bad parameter) but can also echo
+/// parts of the request, so only its start is kept.
+const PROVIDER_ERROR_TEXT_MAX: usize = 300;
+
+fn bounded(text: &str) -> String {
+    match text.char_indices().nth(PROVIDER_ERROR_TEXT_MAX) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::{bounded, PROVIDER_ERROR_TEXT_MAX};
+
+    #[test]
+    fn a_long_provider_error_keeps_only_its_start() {
+        let long = "x".repeat(PROVIDER_ERROR_TEXT_MAX * 3);
+        let kept = bounded(&long);
+        assert_eq!(kept.chars().count(), PROVIDER_ERROR_TEXT_MAX + 1);
+        assert_eq!(bounded("HTTP error 429: slow down"), "HTTP error 429: slow down");
+    }
+
+    #[test]
+    fn truncation_respects_multibyte_characters() {
+        let long = "é".repeat(PROVIDER_ERROR_TEXT_MAX + 5);
+        assert_eq!(bounded(&long).chars().count(), PROVIDER_ERROR_TEXT_MAX + 1);
     }
 }

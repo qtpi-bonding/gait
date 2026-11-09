@@ -6,6 +6,7 @@ use std::future::Future;
 #[cfg(feature = "telemetry")]
 pub(crate) type Span = tracing::Span;
 #[cfg(not(feature = "telemetry"))]
+#[derive(Clone)]
 pub(crate) struct Span;
 
 /// The span of one turn in the spine: the brain's and the tools' spans hang
@@ -39,6 +40,7 @@ pub(crate) fn turn_id(session_id: &str, started_ms: u64) -> String {
     format!("{session_id}:{started_ms}")
 }
 
+#[cfg(feature = "telemetry")]
 /// `turn_id` from a W3C baggage header value (`k=v,k2=v2;prop`).
 pub(crate) fn turn_id_from_baggage(baggage: &str) -> Option<String> {
     baggage.split(',').find_map(|member| {
@@ -64,10 +66,18 @@ pub(crate) fn note_turn(turn_id: &str, model: &str) {
 /// already put on `gait.turn`, so both processes name the turn the same way.
 pub(crate) const TURN_ID_ENV: &str = "GAIT_TURN_ID";
 
+#[cfg(feature = "telemetry")]
+/// A process-wide counter for ids of events that can repeat within a turn.
+pub(crate) fn next_seq() -> u64 {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The session and turn this brain process works on. The brain runs exactly one
 /// turn, so a process-wide value is exact; set when the root span is made.
 static BRAIN_IDS: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
 
+#[cfg(feature = "telemetry")]
 /// (session_id, turn_id) of the turn this brain runs, once it has started.
 pub(crate) fn brain_ids() -> (String, String) {
     BRAIN_IDS.get().cloned().unwrap_or_default()
@@ -88,7 +98,7 @@ pub(crate) fn brain_span(session_id: &str) -> Span {
             turn_id = %std::env::var(TURN_ID_ENV).unwrap_or_default(),
         );
         concord_telemetry::propagation::set_parent_from_env(&span);
-        return span;
+        span
     }
     #[cfg(not(feature = "telemetry"))]
     {
@@ -219,7 +229,9 @@ pub(crate) fn note_daemon_wake_body(body: &crate::proto::gait::log::v1::event::B
 
 #[cfg(test)]
 mod tests {
-    use super::{tool_outcome_code, turn_id_from_baggage};
+    use super::tool_outcome_code;
+    #[cfg(feature = "telemetry")]
+    use super::turn_id_from_baggage;
     use gait_proto::gait::sandbox::v1::Feedback;
 
     #[test]
@@ -233,6 +245,7 @@ mod tests {
         assert_eq!(tool_outcome_code(&denied), Some("gait.tool.permission_denied"));
     }
 
+    #[cfg(feature = "telemetry")]
     #[test]
     fn the_turn_id_comes_out_of_a_baggage_header() {
         assert_eq!(
