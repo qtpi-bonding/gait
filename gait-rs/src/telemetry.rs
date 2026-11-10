@@ -109,10 +109,12 @@ mod tests {
 #[cfg(all(test, feature = "telemetry"))]
 mod adopt_tests {
     #[test]
-    fn labels_in_a_baggage_header_land_on_the_span_and_others_do_not() {
+    fn every_entry_of_a_baggage_header_lands_on_the_span() {
+        // One shared rule (context::add_from_baggage): any valid entry is a
+        // label, unknown keys and empty values included.
         let _capture = concord_telemetry::testing::capture_exclusive();
         let span = tracing::info_span!("adopt-probe");
-        super::adopt_labels(&span, Some("action_id=A1, request_id=mm-9;prop=1,other=x,turn_id="));
+        super::adopt_labels(&span, Some("action_id=A1, request_id=mm-9;prop=1,other=x"));
         drop(span);
         let finished = concord_telemetry::testing::spans()
             .into_iter()
@@ -124,7 +126,14 @@ mod adopt_tests {
         };
         assert!(has("action_id", "A1"), "{:?}", finished.attributes);
         assert!(has("request_id", "mm-9"));
-        assert!(!finished.attributes.iter().any(|kv| kv.key.as_str() == "other"));
-        assert!(!finished.attributes.iter().any(|kv| kv.key.as_str() == "turn_id"));
+        assert!(has("other", "x"));
+    }
+
+    #[test]
+    fn no_baggage_adds_nothing() {
+        let _capture = concord_telemetry::testing::capture_exclusive();
+        let span = tracing::info_span!("adopt-none");
+        super::adopt_labels(&span, None);
+        drop(span);
     }
 }
