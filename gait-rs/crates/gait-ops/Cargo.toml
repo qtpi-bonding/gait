@@ -11,7 +11,7 @@ gait-state = { path = "../gait-state" }
 gait-auth = { path = "../gait-auth" }
 gait-proto = { path = "../gait-proto" }
 gait-events = { path = "../gait-events", optional = true }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "2f150d8f8a67604ace6f6b6c33678ea57ecbd979", optional = true }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "1c95b776ca932cff59fd24de23a8700c3ae8b4aa", optional = true }
 anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
@@ -24,7 +24,7 @@ serde_yaml = "0.9"  # extension's frontmatter helpers
 telemetry = ["dep:concord-telemetry", "dep:gait-events", "gait-state/telemetry"]
 
 [dev-dependencies]
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "2f150d8f8a67604ace6f6b6c33678ea57ecbd979", features = ["testing"] }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "1c95b776ca932cff59fd24de23a8700c3ae8b4aa", features = ["testing"] }
 tempfile = "3"
 gait-auth = { path = "../gait-auth", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }  # models() async test

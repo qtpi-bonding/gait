@@ -165,7 +165,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -176,7 +176,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -442,7 +442,7 @@ dependencies = [
  "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -732,7 +732,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "concord-telemetry"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=2f150d8f8a67604ace6f6b6c33678ea57ecbd979#2f150d8f8a67604ace6f6b6c33678ea57ecbd979"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=1c95b776ca932cff59fd24de23a8700c3ae8b4aa#1c95b776ca932cff59fd24de23a8700c3ae8b4aa"
 dependencies = [
  "anyhow",
  "coded-error",
@@ -756,7 +756,7 @@ dependencies = [
 [[package]]
 name = "concord-telemetry-derive"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=2f150d8f8a67604ace6f6b6c33678ea57ecbd979#2f150d8f8a67604ace6f6b6c33678ea57ecbd979"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=1c95b776ca932cff59fd24de23a8700c3ae8b4aa#1c95b776ca932cff59fd24de23a8700c3ae8b4aa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -766,7 +766,7 @@ dependencies = [
 [[package]]
 name = "concord-telemetry-proto"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=2f150d8f8a67604ace6f6b6c33678ea57ecbd979#2f150d8f8a67604ace6f6b6c33678ea57ecbd979"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=1c95b776ca932cff59fd24de23a8700c3ae8b4aa#1c95b776ca932cff59fd24de23a8700c3ae8b4aa"
 
 [[package]]
 name = "concurrent-queue"
@@ -1386,7 +1386,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3352,7 +3352,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3939,7 +3939,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "once_cell",
@@ -3959,7 +3959,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -3972,7 +3972,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -4523,7 +4523,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5010,7 +5010,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5182,7 +5182,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

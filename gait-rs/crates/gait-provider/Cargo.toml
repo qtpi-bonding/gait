@@ -11,7 +11,7 @@ local = ["dep:gait-local"]
 local-native = ["local", "dep:gait-llama-cpp", "gait-llama-cpp/native"]
 
 [dependencies]
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "2f150d8f8a67604ace6f6b6c33678ea57ecbd979", optional = true }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "1c95b776ca932cff59fd24de23a8700c3ae8b4aa", optional = true }
 gait-events = { path = "../gait-events", optional = true }
 gait-types        = { path = "../gait-types" }
 gait-auth         = { path = "../gait-auth" }
@@ -32,6 +32,6 @@ gait-local        = { path = "../gait-local", optional = true }
 gait-llama-cpp    = { path = "../gait-llama-cpp", optional = true }
 
 [dev-dependencies]
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "2f150d8f8a67604ace6f6b6c33678ea57ecbd979", features = ["testing"] }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "1c95b776ca932cff59fd24de23a8700c3ae8b4aa", features = ["testing"] }
 gait-events = { path = "../gait-events" }
 tokio             = { version = "1", features = ["test-util"] }
