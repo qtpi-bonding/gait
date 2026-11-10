@@ -14,37 +14,14 @@ pub fn service_for_argv(arg1: Option<&str>, default: &'static str) -> &'static s
     }
 }
 
-/// The baggage keys gait carries on spans as labels.
-#[cfg(feature = "telemetry")]
-const LABEL_KEYS: [&str; 9] = [
-    "action_id",
-    "agent_id",
-    "turn_id",
-    "session_id",
-    "delivery_id",
-    "request_id",
-    "message_id",
-    "instance_id",
-    "machine_id",
-];
-
 /// Puts the labels of a baggage header on `span`. `carrier::link_from` links a
 /// span without adopting the linked span's labels; a span that stands for the
 /// linked work (an answer, a daemon wake) adds them itself, here.
 #[cfg(feature = "telemetry")]
 pub fn adopt_labels(span: &tracing::Span, baggage: Option<&str>) {
-    let Some(baggage) = baggage else { return };
-    span.in_scope(|| {
-        for member in baggage.split(',') {
-            let Some((key, value)) = member.split_once('=') else { continue };
-            let value = value.split(';').next().unwrap_or("").trim();
-            if let Some(label) = LABEL_KEYS.iter().find(|label| **label == key.trim()) {
-                if !value.is_empty() {
-                    concord_telemetry::context::add(label, value);
-                }
-            }
-        }
-    });
+    if let Some(baggage) = baggage {
+        span.in_scope(|| concord_telemetry::context::add_from_baggage(baggage));
+    }
 }
 
 #[cfg(feature = "telemetry")]
