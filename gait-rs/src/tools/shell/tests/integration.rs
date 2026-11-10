@@ -563,7 +563,7 @@ async fn streams_output_to_file_before_completion() {
     let handle = tokio::spawn(async move {
         tool.execute(
             serde_json::json!({
-                "cmd": format!("echo {sentinel_clone}_early; sleep 0.4; echo {sentinel_clone}_late"),
+                "cmd": format!("echo {sentinel_clone}_early; sleep 2; echo {sentinel_clone}_late"),
                 "reason": "test streaming"
             }),
             &crate::Recorder::detached(),
@@ -572,26 +572,32 @@ async fn streams_output_to_file_before_completion() {
         .unwrap()
     });
 
-    // Give the command time to emit the first line but not finish.
-    sleep(Duration::from_millis(100)).await;
-
-    // Find shell-*.txt files that contain our unique sentinel marker.
-    // Because the sentinel is a UUID-based string, no other test's file can match.
+    // Poll for the first line until it shows up or the command ends: the
+    // spawn time of `sh` varies (a cold binary can be slow), so no fixed wait
+    // is right. The command sleeps 2 s after the first line, so seeing it
+    // before `handle` finishes still proves the output streams.
     let early_marker = format!("{sentinel}_early");
     let mut contents = String::new();
-    if let Ok(entries) = std::fs::read_dir(&output_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if !name.to_string_lossy().starts_with("shell-") {
-                continue;
-            }
-            let c = std::fs::read_to_string(entry.path()).unwrap_or_default();
-            if c.contains(&early_marker) {
-                contents = c;
-                break;
+    let deadline = std::time::Instant::now() + Duration::from_millis(1500);
+    while std::time::Instant::now() < deadline && !handle.is_finished() {
+        if let Ok(entries) = std::fs::read_dir(&output_dir) {
+            for entry in entries.flatten() {
+                if !entry.file_name().to_string_lossy().starts_with("shell-") {
+                    continue;
+                }
+                let c = std::fs::read_to_string(entry.path()).unwrap_or_default();
+                if c.contains(&early_marker) {
+                    contents = c;
+                    break;
+                }
             }
         }
+        if contents.contains(&early_marker) {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
     }
+    assert!(!handle.is_finished(), "the command finished before its first line was seen");
 
     assert!(
         contents.contains(&early_marker),
