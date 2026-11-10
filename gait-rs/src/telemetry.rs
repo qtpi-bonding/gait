@@ -14,6 +14,39 @@ pub fn service_for_argv(arg1: Option<&str>, default: &'static str) -> &'static s
     }
 }
 
+/// The baggage keys gait carries on spans as labels.
+#[cfg(feature = "telemetry")]
+const LABEL_KEYS: [&str; 9] = [
+    "action_id",
+    "agent_id",
+    "turn_id",
+    "session_id",
+    "delivery_id",
+    "request_id",
+    "message_id",
+    "instance_id",
+    "machine_id",
+];
+
+/// Puts the labels of a baggage header on `span`. `carrier::link_from` links a
+/// span without adopting the linked span's labels; a span that stands for the
+/// linked work (an answer, a daemon wake) adds them itself, here.
+#[cfg(feature = "telemetry")]
+pub fn adopt_labels(span: &tracing::Span, baggage: Option<&str>) {
+    let Some(baggage) = baggage else { return };
+    span.in_scope(|| {
+        for member in baggage.split(',') {
+            let Some((key, value)) = member.split_once('=') else { continue };
+            let value = value.split(';').next().unwrap_or("").trim();
+            if let Some(label) = LABEL_KEYS.iter().find(|label| **label == key.trim()) {
+                if !value.is_empty() {
+                    concord_telemetry::context::add(label, value);
+                }
+            }
+        }
+    });
+}
+
 #[cfg(feature = "telemetry")]
 static GUARD: std::sync::Mutex<Option<concord_telemetry::Guard>> = std::sync::Mutex::new(None);
 
@@ -93,5 +126,28 @@ mod tests {
         assert_eq!(service_for_argv(Some("__local-runner"), "gait"), "gait-local-runner");
         assert_eq!(service_for_argv(Some("run"), "gait-min"), "gait-min");
         assert_eq!(service_for_argv(None, "gait"), "gait");
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod adopt_tests {
+    #[test]
+    fn labels_in_a_baggage_header_land_on_the_span_and_others_do_not() {
+        let _capture = concord_telemetry::testing::capture_exclusive();
+        let span = tracing::info_span!("adopt-probe");
+        super::adopt_labels(&span, Some("action_id=A1, request_id=mm-9;prop=1,other=x,turn_id="));
+        drop(span);
+        let finished = concord_telemetry::testing::spans()
+            .into_iter()
+            .rev()
+            .find(|s| s.name == "adopt-probe")
+            .expect("span finished");
+        let has = |key: &str, value: &str| {
+            finished.attributes.iter().any(|kv| kv.key.as_str() == key && kv.value.to_string() == value)
+        };
+        assert!(has("action_id", "A1"), "{:?}", finished.attributes);
+        assert!(has("request_id", "mm-9"));
+        assert!(!finished.attributes.iter().any(|kv| kv.key.as_str() == "other"));
+        assert!(!finished.attributes.iter().any(|kv| kv.key.as_str() == "turn_id"));
     }
 }

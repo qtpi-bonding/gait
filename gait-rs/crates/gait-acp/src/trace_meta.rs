@@ -29,7 +29,10 @@ pub fn handler_span(span: Span, meta: Option<&serde_json::Map<String, serde_json
 /// answerer's carrier and not parented on it.
 pub fn answer_span(kind: &'static str, meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Span {
     let span = tracing::info_span!(parent: None, "acp.answer", answer.kind = kind);
-    carrier::link_from(&span, &carrier_from_meta(meta));
+    let answerer = carrier_from_meta(meta);
+    carrier::link_from(&span, &answerer);
+    // The link no longer adopts the answerer's labels: add them.
+    gait_core::telemetry::adopt_labels(&span, answerer.baggage.as_deref());
     span
 }
 

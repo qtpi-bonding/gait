@@ -9,7 +9,7 @@ repository.workspace = true
 identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784" }
 message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "2c7f1ff037aa02c2e850a7aa4d7422304d139737" }
 coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d" }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "1c95b776ca932cff59fd24de23a8700c3ae8b4aa", optional = true }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6", optional = true }
 gait-proto    = { path = "../gait-proto" }
 gait-identity = { path = "../gait-identity" }
 gait-types    = { path = "../gait-types" }

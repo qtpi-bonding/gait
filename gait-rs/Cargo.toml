@@ -41,7 +41,7 @@ tokio-stream       = "0.1"
 tokio-util         = "0.7"
 thiserror          = "1"
 coded-error        = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d" }
-concord-telemetry  = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "1c95b776ca932cff59fd24de23a8700c3ae8b4aa", optional = true }
+concord-telemetry  = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6", optional = true }
 tracing            = { version = "0.1", optional = true }
 eventsource-stream = "0.2"
 async-stream       = "0.3"
@@ -110,7 +110,7 @@ gait-auth = { path = "crates/gait-auth", features = ["testing"] }
 # gait-state behind `feature = "testing"`; enable it for the test build only.
 gait-state = { path = "crates/gait-state", features = ["testing"] }
 gait-repl = { path = "crates/gait-repl", features = ["dev-harness"] }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "1c95b776ca932cff59fd24de23a8700c3ae8b4aa", features = ["testing"] }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6", features = ["testing"] }
 
 [[bin]]
 name = "mock_brain"

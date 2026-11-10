@@ -249,6 +249,9 @@ pub(crate) fn note_daemon_wake(update: &crate::proto::gait::log::v1::DaemonUpdat
                 baggage: update.baggage.clone(),
             },
         );
+        // `link_from` does not adopt the wake's labels; the span is never
+        // entered, so they are added inside it.
+        crate::telemetry::adopt_labels(&span, update.baggage.as_deref());
     }
     #[cfg(not(feature = "telemetry"))]
     let _ = update;
