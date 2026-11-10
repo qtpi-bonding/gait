@@ -155,7 +155,7 @@ message ModelCallFailed {
   string turn_id = 3;
   string model = 4;             // "provider/model-id"
   uint32 attempt = 5;           // 1-based
-  uint32 max_attempts = 6;
+  uint32 attempt_max = 6;
   ModelFailureKind kind = 7;
   uint32 http_status = 8;       // 0 when the failure was not an HTTP status
   uint64 retry_after_ms = 9;    // the server's Retry-After; 0 when it sent none

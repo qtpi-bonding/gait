@@ -41,16 +41,16 @@ fn respond(outcome: hand_response::Outcome) -> ! {
         {
             eprintln!("[hand] stdout write failed: {e}");
         }
-        std::process::exit(1);
+        crate::trace::exit(1);
     }
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    std::process::exit(0);
+    crate::trace::exit(0);
 }
 
-fn respond_err(msg: impl Into<String>) -> ! {
-    respond(hand_response::Outcome::Error(HandError {
+fn err_outcome(msg: impl Into<String>) -> hand_response::Outcome {
+    hand_response::Outcome::Error(HandError {
         message: msg.into(),
-    }))
+    })
 }
 
 // ── sigterm guard ─────────────────────────────────────────────────────────────
@@ -97,21 +97,32 @@ pub struct HandConfig {
 pub async fn run_hand(config: HandConfig) {
     #[cfg(unix)]
     install_sigterm_guard();
+    // The body runs under the hand's span and finishes (closing the span)
+    // before `respond` exits the process, so the span is exported.
+    let span = crate::trace::hand_span(&config.tool, &config.session);
+    let outcome = crate::trace::within(span.clone(), hand_body(config)).await;
+    if let hand_response::Outcome::Error(error) = &outcome {
+        crate::trace::record_error_code(&span, &anyhow::anyhow!(error.message.clone()));
+    }
+    drop(span);
+    respond(outcome)
+}
 
+async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     // Read binary Impulse from stdin.
     let mut buf = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
-        respond_err(format!("stdin read failed: {e}"));
+        return err_outcome(format!("stdin read failed: {e}"));
     }
     let impulse = match Impulse::decode(buf.as_slice()) {
         Ok(r) => r,
-        Err(e) => respond_err(format!("bad Impulse: {e}")),
+        Err(e) => return err_outcome(format!("bad Impulse: {e}")),
     };
     let declared_output_mode = match ProtoOutputCaptureMode::try_from(impulse.output_capture_mode) {
         Ok(ProtoOutputCaptureMode::Returned) => crate::types::OutputCaptureMode::Returned,
         Ok(ProtoOutputCaptureMode::Spool) => crate::types::OutputCaptureMode::Spool,
         Ok(ProtoOutputCaptureMode::Unspecified) | Err(_) => {
-            respond_err("invalid or unspecified output capture mode")
+            return err_outcome("invalid or unspecified output capture mode")
         }
     };
 
@@ -167,12 +178,12 @@ pub async fn run_hand(config: HandConfig) {
     let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
     let tool = match tools.iter().find(|t| t.name() == config.tool) {
         Some(t) => t,
-        None => respond_err(format!("unknown tool: {}", config.tool)),
+        None => return err_outcome(format!("unknown tool: {}", config.tool)),
     };
     if tool.output_capture_mode() != declared_output_mode
         || declared_output_mode != supplied_output_mode
     {
-        respond_err(format!(
+        return err_outcome(format!(
             "output capture mismatch for {}: tool declares {:?}, impulse declares {:?}, hand received {:?}",
             config.tool,
             tool.output_capture_mode(),
@@ -417,7 +428,7 @@ pub async fn run_hand(config: HandConfig) {
         sandbox_denied,
         is_error: None,
     };
-    respond(hand_response::Outcome::Feedback(feedback));
+    hand_response::Outcome::Feedback(feedback)
 }
 
 // ── build_scope_from_impulse ──────────────────────────────────────────────────

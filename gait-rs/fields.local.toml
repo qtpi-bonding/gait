@@ -41,3 +41,12 @@ error_class = { type = "str", meaning = "Class of the error a failed turn ended 
 acp_session_id = { type = "str", meaning = "Session id of a gait ACP session (the same value as gait_session_id); apart from the upstream session id" }
 gait_session_id = { type = "str", meaning = "Id of one gait session; apart from the upstream session id" }
 provider_request_id = { type = "str", meaning = "The model provider's x-request-id for one call; apart from request_id" }
+decision = { type = "str", meaning = "Decision a permission was given" }
+scope = { type = "str", meaning = "Scope a permission grant covers" }
+persisted = { type = "bool", meaning = "Whether a permission decision was saved beyond this turn" }
+disposition = { type = "str", meaning = "What became of a session when it was disposed" }
+step = { type = "int", meaning = "Model step number within a turn" }
+ok = { type = "bool", meaning = "Whether a tool call succeeded" }
+mode = { type = "str", meaning = "Session mode" }
+daemon = { type = "str", meaning = "Name of a detached daemon" }
+"answer.kind" = { type = "str", meaning = "What a received answer replies to" }

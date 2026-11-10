@@ -63,13 +63,66 @@ pub(crate) fn report_failed(error: &ProviderError, attempt: u32, max_attempts: u
         turn_id: ctx.turn_id,
         model: ctx.model,
         attempt,
-        max_attempts,
+        attempt_max: max_attempts,
         kind: kind as i32,
         http_status,
         retry_after_ms: error.retry_after().map_or(0, |d| d.as_millis() as u64),
         provider_request_id: request_id,
         will_retry,
     });
+}
+
+/// The span of one model call attempt, a child of the step that made it.
+#[cfg(feature = "telemetry")]
+pub(crate) type CallSpan = tracing::Span;
+#[cfg(not(feature = "telemetry"))]
+#[derive(Clone)]
+pub(crate) struct CallSpan;
+
+pub(crate) fn call_span(attempt: u32) -> CallSpan {
+    #[cfg(feature = "telemetry")]
+    {
+        let model = CALL.try_with(|ctx| ctx.model.clone()).unwrap_or_default();
+        tracing::info_span!(
+            "gait.provider.call",
+            model,
+            attempt,
+            http_status = tracing::field::Empty,
+            error.code = tracing::field::Empty,
+            error.class = tracing::field::Empty,
+        )
+    }
+    #[cfg(not(feature = "telemetry"))]
+    {
+        let _ = attempt;
+        CallSpan
+    }
+}
+
+/// Runs `fut` inside `span`.
+pub(crate) async fn within<F: Future>(span: CallSpan, fut: F) -> F::Output {
+    #[cfg(feature = "telemetry")]
+    return tracing::Instrument::instrument(fut, span).await;
+    #[cfg(not(feature = "telemetry"))]
+    {
+        let _ = span;
+        fut.await
+    }
+}
+
+/// Records a failed attempt's code (and HTTP status) on its span.
+pub(crate) fn record_failure(span: &CallSpan, error: &ProviderError) {
+    #[cfg(feature = "telemetry")]
+    {
+        use coded_error::CodedError;
+        span.record("error.code", error.code());
+        span.record("error.class", error.class().as_str());
+        if let ProviderError::Http { status, .. } = error {
+            span.record("http_status", u64::from(*status));
+        }
+    }
+    #[cfg(not(feature = "telemetry"))]
+    let _ = (span, error);
 }
 
 #[cfg(not(feature = "telemetry"))]
@@ -97,7 +150,7 @@ mod tests {
         let event = capture.single_event_where::<ModelCallFailed>(|e| e.gait_session_id == "s-429");
         assert_eq!(event.kind, K::HttpStatus as i32);
         assert_eq!((event.http_status, event.retry_after_ms), (429, 7000));
-        assert_eq!((event.attempt, event.max_attempts, event.will_retry), (1, 3, true));
+        assert_eq!((event.attempt, event.attempt_max, event.will_retry), (1, 3, true));
         assert_eq!((event.provider_request_id.as_str(), event.model.as_str()), ("req_1", "openai/gpt-x"));
     }
 
@@ -129,5 +182,32 @@ mod tests {
         let event = capture.single_event_where::<ModelCallFailed>(|e| e.attempt == 3 && e.gait_session_id.is_empty());
         assert_eq!(event.kind, K::TimeoutTtfb as i32);
         assert!(!event.will_retry);
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod call_span_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_attempt_records_its_code_and_status_on_the_span() {
+        let _capture = concord_telemetry::testing::capture_exclusive();
+        let span = call_span(2);
+        record_failure(
+            &span,
+            &ProviderError::Http { status: 429, body: String::new(), retry_after: None, request_id: None },
+        );
+        drop(span);
+        let finished = concord_telemetry::testing::spans()
+            .into_iter()
+            .rev()
+            .find(|s| s.name == "gait.provider.call")
+            .expect("the call span finished");
+        let value = |key: &str| {
+            finished.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.to_string())
+        };
+        assert_eq!(value("attempt").as_deref(), Some("2"));
+        assert_eq!(value("http_status").as_deref(), Some("429"));
+        assert_eq!(value("error.code").as_deref(), Some("gait.provider.http"));
     }
 }

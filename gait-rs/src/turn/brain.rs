@@ -442,6 +442,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                         (Some(draft), failed)
                     }
                     Ok(Err(e)) => {
+                        crate::trace::record_error_code(&brain_span, &e);
                         sink.diagnostic(Diag::Error, &format!("error: {e}"));
                         (None, true)
                     }

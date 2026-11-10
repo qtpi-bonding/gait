@@ -96,6 +96,8 @@ pub(crate) fn brain_span(session_id: &str) -> Span {
             "gait.brain",
             gait_session_id = %session_id,
             turn_id = %std::env::var(TURN_ID_ENV).unwrap_or_default(),
+            error.code = tracing::field::Empty,
+            error.class = tracing::field::Empty,
         );
         concord_telemetry::propagation::set_parent_from_env(&span);
         span
@@ -105,6 +107,41 @@ pub(crate) fn brain_span(session_id: &str) -> Span {
         let _ = session_id;
         Span
     }
+}
+
+/// The root span of a hand process: it continues the spine's `gait.tool` span
+/// through `TRACEPARENT`/`BAGGAGE`. It is exported only when the hand's seal
+/// lets the process reach the OTLP endpoint (the session's network policy).
+pub(crate) fn hand_span(tool: &str, session_id: &str) -> Span {
+    #[cfg(feature = "telemetry")]
+    {
+        let span = tracing::info_span!(
+            "gait.hand",
+            tool,
+            gait_session_id = %session_id,
+            error.code = tracing::field::Empty,
+            error.class = tracing::field::Empty,
+        );
+        concord_telemetry::propagation::set_parent_from_env(&span);
+        span
+    }
+    #[cfg(not(feature = "telemetry"))]
+    {
+        let _ = (tool, session_id);
+        Span
+    }
+}
+
+/// Records the code of `error` on `span` (`error.code`, `error.class`).
+pub(crate) fn record_error_code(span: &Span, error: &anyhow::Error) {
+    #[cfg(feature = "telemetry")]
+    {
+        let facts = coded_error::facts_anyhow(error);
+        span.record("error.code", facts.code);
+        span.record("error.class", facts.class.as_str());
+    }
+    #[cfg(not(feature = "telemetry"))]
+    let _ = (span, error);
 }
 
 /// Ends the process after exporting what is buffered. `std::process::exit`
@@ -126,7 +163,7 @@ pub(crate) fn step_span(step: usize) -> Span {
     }
 }
 
-/// The span of one tool call. `ok` and `error_code` are recorded when it ends.
+/// The span of one tool call. `ok` and `error.code` are recorded when it ends.
 pub(crate) fn tool_span(tool: &str, session_id: &str, turn_id: &str) -> Span {
     #[cfg(feature = "telemetry")]
     return tracing::info_span!(
@@ -135,7 +172,7 @@ pub(crate) fn tool_span(tool: &str, session_id: &str, turn_id: &str) -> Span {
         gait_session_id = %session_id,
         turn_id = %turn_id,
         ok = tracing::field::Empty,
-        error_code = tracing::field::Empty,
+        error.code = tracing::field::Empty,
     );
     #[cfg(not(feature = "telemetry"))]
     {
@@ -166,7 +203,7 @@ pub(crate) fn note_tool_outcome(code: Option<&str>) {
         let span = tracing::Span::current();
         span.record("ok", code.is_none());
         if let Some(code) = code {
-            span.record("error_code", code);
+            span.record("error.code", code);
         }
     }
     #[cfg(not(feature = "telemetry"))]
@@ -255,5 +292,25 @@ mod tests {
         assert_eq!(turn_id_from_baggage("action_id=a1"), None);
         assert_eq!(turn_id_from_baggage("turn_id="), None);
         assert_eq!(turn_id_from_baggage(""), None);
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    #[serial_test::serial]
+    fn the_hand_span_continues_the_trace_in_its_environment() {
+        let _capture = concord_telemetry::testing::capture_exclusive();
+        std::env::set_var("TRACEPARENT", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+        let span = super::hand_span("shell", "s-hand");
+        std::env::remove_var("TRACEPARENT");
+        super::record_error_code(&span, &anyhow::anyhow!("plain"));
+        drop(span);
+        let finished = concord_telemetry::testing::spans()
+            .into_iter()
+            .rev()
+            .find(|s| s.name == "gait.hand")
+            .expect("the hand span finished");
+        assert_eq!(finished.span_context.trace_id().to_string(), "0af7651916cd43dd8448eb211c80319c");
+        assert_eq!(finished.parent_span_id.to_string(), "b7ad6b7169203331");
+        assert!(finished.attributes.iter().any(|kv| kv.key.as_str() == "error.code"));
     }
 }

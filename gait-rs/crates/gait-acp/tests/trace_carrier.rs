@@ -273,6 +273,12 @@ async fn permission_answer_links_not_parents() {
     assert_ne!(answer.span_context.trace_id().to_string(), trace_id_of(&sent), "an answer is never parented on the answerer");
     assert_eq!(answer.links.links.len(), 1);
     assert_eq!(answer.links.links[0].span_context.trace_id().to_string(), trace_id_of(&sent));
+
+    // The request gait sent to the client has a span of its own, under the prompt.
+    let request = finished!("acp.request_permission");
+    let prompt = finished!("acp.prompt");
+    assert_eq!(request.parent_span_id, prompt.span_context.span_id(), "the permission request sits under the prompt");
+    assert!(request.attributes.iter().any(|kv| kv.key.as_str() == "acp_session_id"));
 }
 
 macro_rules! attr {

@@ -496,7 +496,13 @@ impl AcpTurnSource {
             schema,
         ));
         let req = CreateElicitationRequest::new(mode, message);
-        let resp = match self.cx.send_request(req).block_task().await {
+        let span = tracing::info_span!(
+            "acp.elicitation",
+            acp_session_id = %self.session_id.0,
+            error.code = tracing::field::Empty,
+                error.class = tracing::field::Empty
+        );
+        let resp = match client_request(span, self.cx.send_request(req).block_task()).await {
             Ok(resp) => resp,
             Err(e) => {
                 answer_transport_failed("elicitation", &e);
@@ -544,7 +550,13 @@ impl AcpTurnSource {
         );
         let req =
             RequestPermissionRequest::new(self.session_id.clone(), tool_call, vec![once, session]);
-        let resp = match self.cx.send_request(req).block_task().await {
+        let span = tracing::info_span!(
+            "acp.sandbox_unlock",
+            acp_session_id = %self.session_id.0,
+            error.code = tracing::field::Empty,
+                error.class = tracing::field::Empty
+        );
+        let resp = match client_request(span, self.cx.send_request(req).block_task()).await {
             Ok(resp) => resp,
             Err(e) => {
                 answer_transport_failed("unlock", &e);
@@ -570,6 +582,22 @@ impl AcpTurnSource {
 
 /// A transport failure while waiting for the client's answer: the turn is
 /// abandoned, and the failure is recorded with its code.
+/// Awaits an outbound request to the client under `span` (a child of the
+/// running `acp.prompt`), recording the transport failure's code on it.
+async fn client_request<T>(
+    span: tracing::Span,
+    request: impl std::future::Future<Output = Result<T, agent_client_protocol::Error>>,
+) -> Result<T, agent_client_protocol::Error> {
+    let result = tracing::Instrument::instrument(request, span.clone()).await;
+    if result.is_err() {
+        use coded_error::CodedError;
+        let failure = crate::error::PromptError::AnswerTransportFailed(String::new());
+        span.record("error.code", failure.code());
+        span.record("error.class", failure.class().as_str());
+    }
+    result
+}
+
 fn answer_transport_failed(kind: &str, error: &agent_client_protocol::Error) {
     concord_telemetry::error_anyhow!(
         &coded_error::into_anyhow(crate::error::PromptError::AnswerTransportFailed(format!(
@@ -694,7 +722,15 @@ impl TurnSource for AcpTurnSource {
                         // Our own session/cancel tripped the token: abandon. The completion
                         // path sees was_cancelled() and resolves StopReason::Cancelled.
                         _ = self.cancel.cancelled() => return None,
-                        r = self.cx.send_request(req).block_task() => match r {
+                        r = client_request(
+                            tracing::info_span!(
+                                "acp.request_permission",
+                                acp_session_id = %self.session_id.0,
+                                error.code = tracing::field::Empty,
+                error.class = tracing::field::Empty
+                            ),
+                            self.cx.send_request(req).block_task(),
+                        ) => match r {
                             Ok(r) => r,
                             // Transport/connection error: abandon the turn (drain reaps it).
                             Err(e) => {

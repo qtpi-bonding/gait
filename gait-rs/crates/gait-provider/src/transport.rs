@@ -103,11 +103,20 @@ impl ProviderTransport {
         &self,
         request: JsonRequest,
     ) -> Result<T, ProviderError> {
-        tokio::time::timeout(self.config.json_timeout, self.post_json_inner(request))
-            .await
-            .map_err(|_| ProviderError::Timeout {
-                phase: TimeoutPhase::Request,
-            })?
+        let span = crate::telemetry::call_span(1);
+        let result = crate::telemetry::within(
+            span.clone(),
+            tokio::time::timeout(self.config.json_timeout, self.post_json_inner(request)),
+        )
+        .await
+        .map_err(|_| ProviderError::Timeout {
+            phase: TimeoutPhase::Request,
+        })
+        .and_then(|result| result);
+        if let Err(error) = &result {
+            crate::telemetry::record_failure(&span, error);
+        }
+        result
     }
 
     async fn post_json_inner<T: DeserializeOwned>(
@@ -428,10 +437,11 @@ where
     let (first, rest): (Option<eventsource_stream::Event>, std::pin::Pin<Box<S>>) = loop {
         // Reset the phase clock each attempt (watchdog discipline, parity with retry_phase1).
         gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::LlmRequest);
+        let call_span = crate::telemetry::call_span(attempt + 1);
         let attempt_res: Result<
             (Option<eventsource_stream::Event>, std::pin::Pin<Box<S>>),
             ProviderError,
-        > = async {
+        > = crate::telemetry::within(call_span.clone(), async {
             // 1) Connect (POST + header check) — BOUNDED, else a header-stall hangs forever.
             let stream = tokio::select! {
                 biased;
@@ -457,8 +467,11 @@ where
                     Ok(Some(Ok(first))) => Ok((Some(first), stream)),
                 }
             }
-        }
+        })
         .await;
+        if let Err(e) = &attempt_res {
+            crate::telemetry::record_failure(&call_span, e);
+        }
 
         match attempt_res {
             Ok(pair) => break pair,
