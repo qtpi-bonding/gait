@@ -144,20 +144,37 @@ impl FailureCause {
 }
 
 /// Closes a turn that was started but never produced a result: writes its
-/// `Failed` `TurnResult` and ends the run. Does nothing when the tail holds no
+/// `Failed` `TurnResult` and ends the run. Returns the turn's start time (ms)
+/// when it closed one; does nothing, and returns `None`, when the tail holds no
 /// unmatched `TurnStart` (the turn already finished and wrote its own result).
 pub(crate) fn fail_open_turn(
     log: &crate::turn::SessionLog,
     git: &crate::turn::SessionGit,
     codebase: &std::path::Path,
     cause: &FailureCause,
-) -> anyhow::Result<()> {
-    if let Some(active) = latest_active_run(&log.events())? {
-        if active.unmatched_turn.is_some() {
-            repair_incomplete_tail(log, git, codebase, &active, cause)?;
-        }
-    }
-    Ok(())
+) -> anyhow::Result<Option<u64>> {
+    let events = log.events();
+    let Some(active) = latest_active_run(&events)? else {
+        return Ok(None);
+    };
+    let Some(unmatched) = &active.unmatched_turn else {
+        return Ok(None);
+    };
+    let started_ms = turn_start_ms(&events, active.index, unmatched.index).unwrap_or_else(wall_ms);
+    repair_incomplete_tail(log, git, codebase, &active, cause)?;
+    Ok(Some(started_ms))
+}
+
+/// When the turn `(run, turn)` started: its `TurnStart` event's timestamp.
+fn turn_start_ms(events: &[Event], run: u32, turn: u32) -> Option<u64> {
+    events
+        .iter()
+        .find(|event| {
+            event.run == Some(run)
+                && event.turn == Some(turn)
+                && matches!(crate::turn::event_kind(event), Some(payload::Kind::TurnStart(_)))
+        })
+        .map(|event| event.ts)
 }
 
 fn repair_incomplete_tail(
@@ -173,12 +190,15 @@ fn repair_incomplete_tail(
     let mut end_seq = log.last_event().map_or(active.start_seq, |event| event.seq);
     let final_outcome = if let Some(unmatched) = &active.unmatched_turn {
         let now = wall_ms();
+        // The turn's real start, so its result and its telemetry agree on it.
+        let started_ms =
+            turn_start_ms(&log.events(), active.index, unmatched.index).unwrap_or(now);
         let result = pb::TurnResult {
             turn_id: unmatched.turn_id.clone(),
             index: unmatched.index,
             usage: Some(Default::default()),
             timing: Some(pb::ExecutionTiming {
-                started_ms: now,
+                started_ms,
                 ended_ms: Some(now),
                 active_duration: Some(Default::default()),
             }),
@@ -829,13 +849,22 @@ mod tests {
         let log = log_with_started_turn();
         let codebase = TempDir::new().unwrap();
         let error = coded_error::into_anyhow(crate::turn::spine::error::SpineError::BrainDied);
-        fail_open_turn(
+        let started = fail_open_turn(
             &log,
             &crate::turn::SessionGit::null(),
             codebase.path(),
             &FailureCause::early_failure(&error),
         )
         .unwrap();
+        let started = started.expect("it reports the start time of the turn it closed");
+        let result_started = log
+            .events()
+            .iter()
+            .find_map(|event| match crate::turn::event_kind(event) {
+                Some(payload::Kind::TurnResult(result)) => result.timing.as_ref().map(|t| t.started_ms),
+                _ => None,
+            });
+        assert_eq!(result_started, Some(started), "the result and the report agree on the start");
 
         let failed = failed_results(&log);
         assert_eq!(failed.len(), 1);
@@ -857,7 +886,9 @@ mod tests {
         let cause = FailureCause::recovery();
         fail_open_turn(&log, &crate::turn::SessionGit::null(), codebase.path(), &cause).unwrap();
         let before = log.events().len();
-        fail_open_turn(&log, &crate::turn::SessionGit::null(), codebase.path(), &cause).unwrap();
+        let again =
+            fail_open_turn(&log, &crate::turn::SessionGit::null(), codebase.path(), &cause).unwrap();
+        assert!(again.is_none());
         assert_eq!(log.events().len(), before, "no second result");
         assert_eq!(failed_results(&log).len(), 1);
     }

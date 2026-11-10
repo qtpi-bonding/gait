@@ -52,6 +52,18 @@ message TurnCompleted {
   string turn_id = 11;
 }
 
+// A redelivery of already-delivered messages ran a new turn over the existing
+// log because the turn that first ran over them failed.
+message RedeliveryRetried {
+  string source_record_id = 1;
+  string session_id = 2;
+  string delivery_id = 3;
+  string deliverer = 4;
+  uint64 failed_started_ms = 5;   // started_ms of the failed turn's TurnCompleted
+  string error_code = 6;          // the failed turn's code; empty when it carried none
+  string error_class = 7;
+}
+
 message AgentSpawned {
   string source_record_id = 1;
   string session_id = 2;

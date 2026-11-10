@@ -311,8 +311,24 @@ fn close_unfinished_turn(
             &crate::turn::run_lifecycle::FailureCause::early_failure(error),
         )
     });
-    if let Err(failure) = closed {
-        super::error::record(super::error::SpineError::LogRelayFailed(failure.into()), session_id);
+    match closed {
+        // The turn never reached its brain, so nothing else reports its end:
+        // say it as a failed `TurnCompleted`, like any other failed turn.
+        #[cfg(feature = "telemetry")]
+        Ok(Some(started_ms)) => emit_turn_completed(
+            session_id,
+            &crate::trace::turn_id(session_id, started_ms),
+            "",
+            &crate::proto::gait::sandbox::v1::FinalizedTurn {
+                outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
+                started_ms,
+                ..Default::default()
+            },
+        ),
+        Ok(_) => {}
+        Err(failure) => {
+            super::error::record(super::error::SpineError::LogRelayFailed(failure.into()), session_id);
+        }
     }
 }
 

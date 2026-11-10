@@ -34,3 +34,7 @@ finalized = { type = "bool", meaning = "Whether the turn finished cleanly" }
 tool = { type = "str", meaning = "Tool name" }
 dimension = { type = "str", meaning = "Sandbox dimension that was denied" }
 item_count = { type = "int", meaning = "Number of items in the request" }
+deliverer = { type = "str", meaning = "Principal id of the party that delivered a batch of messages" }
+failed_started_ms = { type = "int", meaning = "Start time of the failed turn a retry follows, in ms since the epoch" }
+error_code = { type = "str", meaning = "Stable code of the error a failed turn ended with" }
+error_class = { type = "str", meaning = "Class of the error a failed turn ended with" }

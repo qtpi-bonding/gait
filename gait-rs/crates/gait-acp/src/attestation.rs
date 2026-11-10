@@ -76,6 +76,8 @@ pub struct Attestor {
 /// A verified batch: its messages, and the confirmation to run once durable.
 pub struct VerifiedBatch {
     pub messages: Vec<VerifiedIncoming>,
+    delivery_id: String,
+    deliverer: String,
     confirmation: Confirmation,
 }
 
@@ -203,6 +205,8 @@ impl Attestor {
         }
         Ok(Some(VerifiedBatch {
             messages,
+            delivery_id: delivery.delivery_id().to_string(),
+            deliverer,
             confirmation: Confirmation { pending, state: self.state.clone(), seen, claim },
         }))
     }
@@ -229,6 +233,11 @@ fn ensure_own_devices(agent_dir: &Path, own_devices: &[PublicKey]) -> Result<()>
 impl VerifiedBatch {
     /// Ids of every message the delivery carried, including those already seen
     /// and dropped from `messages`.
+    /// The delivery's id (stable across resends) and who delivered it.
+    pub fn delivery(&self) -> (&str, &str) {
+        (&self.delivery_id, &self.deliverer)
+    }
+
     pub fn delivered_ids(&self) -> Vec<String> {
         self.confirmation.seen.iter().map(|(_, id)| id.clone()).collect()
     }

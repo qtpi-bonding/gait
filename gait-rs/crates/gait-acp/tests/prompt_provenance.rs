@@ -1078,8 +1078,15 @@ async fn redeliver(
 /// All-seen redelivery after a turn that succeeded: confirm and end, no turn.
 #[tokio::test]
 async fn all_seen_redelivery_after_a_successful_turn_runs_no_turn() {
+    let capture = concord_telemetry::testing::capture_exclusive();
     let fixture = Fixture::new();
     let events = redeliver(&fixture, bake_say_hi, fixture.meta(2, &["hello"])).await;
+    assert!(
+        capture
+            .events_where::<gait_events::gait::events::v1::RedeliveryRetried>(|e| e.delivery_id == "d2")
+            .is_empty(),
+        "no retry event when the turn had succeeded"
+    );
     assert_eq!(turn_starts(&events), 1, "no second turn: {events:?}");
     assert_eq!(verified(&events).len(), 1);
     assert_eq!(fixture.replay_last_seen(), Some(2));
@@ -1089,8 +1096,14 @@ async fn all_seen_redelivery_after_a_successful_turn_runs_no_turn() {
 /// log, and the message is not logged a second time.
 #[tokio::test]
 async fn all_seen_redelivery_after_a_failed_turn_runs_a_turn() {
+    let capture = concord_telemetry::testing::capture_exclusive();
     let fixture = Fixture::new();
     let events = redeliver(&fixture, bake_failed, fixture.meta(2, &["hello"])).await;
+    let retried = capture
+        .events_where::<gait_events::gait::events::v1::RedeliveryRetried>(|e| e.delivery_id == "d2");
+    assert_eq!(retried.len(), 1, "the retry is a typed event");
+    assert_eq!(retried[0].deliverer, fixture.deliverer.id.to_string());
+    assert!(!retried[0].session_id.is_empty());
     assert_eq!(turn_starts(&events), 2, "the retry ran a turn: {events:?}");
     assert_eq!(verified(&events).len(), 1, "the message is logged once");
     assert_eq!(assistant_texts(&events), 1, "the retry turn produced the reply");

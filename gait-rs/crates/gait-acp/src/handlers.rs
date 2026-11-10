@@ -373,6 +373,10 @@ pub fn build_agent_with_attestation(
                             Ok(Some(batch)) => {
                                 let owner = crate::attestation::owner_from_meta(&req.meta);
                                 let delivered_ids = batch.delivered_ids();
+                                let (delivery_id, deliverer) = {
+                                    let (id, by) = batch.delivery();
+                                    (id.to_owned(), by.to_owned())
+                                };
                                 let (messages, confirm) = batch.into_parts();
                                 // Every message was already delivered in an
                                 // earlier Delivery. Advance the sequence and
@@ -382,24 +386,28 @@ pub fn build_agent_with_attestation(
                                 // twice); otherwise there is nothing to run.
                                 if messages.is_empty() {
                                     let _ = confirm();
-                                    let unserved = gait_core::session::log::read_events(
+                                    let retry = gait_core::session::log::read_events(
                                         &gait_core::session::live::log_path(&gait_dir, &sid),
                                     )
+                                    .ok()
                                     .map(|events| {
                                         crate::last_turn::last_turn_over(&events, &delivered_ids)
-                                            == crate::last_turn::LastTurn::Unserved
-                                    })
-                                    .unwrap_or(false);
-                                    if !unserved {
+                                    });
+                                    let Some(crate::last_turn::LastTurn::Unserved(failed)) = retry
+                                    else {
                                         return responder.respond(PromptResponse::new(
                                             StopReason::EndTurn,
                                         ));
-                                    }
-                                    tracing::info!(
-                                        session_id = %sid,
-                                        item_count = delivered_ids.len(),
-                                        "gait_acp.redelivery_retry"
-                                    );
+                                    };
+                                    // Under the prompt span, so the retry turn's span is its sibling.
+                                    span.in_scope(|| {
+                                        crate::last_turn::emit_retried(
+                                            &sid,
+                                            &delivery_id,
+                                            &deliverer,
+                                            failed,
+                                        )
+                                    });
                                     TurnInput::Resume
                                 } else {
                                 let message_ids: Vec<String> = messages
