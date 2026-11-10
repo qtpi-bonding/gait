@@ -17,11 +17,19 @@ pub mod embed;
 pub mod launch;
 
 /// The environment a hand or a shell command inherits (everything else is
-/// cleared). `TRACEPARENT` and `BAGGAGE` are the only variables added for tracing.
+/// cleared). `TRACEPARENT` and `BAGGAGE` carry the trace; the OTLP endpoint,
+/// protocol and resource attributes let a command export its own spans to the
+/// same collector. `OTEL_EXPORTER_OTLP_HEADERS` is left out on purpose: it can
+/// carry auth tokens.
 pub(crate) fn env_passes_to_children(key: &str) -> bool {
     matches!(
         key,
-        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT" | "BAGGAGE"
+        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
+            | "TRACEPARENT"
+            | "BAGGAGE"
+            | "OTEL_EXPORTER_OTLP_ENDPOINT"
+            | "OTEL_EXPORTER_OTLP_PROTOCOL"
+            | "OTEL_RESOURCE_ATTRIBUTES"
     )
 }
 pub mod modes;

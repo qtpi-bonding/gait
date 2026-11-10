@@ -1324,3 +1324,37 @@ async fn baggage_env_reaches_shell_children() {
     let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
     assert!(output.contains("bag=action_id=A1"), "got: {output}");
 }
+
+/// A command can export its own spans to the collector: the endpoint, protocol
+/// and resource attributes pass, the headers (which can carry tokens) do not.
+#[tokio::test]
+#[serial_test::serial]
+async fn otlp_env_reaches_shell_children_but_not_the_headers() {
+    std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318");
+    std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf");
+    std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", "service.name=x");
+    std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "authorization=secret");
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "echo \"e=$OTEL_EXPORTER_OTLP_ENDPOINT p=$OTEL_EXPORTER_OTLP_PROTOCOL r=$OTEL_RESOURCE_ATTRIBUTES h=$OTEL_EXPORTER_OTLP_HEADERS\"",
+                "reason": "test"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    for k in [
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+    ] {
+        std::env::remove_var(k);
+    }
+    let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+    assert!(output.contains("e=http://127.0.0.1:4318 p=http/protobuf r=service.name=x h="), "got: {output}");
+    assert!(!output.contains("secret"), "got: {output}");
+}

@@ -474,6 +474,11 @@ mod tests {
     fn traceparent_is_the_only_new_env_var_passed() {
         assert!(crate::env_passes_to_children("TRACEPARENT"));
         assert!(crate::env_passes_to_children("BAGGAGE"));
+        assert!(crate::env_passes_to_children("OTEL_EXPORTER_OTLP_ENDPOINT"));
+        assert!(crate::env_passes_to_children("OTEL_EXPORTER_OTLP_PROTOCOL"));
+        assert!(crate::env_passes_to_children("OTEL_RESOURCE_ATTRIBUTES"));
+        assert!(!crate::env_passes_to_children("OTEL_EXPORTER_OTLP_HEADERS"));
+        assert!(!crate::env_passes_to_children("OTEL_EXPORTER_OTLP_TRACES_HEADERS"));
         assert!(!crate::env_passes_to_children("AWS_SECRET_ACCESS_KEY"));
         assert!(!crate::env_passes_to_children("GAIT_AGENT_DIR"));
         assert!(!crate::env_passes_to_children("OPENAI_API_KEY"));

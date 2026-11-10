@@ -271,12 +271,7 @@ impl Tool for ShellTool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .env_clear()
-            .envs(std::env::vars().filter(|(k, _)| {
-                matches!(
-                    k.as_str(),
-                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT" | "BAGGAGE"
-                )
-            }))
+            .envs(std::env::vars().filter(|(k, _)| crate::env_passes_to_children(k)))
             // Suppress colour output: programs check TERM and NO_COLOR before emitting ANSI.
             .env("TERM", "dumb")
             .env("NO_COLOR", "1");
@@ -457,12 +452,7 @@ impl ShellTool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .env_clear()
-            .envs(std::env::vars().filter(|(k, _)| {
-                matches!(
-                    k.as_str(),
-                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR" | "TRACEPARENT" | "BAGGAGE"
-                )
-            }))
+            .envs(std::env::vars().filter(|(k, _)| crate::env_passes_to_children(k)))
             .env("TERM", "dumb")
             .env("NO_COLOR", "1");
         crate::process::scope::configure_own_group(&mut cmd);
