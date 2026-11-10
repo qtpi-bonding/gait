@@ -21,6 +21,11 @@ pub enum SpineError {
     #[error("a brain event could not be written to the session log: {0}")]
     #[coded(code = "log_relay_failed", class = Infrastructure)]
     LogRelayFailed(#[source] BoxError),
+    // Only the telemetry build records a terminal failure.
+    #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
+    #[error("{0}")]
+    #[coded(code = "turn_failed_uncoded", class = Infrastructure)]
+    TurnFailedUncoded(String),
 }
 
 /// Records `error` as a coded error record tagged with the session, and returns
@@ -28,7 +33,7 @@ pub enum SpineError {
 pub(crate) fn raise(error: SpineError, session_id: &str) -> anyhow::Error {
     let error = coded_error::into_anyhow(error);
     #[cfg(feature = "telemetry")]
-    concord_telemetry::error_anyhow!(&error, source = "gait.spine", session_id = %session_id);
+    concord_telemetry::error_anyhow!(&error, source = "gait.spine", gait_session_id = %session_id);
     #[cfg(not(feature = "telemetry"))]
     let _ = session_id;
     error

@@ -123,7 +123,7 @@ pub(crate) fn emit_prompt_accepted(
 ) {
     concord_telemetry::event!(gait_events::gait::events::v1::PromptAccepted {
         source_record_id,
-        session_id,
+        gait_session_id: session_id,
         message_count: message_ids.len() as u32,
         message_ids,
         source: source as i32,
@@ -861,7 +861,7 @@ mod tests {
         direct_on_durable(session.clone())().unwrap();
         direct_on_durable(session.clone())().unwrap();
         let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(
-            |v| v.session_id == session,
+            |v| v.gait_session_id == session,
         );
         assert_eq!(events.len(), 2);
         assert_ne!(events[0].source_record_id, events[1].source_record_id);

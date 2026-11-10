@@ -72,6 +72,9 @@ pub enum PromptError {
     #[error("answer transport failed: {0}")]
     #[coded(code = "answer_transport_failed", class = Infrastructure)]
     AnswerTransportFailed(String),
+    #[error("the client could not write the file: {0}")]
+    #[coded(code = "fs_write_failed", class = Infrastructure)]
+    FsWriteFailed(String),
     #[error("{0}")]
     #[coded(code = "internal", class = Infrastructure)]
     Internal(String),
@@ -98,7 +101,7 @@ mod tests {
     #[test]
     fn prompt_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.prompt.", &[PromptError::ALL_CODES]).unwrap();
-        assert_eq!(PromptError::ALL_CODES.len(), 21);
+        assert_eq!(PromptError::ALL_CODES.len(), 22);
     }
 
     #[test]

@@ -274,3 +274,94 @@ async fn permission_answer_links_not_parents() {
     assert_eq!(answer.links.links.len(), 1);
     assert_eq!(answer.links.links[0].span_context.trace_id().to_string(), trace_id_of(&sent));
 }
+
+macro_rules! attr {
+    ($span:expr, $key:expr) => {
+        $span
+            .attributes
+            .iter()
+            .filter(|kv| kv.key.as_str() == $key)
+            .map(|kv| kv.value.to_string())
+            .collect::<Vec<String>>()
+    };
+}
+
+/// The telemetry gate: across a prompt that is cancelled mid-turn, no span
+/// repeats an attribute key, a baggage label is never stamped twice with
+/// different values (a cancel's own labels must not leak onto the prompt it
+/// stops), and gait's own session id never sits under the `session_id` label.
+#[tokio::test]
+async fn no_span_repeats_a_key_or_conflicts_with_a_label() {
+    let _captured = testing::capture_exclusive();
+    let origin = tracing::info_span!("test-origin");
+    let labelled = |request: &str| {
+        origin.in_scope(|| {
+            concord_telemetry::context::add("session_id", "grorg-s1");
+            concord_telemetry::context::add("request_id", request.to_owned());
+            concord_telemetry::context::add("action_id", "A9");
+            carrier::capture()
+        })
+    };
+    let prompt_carrier = labelled("mm-1");
+    let cancel_carrier = {
+        let other = tracing::info_span!("test-cancel-origin");
+        other.in_scope(|| {
+            concord_telemetry::context::add("session_id", "grorg-s1");
+            concord_telemetry::context::add("request_id", "mm-2");
+            carrier::capture()
+        })
+    };
+    let (_t, gait_dir, repo) = workspace();
+    write_frames(
+        &gait_dir,
+        0,
+        &[forward_event(gait_core::proto::events::assistant_text("working".into()))],
+    );
+    std::fs::write(gait_dir.join("mock_hang_ms"), "10000").unwrap();
+    let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
+    tokio::spawn(server);
+    let (prompt_meta, cancel_meta) = (meta_of(&prompt_carrier), meta_of(&cancel_carrier));
+    Client
+        .builder()
+        .connect_with(channel, async |cx| {
+            let sid = cx.send_request(NewSessionRequest::new(repo.clone())).block_task().await?.session_id;
+            let (cx2, sid2) = (cx.clone(), sid.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let mut n = CancelNotification::new(sid2);
+                n.meta = Some(cancel_meta);
+                let _ = cx2.send_notification(n);
+            });
+            let mut prompt = PromptRequest::new(sid, vec!["run it".to_string().into()]);
+            prompt.meta = Some(prompt_meta);
+            cx.send_request(prompt).block_task().await?;
+            Ok(())
+        })
+        .await
+        .expect("connection stays alive");
+    drop(origin);
+
+    let spans = testing::spans();
+    for span in &spans {
+        let mut keys: Vec<&str> = span.attributes.iter().map(|kv| kv.key.as_str()).collect();
+        keys.sort_unstable();
+        let repeated: Vec<&str> = keys.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0]).collect();
+        // The same label stamped twice with one value is the library's to
+        // collapse; a key with two different values is a conflict.
+        for key in repeated {
+            let mut values = attr!(span, key);
+            values.sort_unstable();
+            values.dedup();
+            assert_eq!(values.len(), 1, "span {} holds {key} with different values: {values:?}", span.name);
+        }
+    }
+    let prompt = finished!("acp.prompt");
+    assert_eq!(attr!(prompt, "request_id"), vec!["mm-1".to_owned()], "the cancel's request_id leaked onto the prompt");
+    assert_eq!(attr!(prompt, "session_id"), vec!["grorg-s1".to_owned()]);
+    assert_eq!(attr!(prompt, "acp_session_id").len(), 1);
+    for span in spans.iter().filter(|s| s.name.starts_with("acp.") || s.name.starts_with("gait.")) {
+        for value in attr!(span, "session_id") {
+            assert_eq!(value, "grorg-s1", "span {} puts a gait session id under the session_id label", span.name);
+        }
+    }
+}

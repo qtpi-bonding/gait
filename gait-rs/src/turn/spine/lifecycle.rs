@@ -389,7 +389,7 @@ pub(crate) async fn teardown(
     #[cfg(feature = "telemetry")]
     concord_telemetry::event!(gait_events::gait::events::v1::BrainExited {
         source_record_id: format!("{session_id}:{turn_id}"),
-        session_id: session_id.to_owned(),
+        gait_session_id: session_id.to_owned(),
         turn_id: turn_id.to_owned(),
         pid: brain_pid,
         finalized: finalized_turn.is_some(),

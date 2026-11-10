@@ -59,7 +59,7 @@ pub(crate) fn report_failed(error: &ProviderError, attempt: u32, max_attempts: u
             ctx.turn_id,
             FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ),
-        session_id: ctx.session_id,
+        gait_session_id: ctx.session_id,
         turn_id: ctx.turn_id,
         model: ctx.model,
         attempt,
@@ -67,7 +67,7 @@ pub(crate) fn report_failed(error: &ProviderError, attempt: u32, max_attempts: u
         kind: kind as i32,
         http_status,
         retry_after_ms: error.retry_after().map_or(0, |d| d.as_millis() as u64),
-        request_id,
+        provider_request_id: request_id,
         will_retry,
     });
 }
@@ -94,11 +94,11 @@ mod tests {
             async { report_failed(&error, 1, 3, true) },
         )
         .await;
-        let event = capture.single_event_where::<ModelCallFailed>(|e| e.session_id == "s-429");
+        let event = capture.single_event_where::<ModelCallFailed>(|e| e.gait_session_id == "s-429");
         assert_eq!(event.kind, K::HttpStatus as i32);
         assert_eq!((event.http_status, event.retry_after_ms), (429, 7000));
         assert_eq!((event.attempt, event.max_attempts, event.will_retry), (1, 3, true));
-        assert_eq!((event.request_id.as_str(), event.model.as_str()), ("req_1", "openai/gpt-x"));
+        assert_eq!((event.provider_request_id.as_str(), event.model.as_str()), ("req_1", "openai/gpt-x"));
     }
 
     #[tokio::test]
@@ -115,7 +115,7 @@ mod tests {
         })
         .await;
         let ids: std::collections::HashSet<_> = capture
-            .events_where::<ModelCallFailed>(|e| e.session_id == "s-distinct")
+            .events_where::<ModelCallFailed>(|e| e.gait_session_id == "s-distinct")
             .into_iter()
             .map(|e| e.source_record_id)
             .collect();
@@ -126,7 +126,7 @@ mod tests {
     fn a_timeout_maps_to_its_phase() {
         let capture = concord_telemetry::testing::capture_exclusive();
         report_failed(&ProviderError::Timeout { phase: TimeoutPhase::Ttfb }, 3, 3, false);
-        let event = capture.single_event_where::<ModelCallFailed>(|e| e.attempt == 3 && e.session_id.is_empty());
+        let event = capture.single_event_where::<ModelCallFailed>(|e| e.attempt == 3 && e.gait_session_id.is_empty());
         assert_eq!(event.kind, K::TimeoutTtfb as i32);
         assert!(!event.will_retry);
     }

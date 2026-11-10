@@ -38,3 +38,6 @@ deliverer = { type = "str", meaning = "Principal id of the party that delivered 
 failed_started_ms = { type = "int", meaning = "Start time of the failed turn a retry follows, in ms since the epoch" }
 error_code = { type = "str", meaning = "Stable code of the error a failed turn ended with" }
 error_class = { type = "str", meaning = "Class of the error a failed turn ended with" }
+acp_session_id = { type = "str", meaning = "Session id of a gait ACP session (the same value as gait_session_id); apart from the upstream session id" }
+gait_session_id = { type = "str", meaning = "Id of one gait session; apart from the upstream session id" }
+provider_request_id = { type = "str", meaning = "The model provider's x-request-id for one call; apart from request_id" }

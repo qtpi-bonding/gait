@@ -13,7 +13,7 @@ fn parented_span_gives_events_the_caller_trace_id() {
     span.in_scope(|| {
         concord_telemetry::event!(AgentSpawned {
             source_record_id: "trace-join-child".to_owned(),
-            session_id: "trace-join-parent".to_owned(),
+            gait_session_id: "trace-join-parent".to_owned(),
             child_session_id: "trace-join-child".to_owned(),
             agent_name: "probe".to_owned(),
         });

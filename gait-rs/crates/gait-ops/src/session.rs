@@ -854,7 +854,7 @@ fn emit_session_disposed(
 ) {
     concord_telemetry::event!(gait_events::gait::events::v1::SessionDisposed {
         source_record_id,
-        session_id: session_id.to_owned(),
+        gait_session_id: session_id.to_owned(),
         disposition: disposition as i32,
     });
 }
@@ -1953,7 +1953,7 @@ mod telemetry_tests {
         let ws = ws_with_session(&sid);
         let before = last_id(ws.path(), &sid);
         persist_one(ws.path(), &sid).unwrap();
-        let event = capture.single_event_where::<SessionDisposed>(|e| e.session_id == sid);
+        let event = capture.single_event_where::<SessionDisposed>(|e| e.gait_session_id == sid);
         assert_eq!(event.disposition, Disposition::Persisted as i32);
         assert_eq!(event.source_record_id, before);
     }
@@ -1965,7 +1965,7 @@ mod telemetry_tests {
         let ws = ws_with_session(&sid);
         let before = last_id(ws.path(), &sid);
         discard_one(ws.path(), &sid).unwrap();
-        let event = capture.single_event_where::<SessionDisposed>(|e| e.session_id == sid);
+        let event = capture.single_event_where::<SessionDisposed>(|e| e.gait_session_id == sid);
         assert_eq!(event.disposition, Disposition::Discarded as i32);
         assert_eq!(event.source_record_id, before);
     }
@@ -1990,7 +1990,7 @@ mod telemetry_tests {
         commit_file(&head, b"main");
         commit_file(&format!("refs/heads/session/{sid}"), b"session");
         persist_one(ws.path(), &sid).unwrap_err();
-        let events = capture.events_where::<SessionDisposed>(|e| e.session_id == sid);
+        let events = capture.events_where::<SessionDisposed>(|e| e.gait_session_id == sid);
         assert!(events.is_empty());
     }
 
@@ -2001,7 +2001,7 @@ mod telemetry_tests {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
         persist_one(ws.path(), &sid).unwrap();
-        let events = capture.events_where::<SessionDisposed>(|e| e.session_id == sid);
+        let events = capture.events_where::<SessionDisposed>(|e| e.gait_session_id == sid);
         assert!(events.is_empty());
     }
 }

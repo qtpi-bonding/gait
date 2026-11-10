@@ -23,7 +23,7 @@ mod tests {
         let id = format!("prompt-{}", std::process::id());
         let event = PromptAccepted {
             source_record_id: id.clone(),
-            session_id: "session-1".into(),
+            gait_session_id: "session-1".into(),
             message_count: 2,
             message_ids: vec!["message-1".into(), "message-2".into()],
             source: PromptSource::Direct as i32,
@@ -33,7 +33,7 @@ mod tests {
         concord_telemetry::event!(event.clone());
         let got = cap.single_event_where::<PromptAccepted>(|value| value.source_record_id == id);
         assert_eq!(got.source_record_id, event.source_record_id);
-        assert_eq!(got.session_id, event.session_id);
+        assert_eq!(got.gait_session_id, event.gait_session_id);
         assert_eq!(got.message_count, event.message_count);
         assert_eq!(got.message_ids, event.message_ids);
         assert_eq!(got.source, event.source);

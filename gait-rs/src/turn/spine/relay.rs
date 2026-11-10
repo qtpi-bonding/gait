@@ -95,7 +95,7 @@ pub(crate) fn emit_turn_completed(
     let usage = turn.usage.unwrap_or_default();
     let event = gait_events::gait::events::v1::TurnCompleted {
         source_record_id: format!("{session_id}:{}", turn.started_ms),
-        session_id: session_id.to_owned(),
+        gait_session_id: session_id.to_owned(),
         outcome: turn_outcome(outcome) as i32,
         elapsed_ms,
         started_ms: turn.started_ms,
@@ -117,7 +117,7 @@ pub(crate) fn note_permission_requested(session_id: &str, logged: &crate::proto:
         if let Some(Kind::Permissions(request)) = payload.kind.as_ref() {
             concord_telemetry::event!(gait_events::gait::events::v1::PermissionRequested {
                 source_record_id: logged.id.clone(),
-                session_id: session_id.to_owned(),
+                gait_session_id: session_id.to_owned(),
                 item_count: request.items.len() as u32,
             });
         }
@@ -537,7 +537,7 @@ async fn relay_brain_turn_inner(
         #[cfg(feature = "telemetry")]
         concord_telemetry::event!(gait_events::gait::events::v1::BrainSpawned {
             source_record_id: format!("{session_id}:{turn_id}"),
-            session_id: session_id.to_owned(),
+            gait_session_id: session_id.to_owned(),
             turn_id: turn_id.clone(),
             pid: child.id().unwrap_or(0),
         });
@@ -983,9 +983,11 @@ fn record_terminal_failure(
             .and_then(|value| value.parse().ok());
         coded_error::from_remote(Some(code), class, turn.message.clone())
     } else {
-        anyhow::anyhow!(turn.message.clone())
+        // The brain sent no code: record it under the spine's own code so the
+        // failure is still counted.
+        coded_error::into_anyhow(super::error::SpineError::TurnFailedUncoded(turn.message.clone()))
     };
-    concord_telemetry::error_anyhow!(&err, source = "gait.turn", session_id = %session_id);
+    concord_telemetry::error_anyhow!(&err, source = "gait.turn", gait_session_id = %session_id);
 }
 
 #[cfg(test)]
@@ -1353,7 +1355,7 @@ mod telemetry_tests {
             },
         );
         let event = capture.single_event_where::<gait_events::gait::events::v1::TurnCompleted>(
-            |value| value.session_id == id,
+            |value| value.gait_session_id == id,
         );
         assert_eq!(event.source_record_id, format!("{id}:42"));
         assert_eq!(event.outcome, gait_events::gait::events::v1::TurnOutcome::Done as i32);
@@ -1422,7 +1424,7 @@ mod telemetry_tests {
         let records = capture.errors_where(|record| {
             record
                 .fields
-                .get("session_id")
+                .get("gait_session_id")
                 .map(|value| {
                     matches!(value, concord_telemetry::AttrValue::Str(value) if value == session_id)
                 })

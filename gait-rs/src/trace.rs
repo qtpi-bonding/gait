@@ -15,7 +15,7 @@ pub(crate) fn turn_span(session_id: &str) -> Span {
     #[cfg(feature = "telemetry")]
     return tracing::info_span!(
         "gait.turn",
-        session_id = %session_id,
+        gait_session_id = %session_id,
         turn_id = tracing::field::Empty,
         model = tracing::field::Empty,
     );
@@ -94,7 +94,7 @@ pub(crate) fn brain_span(session_id: &str) -> Span {
     {
         let span = tracing::info_span!(
             "gait.brain",
-            session_id = %session_id,
+            gait_session_id = %session_id,
             turn_id = %std::env::var(TURN_ID_ENV).unwrap_or_default(),
         );
         concord_telemetry::propagation::set_parent_from_env(&span);
@@ -132,7 +132,7 @@ pub(crate) fn tool_span(tool: &str, session_id: &str, turn_id: &str) -> Span {
     return tracing::info_span!(
         "gait.tool",
         tool,
-        session_id = %session_id,
+        gait_session_id = %session_id,
         turn_id = %turn_id,
         ok = tracing::field::Empty,
         error_code = tracing::field::Empty,

@@ -10,7 +10,7 @@ use crate::turn::spine::handlers::{error_feedback, SpawnAgentArgs};
 fn emit_agent_spawned(session_id: &str, parent_session_id: &str, agent_name: &str) {
     concord_telemetry::event!(gait_events::gait::events::v1::AgentSpawned {
         source_record_id: session_id.to_owned(),
-        session_id: parent_session_id.to_owned(),
+        gait_session_id: parent_session_id.to_owned(),
         child_session_id: session_id.to_owned(),
         agent_name: agent_name.to_owned(),
     });
@@ -313,7 +313,7 @@ mod telemetry_tests {
             .single_event_where::<gait_events::gait::events::v1::AgentSpawned>(
                 |value| value.source_record_id == child,
             );
-        assert_eq!(event.session_id, "parent");
+        assert_eq!(event.gait_session_id, "parent");
         assert_eq!(event.child_session_id, child);
         assert_eq!(event.agent_name, "researcher");
     }

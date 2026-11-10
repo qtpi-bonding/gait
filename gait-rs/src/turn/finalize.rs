@@ -153,7 +153,7 @@ pub(crate) async fn finalize(
                 let (_, turn_id) = crate::trace::brain_ids();
                 concord_telemetry::event!(gait_events::gait::events::v1::SandboxUnlockRequested {
                     source_record_id: format!("{}:{turn_id}", env.session_id),
-                    session_id: env.session_id.to_owned(),
+                    gait_session_id: env.session_id.to_owned(),
                     turn_id,
                     item_count: items.len() as u32,
                 });

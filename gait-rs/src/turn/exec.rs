@@ -156,7 +156,7 @@ pub(super) async fn execute_capability_raw(
                         let (session_id, turn_id) = crate::trace::brain_ids();
                         concord_telemetry::event!(gait_events::gait::events::v1::SandboxDenied {
                             source_record_id: format!("{session_id}:{turn_id}:{}", crate::trace::next_seq()),
-                            session_id,
+                            gait_session_id: session_id,
                             turn_id,
                             tool: sd.tool_name.clone(),
                             dimension: sd.dimension.clone(),

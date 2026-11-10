@@ -208,7 +208,7 @@ pub fn build_agent_with_attestation(
                       _cx| {
                     let map = map.clone();
                     let span = crate::trace_meta::handler_span(
-                        tracing::info_span!("acp.resume", session_id = %req.session_id.0),
+                        tracing::info_span!("acp.resume", acp_session_id = %req.session_id.0),
                         req.meta.as_ref(),
                     );
                     tracing::Instrument::instrument(
@@ -225,7 +225,7 @@ pub fn build_agent_with_attestation(
                 move |req: NewSessionRequest, responder: Responder<NewSessionResponse>, _cx| {
                     let map = map.clone();
                     let span = crate::trace_meta::handler_span(
-                        tracing::info_span!("acp.new_session", session_id = tracing::field::Empty),
+                        tracing::info_span!("acp.new_session", acp_session_id = tracing::field::Empty),
                         req.meta.as_ref(),
                     );
                     let recorded = span.clone();
@@ -235,7 +235,7 @@ pub fn build_agent_with_attestation(
                             Err(e) => return responder.respond_with_error(error::acp_error(&anyhow::anyhow!(e), error::NEW_SESSION)),
                         };
                         let session_id = gait_core::session::new_session_id();
-                        recorded.record("session_id", tracing::field::display(&session_id));
+                        recorded.record("acp_session_id", tracing::field::display(&session_id));
                         let modes = advertise_modes(&gait_dir);
                         map.insert(gait_dir, session_id.clone(), req.cwd.clone());
                         responder.respond(NewSessionResponse::new(session_id).modes(Some(modes)))
@@ -261,7 +261,7 @@ pub fn build_agent_with_attestation(
                         let Some((gait_dir, codebase)) = map.resolve(&sid) else {
                             return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::PROMPT));
                         };
-                        let span = tracing::info_span!("acp.prompt", session_id = %sid);
+                        let span = tracing::info_span!("acp.prompt", acp_session_id = %sid);
                         concord_telemetry::carrier::extract_required(
                             "gait.acp.prompt",
                             &span,
@@ -547,7 +547,7 @@ pub fn build_agent_with_attestation(
                                             format!("{e:#}")
                                         )),
                                         source = "acp.cancel.record",
-                                        session_id = %sid_thread
+                                        gait_session_id = %sid_thread
                                     );
                                 }
                             }
@@ -604,7 +604,7 @@ pub fn build_agent_with_attestation(
                       cx: agent_client_protocol::ConnectionTo<Client>| {
                     let map = map.clone();
                     let span = crate::trace_meta::handler_span(
-                        tracing::info_span!("acp.set_mode", session_id = %req.session_id.0, mode = %req.mode_id.0),
+                        tracing::info_span!("acp.set_mode", acp_session_id = %req.session_id.0, mode = %req.mode_id.0),
                         req.meta.as_ref(),
                     );
                     tracing::Instrument::instrument(async move {
@@ -657,7 +657,7 @@ pub fn build_agent_with_attestation(
                 move |req: CloseSessionRequest, responder: Responder<CloseSessionResponse>, _cx| {
                     let map = map.clone();
                     let span = crate::trace_meta::handler_span(
-                        tracing::info_span!("acp.close", session_id = %req.session_id.0),
+                        tracing::info_span!("acp.close", acp_session_id = %req.session_id.0),
                         req.meta.as_ref(),
                     );
                     tracing::Instrument::instrument(async move { lifecycle::close_session(&map, req, responder) }, span)
@@ -673,7 +673,7 @@ pub fn build_agent_with_attestation(
                       _cx| {
                     let map = map.clone();
                     let span = crate::trace_meta::handler_span(
-                        tracing::info_span!("acp.delete", session_id = %req.session_id.0),
+                        tracing::info_span!("acp.delete", acp_session_id = %req.session_id.0),
                         req.meta.as_ref(),
                     );
                     tracing::Instrument::instrument(async move { lifecycle::delete_session(&map, req, responder) }, span)
@@ -690,7 +690,7 @@ pub fn build_agent_with_attestation(
                         // Fire both signals; each no-ops if its state isn't the live
                         // one. Return immediately — this runs inside the dispatch loop.
                         let sid = n.session_id.0.as_ref();
-                        let span = tracing::info_span!("acp.cancel", session_id = %sid);
+                        let span = tracing::info_span!("acp.cancel", acp_session_id = %sid);
                         concord_telemetry::carrier::extract_required(
                             "gait.acp.cancel",
                             &span,

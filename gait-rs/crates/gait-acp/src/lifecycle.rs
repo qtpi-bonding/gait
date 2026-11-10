@@ -86,7 +86,7 @@ pub fn load_session(
     cx: ConnectionTo<Client>,
 ) -> Result<(), agent_client_protocol::Error> {
     let sid = req.session_id.0.to_string();
-    let span = tracing::info_span!("acp.load", session_id = %sid);
+    let span = tracing::info_span!("acp.load", acp_session_id = %sid);
     concord_telemetry::carrier::extract_required(
         "gait.acp.load",
         &span,

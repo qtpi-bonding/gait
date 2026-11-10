@@ -37,7 +37,13 @@ pub fn answer_span(kind: &'static str, meta: Option<&serde_json::Map<String, ser
 /// the `acp.cancel` span that received it, so the cancel's trace connects to
 /// its outcome.
 pub fn note_cancel_requested(prompt: &Span, cancel: &Span) {
-    let requested = cancel.in_scope(carrier::capture);
+    // Link on the trace only: the cancel's baggage (its own request_id,
+    // action_id) would replace the prompt span's labels and be stamped beside
+    // them.
+    let requested = TraceCarrier {
+        baggage: None,
+        ..cancel.in_scope(carrier::capture)
+    };
     carrier::link_from(prompt, &requested);
     prompt.in_scope(|| tracing::info!("cancel_requested"));
 }

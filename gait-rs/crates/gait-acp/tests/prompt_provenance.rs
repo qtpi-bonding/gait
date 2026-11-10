@@ -1103,7 +1103,7 @@ async fn all_seen_redelivery_after_a_failed_turn_runs_a_turn() {
         .events_where::<gait_events::gait::events::v1::RedeliveryRetried>(|e| e.delivery_id == "d2");
     assert_eq!(retried.len(), 1, "the retry is a typed event");
     assert_eq!(retried[0].deliverer, fixture.deliverer.id.to_string());
-    assert!(!retried[0].session_id.is_empty());
+    assert!(!retried[0].gait_session_id.is_empty());
     assert_eq!(turn_starts(&events), 2, "the retry ran a turn: {events:?}");
     assert_eq!(verified(&events).len(), 1, "the message is logged once");
     assert_eq!(assistant_texts(&events), 1, "the retry turn produced the reply");

@@ -107,7 +107,7 @@ fn emit_permission_decided(
     use gait_events::gait::events::v1::GrantScope as E;
     concord_telemetry::event!(gait_events::gait::events::v1::PermissionDecided {
         source_record_id,
-        session_id: session_id.to_owned(),
+        gait_session_id: session_id.to_owned(),
         decision: decision as i32,
         scope: scope.map_or(E::Unspecified, event_scope) as i32,
         item_count: item_count as u32,
@@ -1298,7 +1298,7 @@ mod telemetry_tests {
             },
         )
         .unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::Allow as i32);
         assert_eq!(event.scope, ev::GrantScope::Session as i32);
         assert_eq!(event.item_count, 1);
@@ -1314,7 +1314,7 @@ mod telemetry_tests {
         let tx = session(ws.path(), &sid);
         seed_permission(&tx, "p1");
         deny(ws.path(), &sid).unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::Deny as i32);
         assert_eq!(event.scope, ev::GrantScope::Unspecified as i32);
         assert!(!event.persisted);
@@ -1340,7 +1340,7 @@ mod telemetry_tests {
             }],
         )
         .unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::Allow as i32);
         assert_eq!(event.scope, ev::GrantScope::Global as i32);
         assert_eq!(event.item_count, 1);
@@ -1372,7 +1372,7 @@ mod telemetry_tests {
             agent: None,
         })
         .unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::SandboxUnlock as i32);
         assert_eq!(event.scope, ev::GrantScope::Global as i32);
         assert!(event.persisted);
@@ -1394,7 +1394,7 @@ mod telemetry_tests {
             },
         )
         .unwrap_err();
-        let events = capture.events_where::<ev::PermissionDecided>(|e| e.session_id == sid);
+        let events = capture.events_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert!(events.is_empty());
     }
 }

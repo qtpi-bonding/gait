@@ -291,7 +291,7 @@ async fn session_delete_emits_session_disposed() {
 
     let event = capture
         .single_event_where::<gait_events::gait::events::v1::SessionDisposed>(|e| {
-            e.session_id == session_id
+            e.gait_session_id == session_id
         });
     assert_eq!(
         event.disposition,

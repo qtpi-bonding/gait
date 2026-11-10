@@ -31,7 +31,7 @@ enum NotifyOutcome {
 
 message PromptAccepted {
   string source_record_id = 1;
-  string session_id = 2;
+  string gait_session_id = 2;
   uint32 message_count = 3;
   repeated string message_ids = 4;
   PromptSource source = 5;
@@ -40,7 +40,7 @@ message PromptAccepted {
 
 message TurnCompleted {
   string source_record_id = 1;
-  string session_id = 2;
+  string gait_session_id = 2;
   TurnOutcome outcome = 3;
   uint64 elapsed_ms = 4;          // active time: waits for permission are excluded
   uint64 started_ms = 5;          // the turn's start; its end is this event's own timestamp
@@ -56,7 +56,7 @@ message TurnCompleted {
 // log because the turn that first ran over them failed.
 message RedeliveryRetried {
   string source_record_id = 1;
-  string session_id = 2;
+  string gait_session_id = 2;
   string delivery_id = 3;
   string deliverer = 4;
   uint64 failed_started_ms = 5;   // started_ms of the failed turn's TurnCompleted
@@ -66,7 +66,7 @@ message RedeliveryRetried {
 
 message AgentSpawned {
   string source_record_id = 1;
-  string session_id = 2;
+  string gait_session_id = 2;
   string child_session_id = 3;
   string agent_name = 4;
 }
@@ -98,7 +98,7 @@ enum GrantScope {
 
 message PermissionDecided {
   string source_record_id = 1;
-  string session_id = 2;
+  string gait_session_id = 2;
   PermissionDecision decision = 3;
   GrantScope scope = 4;
   uint32 item_count = 5;
@@ -113,7 +113,7 @@ enum Disposition {
 
 message SessionDisposed {
   string source_record_id = 1;
-  string session_id = 2;
+  string gait_session_id = 2;
   Disposition disposition = 3;
 }
 
@@ -150,8 +150,8 @@ enum ModelFailureKind {
 // 429s and then succeeded emits two of these with will_retry = true; the final
 // failure also reaches the turn's coded error record.
 message ModelCallFailed {
-  string source_record_id = 1;  // "<session_id>:<turn_id>:<n>", n counts failures in the process
-  string session_id = 2;
+  string source_record_id = 1;  // "<gait_session_id>:<turn_id>:<n>", n counts failures in the process
+  string gait_session_id = 2;
   string turn_id = 3;
   string model = 4;             // "provider/model-id"
   uint32 attempt = 5;           // 1-based
@@ -159,7 +159,7 @@ message ModelCallFailed {
   ModelFailureKind kind = 7;
   uint32 http_status = 8;       // 0 when the failure was not an HTTP status
   uint64 retry_after_ms = 9;    // the server's Retry-After; 0 when it sent none
-  string request_id = 10;       // the provider's x-request-id; empty when none
+  string provider_request_id = 10;       // the provider's x-request-id; empty when none
   bool will_retry = 11;
 }
 
@@ -168,14 +168,14 @@ message ModelCallFailed {
 // command or tool text: only how many items are waiting.
 message PermissionRequested {
   string source_record_id = 1;  // the id of the logged permissions request
-  string session_id = 2;
+  string gait_session_id = 2;
   uint32 item_count = 3;
 }
 
 // The spine started a brain subprocess for a turn.
 message BrainSpawned {
-  string source_record_id = 1;  // "<session_id>:<turn_id>"
-  string session_id = 2;
+  string source_record_id = 1;  // "<gait_session_id>:<turn_id>"
+  string gait_session_id = 2;
   string turn_id = 3;
   uint32 pid = 4;
 }
@@ -184,7 +184,7 @@ message BrainSpawned {
 // before it produced a finished turn.
 message BrainExited {
   string source_record_id = 1;
-  string session_id = 2;
+  string gait_session_id = 2;
   string turn_id = 3;
   uint32 pid = 4;
   bool finalized = 5;
@@ -193,8 +193,8 @@ message BrainExited {
 // The sandbox refused a tool call. Names the tool and the dimension that was
 // denied (read, write, network ...), never the path, command or host.
 message SandboxDenied {
-  string source_record_id = 1;  // "<session_id>:<turn_id>:<n>", n counts denials in the process
-  string session_id = 2;
+  string source_record_id = 1;  // "<gait_session_id>:<turn_id>:<n>", n counts denials in the process
+  string gait_session_id = 2;
   string turn_id = 3;
   string tool = 4;
   string dimension = 5;
@@ -202,8 +202,8 @@ message SandboxDenied {
 
 // The turn paused to ask whether to widen the sandbox.
 message SandboxUnlockRequested {
-  string source_record_id = 1;  // "<session_id>:<turn_id>"
-  string session_id = 2;
+  string source_record_id = 1;  // "<gait_session_id>:<turn_id>"
+  string gait_session_id = 2;
   string turn_id = 3;
   uint32 item_count = 4;
 }
