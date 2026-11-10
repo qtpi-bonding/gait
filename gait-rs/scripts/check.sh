@@ -27,7 +27,11 @@ if [ -z "${CONCORD_LINT:-}" ]; then
         echo "Cargo.lock does not pin exactly one concord-telemetry rev: '$want'" >&2
         exit 1
     fi
-    have="$(sed -n 's|^"concord-lint [^(]*(git+[^?]*?rev=\([0-9a-f]*\)#.*|\1|p' "${CARGO_HOME:-$HOME/.cargo}/.crates.toml")"
+    crates_toml="${CARGO_HOME:-$HOME/.cargo}/.crates.toml"
+    have=""
+    if [ -r "$crates_toml" ]; then
+        have="$(sed -n 's|^"concord-lint [^(]*(git+[^?]*?rev=\([0-9a-f]*\)#.*|\1|p' "$crates_toml" || true)"
+    fi
     if [ "$have" != "$want" ]; then
         echo "concord-lint installed at '${have:-none}', Cargo.lock pins $want. Install it with:" >&2
         echo "  cargo-slot cargo install --locked --git https://github.com/qtpi-bonding/concord-telemetry --rev $want concord-lint" >&2
