@@ -332,6 +332,8 @@ pub fn build_agent_with_attestation(
                                 )>,
                                 on_durable: gait_core::port::input::OnDurable,
                             },
+                            /// A turn over the existing log, with no new input.
+                            Resume,
                         }
                         let turn_input = match verified {
                             // A supplied but invalid attestation is retained
@@ -370,16 +372,36 @@ pub fn build_agent_with_attestation(
                             // text executed.
                             Ok(Some(batch)) => {
                                 let owner = crate::attestation::owner_from_meta(&req.meta);
+                                let delivered_ids = batch.delivered_ids();
                                 let (messages, confirm) = batch.into_parts();
                                 // Every message was already delivered in an
-                                // earlier Delivery: nothing to run. Advance
-                                // the sequence and mark the keys, then answer.
+                                // earlier Delivery. Advance the sequence and
+                                // mark the keys. If the turn that ran over them
+                                // did not succeed, run a turn over the existing
+                                // log (no new input, so no message is logged
+                                // twice); otherwise there is nothing to run.
                                 if messages.is_empty() {
                                     let _ = confirm();
-                                    return responder.respond(PromptResponse::new(
-                                        StopReason::EndTurn,
-                                    ));
-                                }
+                                    let unserved = gait_core::session::log::read_events(
+                                        &gait_core::session::live::log_path(&gait_dir, &sid),
+                                    )
+                                    .map(|events| {
+                                        crate::last_turn::last_turn_over(&events, &delivered_ids)
+                                            == crate::last_turn::LastTurn::Unserved
+                                    })
+                                    .unwrap_or(false);
+                                    if !unserved {
+                                        return responder.respond(PromptResponse::new(
+                                            StopReason::EndTurn,
+                                        ));
+                                    }
+                                    tracing::info!(
+                                        session_id = %sid,
+                                        item_count = delivered_ids.len(),
+                                        "gait_acp.redelivery_retry"
+                                    );
+                                    TurnInput::Resume
+                                } else {
                                 let message_ids: Vec<String> = messages
                                     .iter()
                                     .map(|message| message.message.message_id.clone())
@@ -405,6 +427,7 @@ pub fn build_agent_with_attestation(
                                         .map(|m| incoming_body(owner.clone(), m))
                                         .collect(),
                                     on_durable,
+                                }
                                 }
                             }
                         };
@@ -457,6 +480,12 @@ pub fn build_agent_with_attestation(
                                     gait_dir.clone(),
                                     cancel,
                                     provenance,
+                                ),
+                                TurnInput::Resume => AcpTurnSource::new_resume(
+                                    cx,
+                                    session_id,
+                                    gait_dir.clone(),
+                                    cancel,
                                 ),
                                 TurnInput::AttestedMessages { bodies, on_durable } => AcpTurnSource::new_with_bodies(
                                     bodies,

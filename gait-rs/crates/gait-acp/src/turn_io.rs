@@ -450,6 +450,25 @@ impl AcpTurnSource {
             cause: Default::default(),
         }
     }
+    /// A turn over the existing log with no new input: the retry of a turn that
+    /// failed after its messages were already logged.
+    pub fn new_resume(
+        cx: ConnectionTo<Client>,
+        session_id: SessionId,
+        gait_dir: PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        let sid = session_id.0.to_string();
+        Self {
+            first: Some(TurnStart::Resume),
+            cx,
+            session_id,
+            sid,
+            gait_dir,
+            cancel,
+            cause: Default::default(),
+        }
+    }
     /// Sends one `elicitation/create` request (a single free-text field) and
     /// decodes the reply. `why_or_context` folds `ClarifyItem.why` /
     /// `InformItem.context` into the message body — elicitation has no

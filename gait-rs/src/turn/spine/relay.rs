@@ -263,7 +263,7 @@ pub async fn relay_brain_turn(
     mode: &mut TurnMode,
     fs_delegate: Option<std::sync::Arc<dyn crate::embed::FsDelegate>>,
 ) -> anyhow::Result<crate::proto::gait::log::v1::RunResult> {
-    crate::trace::within(
+    let result = crate::trace::within(
         crate::trace::turn_span(session_id),
         relay_brain_turn_inner(
             gait_dir,
@@ -283,7 +283,37 @@ pub async fn relay_brain_turn(
             fs_delegate,
         ),
     )
-    .await
+    .await;
+    if let Err(error) = &result {
+        if matches!(mode, TurnMode::Persistent { .. }) {
+            close_unfinished_turn(gait_dir, codebase, session_id, repos, error);
+        }
+    }
+    result
+}
+
+/// A turn that failed after it started but before it produced a result leaves
+/// an unmatched `TurnStart`. Records it as a failed turn now, with the error's
+/// code and class, so the log always says how a turn ended.
+fn close_unfinished_turn(
+    gait_dir: &Path,
+    codebase: &Path,
+    session_id: &str,
+    repos: &crate::git::Repos,
+    error: &anyhow::Error,
+) {
+    let git = crate::turn::SessionGit::for_session(repos, gait_dir, session_id);
+    let closed = crate::turn::SessionLog::open(gait_dir, session_id).and_then(|log| {
+        crate::turn::run_lifecycle::fail_open_turn(
+            &log,
+            &git,
+            codebase,
+            &crate::turn::run_lifecycle::FailureCause::early_failure(error),
+        )
+    });
+    if let Err(failure) = closed {
+        super::error::record(super::error::SpineError::LogRelayFailed(failure.into()), session_id);
+    }
 }
 
 /// Spawn `gait __brain` for one turn and relay its Nerve signals.

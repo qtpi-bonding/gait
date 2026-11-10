@@ -1002,3 +1002,111 @@ async fn a_malformed_owner_meta_is_ignored() {
     let events = deliver(fixture.attestor(), meta).await;
     assert_eq!(logged_incoming(&events).owner_id, None);
 }
+
+/// Frames for a brain that fails: its stream ends in a failed `Terminated`.
+fn bake_failed(home: &Path) {
+    use gait_proto::gait::sandbox::v1::{Signal, Terminated, signal};
+    use prost::Message;
+    let encoded = Signal {
+        corr_id: 0,
+        body: Some(signal::Body::Terminated(Terminated { turn: None, failed: true })),
+    }
+    .encode_to_vec();
+    let mut bytes = vec![1];
+    bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+    bytes.extend(encoded);
+    std::fs::write(home.join("mock_frames.bin"), bytes).unwrap();
+}
+
+fn count_kind(events: &[Event], wanted: fn(&payload::Kind) -> bool) -> usize {
+    events
+        .iter()
+        .filter(|event| match event.body.as_ref() {
+            Some(event::Body::Payload(p)) => p.kind.as_ref().is_some_and(wanted),
+            _ => false,
+        })
+        .count()
+}
+
+fn turn_starts(events: &[Event]) -> usize {
+    count_kind(events, |k| matches!(k, payload::Kind::TurnStart(_)))
+}
+
+fn assistant_texts(events: &[Event]) -> usize {
+    count_kind(events, |k| matches!(k, payload::Kind::AssistantText(_)))
+}
+
+/// Two deliveries into ONE session. The first turn runs with `first_frames`
+/// (baked by the caller before this is called is not possible, so it is passed
+/// as a function); the second runs with the say-hi brain.
+async fn redeliver(
+    fixture: &Fixture,
+    first_frames: fn(&Path),
+    second: Map<String, Value>,
+) -> Vec<Event> {
+    set_brain_exe();
+    let (_temp, home, repo) = workspace(Path::new("/tmp"));
+    first_frames(&home);
+    let (channel, server) = gait_acp::handlers::build_agent_with_attestation(
+        SessionMap::new(),
+        false,
+        Some(fixture.attestor()),
+    )
+    .into_channel_and_future();
+    tokio::spawn(server);
+    let first = fixture.meta(1, &["hello"]);
+    let home_for_client = home.clone();
+    let sid = Client
+        .connect_with(channel, async |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            let request = PromptRequest::new(sid.clone(), vec!["x".to_string().into()]).meta(first);
+            let _ = cx.send_request(request).block_task().await;
+            bake_say_hi(&home_for_client);
+            let request = PromptRequest::new(sid.clone(), vec!["x".to_string().into()]).meta(second);
+            let _ = cx.send_request(request).block_task().await;
+            Ok(sid)
+        })
+        .await
+        .expect("connection stays up");
+    gait_proto::wire::read_events(&gait_state::session::live::log_path(&home, &sid.0)).unwrap()
+}
+
+/// All-seen redelivery after a turn that succeeded: confirm and end, no turn.
+#[tokio::test]
+async fn all_seen_redelivery_after_a_successful_turn_runs_no_turn() {
+    let fixture = Fixture::new();
+    let events = redeliver(&fixture, bake_say_hi, fixture.meta(2, &["hello"])).await;
+    assert_eq!(turn_starts(&events), 1, "no second turn: {events:?}");
+    assert_eq!(verified(&events).len(), 1);
+    assert_eq!(fixture.replay_last_seen(), Some(2));
+}
+
+/// All-seen redelivery after a turn that failed: a turn runs over the existing
+/// log, and the message is not logged a second time.
+#[tokio::test]
+async fn all_seen_redelivery_after_a_failed_turn_runs_a_turn() {
+    let fixture = Fixture::new();
+    let events = redeliver(&fixture, bake_failed, fixture.meta(2, &["hello"])).await;
+    assert_eq!(turn_starts(&events), 2, "the retry ran a turn: {events:?}");
+    assert_eq!(verified(&events).len(), 1, "the message is logged once");
+    assert_eq!(assistant_texts(&events), 1, "the retry turn produced the reply");
+    assert_eq!(fixture.replay_last_seen(), Some(2));
+}
+
+/// A batch with something new is unchanged: a turn over the new message only.
+#[tokio::test]
+async fn partly_new_redelivery_logs_only_the_new_message() {
+    let fixture = Fixture::new();
+    let ids = ["m1".to_owned(), "m2".to_owned()];
+    let me = fixture.agent.load().unwrap().principal_id.clone();
+    let second = fixture.meta_with(2, &["hello", "world"], &ids, &fixture.deliverer.id, &me);
+    let events = redeliver(&fixture, bake_failed, second).await;
+    let logged = verified(&events);
+    assert_eq!(logged.len(), 2, "hello once, world once: {logged:?}");
+    assert_eq!(logged[1].0, "world");
+    assert_eq!(turn_starts(&events), 2);
+}

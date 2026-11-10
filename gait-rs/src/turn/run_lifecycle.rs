@@ -33,7 +33,7 @@ pub(crate) fn begin_turn(
     let mut events = log.events();
     if let Some(active) = latest_active_run(&events)? {
         if !active.can_resume() && (!active.turns.is_empty() || active.unmatched_turn.is_some()) {
-            repair_incomplete_tail(log, git, codebase, &active)?;
+            repair_incomplete_tail(log, git, codebase, &active, &FailureCause::recovery())?;
             events = log.events();
         }
     }
@@ -112,11 +112,60 @@ pub(crate) fn begin_turn(
     })
 }
 
+/// Why a turn that never finished is recorded as failed.
+pub(crate) struct FailureCause {
+    reason: String,
+    message: String,
+    error_code: Option<String>,
+    error_class: Option<String>,
+}
+
+impl FailureCause {
+    fn recovery() -> Self {
+        Self {
+            reason: "coordinator_recovery".into(),
+            message: "recovered an unmatched TurnStart after coordinator restart".into(),
+            error_code: None,
+            error_class: None,
+        }
+    }
+
+    /// A turn that failed after it was started but before its brain ran: the
+    /// error's stable code and class are recorded, never its text.
+    pub(crate) fn early_failure(error: &anyhow::Error) -> Self {
+        let facts = coded_error::facts_anyhow(error);
+        Self {
+            reason: "error".into(),
+            message: "the turn ended with an error before it produced a result".into(),
+            error_code: Some(facts.code.to_owned()),
+            error_class: Some(facts.class.as_str().to_owned()),
+        }
+    }
+}
+
+/// Closes a turn that was started but never produced a result: writes its
+/// `Failed` `TurnResult` and ends the run. Does nothing when the tail holds no
+/// unmatched `TurnStart` (the turn already finished and wrote its own result).
+pub(crate) fn fail_open_turn(
+    log: &crate::turn::SessionLog,
+    git: &crate::turn::SessionGit,
+    codebase: &std::path::Path,
+    cause: &FailureCause,
+) -> anyhow::Result<()> {
+    if let Some(active) = latest_active_run(&log.events())? {
+        if active.unmatched_turn.is_some() {
+            repair_incomplete_tail(log, git, codebase, &active, cause)?;
+        }
+    }
+    Ok(())
+}
+
 fn repair_incomplete_tail(
     log: &crate::turn::SessionLog,
     git: &crate::turn::SessionGit,
     codebase: &std::path::Path,
     active: &ActiveRun,
+    cause: &FailureCause,
 ) -> anyhow::Result<()> {
     use crate::proto::envelope::EventScope;
     use pb::turn_result::Outcome;
@@ -134,10 +183,10 @@ fn repair_incomplete_tail(
                 active_duration: Some(Default::default()),
             }),
             outcome: Some(Outcome::Failed(pb::TurnFailed {
-                reason: "coordinator_recovery".into(),
-                message: "recovered an unmatched TurnStart after coordinator restart".into(),
-                error_code: None,
-                error_class: None,
+                reason: cause.reason.clone(),
+                message: cause.message.clone(),
+                error_code: cause.error_code.clone(),
+                error_class: cause.error_class.clone(),
             })),
             ..Default::default()
         };
@@ -737,6 +786,80 @@ mod tests {
                     Some(payload::Kind::RunFailed(_))
                 )
         }));
+    }
+
+    fn log_with_started_turn() -> crate::turn::SessionLog {
+        let log = crate::turn::SessionLog::ephemeral(Vec::new());
+        log.append_body(
+            crate::proto::events::run_start(pb::RunStart {
+                run_id: "run-a".into(),
+                index: 0,
+                ..Default::default()
+            }),
+            EventScope::Run { run: 0 },
+        )
+        .unwrap();
+        log.append_body(
+            crate::proto::events::turn_start(pb::TurnStart {
+                turn_id: "t0".into(),
+                index: 0,
+                ..Default::default()
+            }),
+            EventScope::Turn { run: 0, turn: 0 },
+        )
+        .unwrap();
+        log
+    }
+
+    fn failed_results(log: &crate::turn::SessionLog) -> Vec<pb::TurnFailed> {
+        log.events()
+            .iter()
+            .filter_map(|event| match crate::turn::event_kind(event) {
+                Some(payload::Kind::TurnResult(result)) => match &result.outcome {
+                    Some(pb::turn_result::Outcome::Failed(failed)) => Some(failed.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_turn_that_failed_before_its_brain_ran_is_closed_with_the_errors_code() {
+        let log = log_with_started_turn();
+        let codebase = TempDir::new().unwrap();
+        let error = coded_error::into_anyhow(crate::turn::spine::error::SpineError::BrainDied);
+        fail_open_turn(
+            &log,
+            &crate::turn::SessionGit::null(),
+            codebase.path(),
+            &FailureCause::early_failure(&error),
+        )
+        .unwrap();
+
+        let failed = failed_results(&log);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].reason, "error");
+        assert_eq!(failed[0].error_code.as_deref(), Some("gait.spine.brain_died"));
+        assert!(failed[0].error_class.is_some());
+        assert!(
+            log.events()
+                .iter()
+                .any(|event| matches!(crate::turn::event_kind(event), Some(payload::Kind::RunFailed(_)))),
+            "the run ends too"
+        );
+    }
+
+    #[test]
+    fn closing_a_turn_that_already_has_its_result_does_nothing() {
+        let log = log_with_started_turn();
+        let codebase = TempDir::new().unwrap();
+        let cause = FailureCause::recovery();
+        fail_open_turn(&log, &crate::turn::SessionGit::null(), codebase.path(), &cause).unwrap();
+        let before = log.events().len();
+        fail_open_turn(&log, &crate::turn::SessionGit::null(), codebase.path(), &cause).unwrap();
+        assert_eq!(log.events().len(), before, "no second result");
+        assert_eq!(failed_results(&log).len(), 1);
     }
 
     #[test]

@@ -227,6 +227,12 @@ fn ensure_own_devices(agent_dir: &Path, own_devices: &[PublicKey]) -> Result<()>
 }
 
 impl VerifiedBatch {
+    /// Ids of every message the delivery carried, including those already seen
+    /// and dropped from `messages`.
+    pub fn delivered_ids(&self) -> Vec<String> {
+        self.confirmation.seen.iter().map(|(_, id)| id.clone()).collect()
+    }
+
     /// Splits the batch into its messages and the closure that confirms it.
     /// The turn source runs the closure right after the batch's events are
     /// appended. If the append fails the closure is dropped unrun, and dropping
