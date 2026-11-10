@@ -355,8 +355,28 @@ fn plan_credential() -> SubscriptionCredential {
     }
 }
 
+/// `test_config` with timeouts long enough that a loaded machine cannot turn
+/// an ordinary status or stream into a timeout. Cases that test a timeout keep
+/// the short ones.
+fn patient_config() -> TransportConfig {
+    TransportConfig {
+        connect_timeout: Duration::from_secs(2),
+        ttfb_timeout: Duration::from_secs(2),
+        idle_timeout: Duration::from_secs(2),
+        ..test_config()
+    }
+}
+
+fn patient_provider_for(wire: Wire, base_url: &str) -> Box<dyn Provider> {
+    provider_with(wire, base_url, patient_config())
+}
+
 fn provider_for(wire: Wire, base_url: &str) -> Box<dyn Provider> {
-    let transport = ProviderTransport::new(test_config()).expect("test transport");
+    provider_with(wire, base_url, test_config())
+}
+
+fn provider_with(wire: Wire, base_url: &str, config: TransportConfig) -> Box<dyn Provider> {
+    let transport = ProviderTransport::new(config).expect("test transport");
     match wire {
         Wire::Anthropic => Box::new(AnthropicProvider::new(
             SECRET.into(),
@@ -585,7 +605,7 @@ async fn every_production_sse_wire_obeys_transport_contract() {
             },
         ])
         .await;
-        let chunks = invoke(provider_for(wire, &server.base_url).as_ref())
+        let chunks = invoke(patient_provider_for(wire, &server.base_url).as_ref())
             .await
             .expect("retryable pre-event failure should recover");
         assert_one_done(&chunks);
@@ -597,7 +617,7 @@ async fn every_production_sse_wire_obeys_transport_contract() {
             retry_after: None,
         }])
         .await;
-        let error = invoke(provider_for(wire, &server.base_url).as_ref())
+        let error = invoke(patient_provider_for(wire, &server.base_url).as_ref())
             .await
             .expect_err("400 must be terminal");
         assert!(matches!(error, ProviderError::Http { status: 400, .. }));
@@ -616,7 +636,7 @@ async fn every_production_sse_wire_obeys_transport_contract() {
             },
         ])
         .await;
-        let error = invoke(provider_for(wire, &server.base_url).as_ref())
+        let error = invoke(patient_provider_for(wire, &server.base_url).as_ref())
             .await
             .expect_err("503 should exhaust the configured attempts");
         assert!(matches!(
@@ -667,7 +687,7 @@ async fn every_production_sse_wire_obeys_transport_contract() {
             hold_open: Duration::ZERO,
         }])
         .await;
-        let error = invoke(provider_for(wire, &server.base_url).as_ref())
+        let error = invoke(patient_provider_for(wire, &server.base_url).as_ref())
             .await
             .expect_err("partial clean EOF must be incomplete");
         assert!(matches!(error, ProviderError::StreamIncomplete { .. }));
@@ -682,7 +702,7 @@ async fn every_production_sse_wire_obeys_transport_contract() {
             hold_open: Duration::ZERO,
         }])
         .await;
-        let chunks = invoke(provider_for(wire, &server.base_url).as_ref())
+        let chunks = invoke(patient_provider_for(wire, &server.base_url).as_ref())
             .await
             .expect("normal terminal marker");
         assert_one_done(&chunks);
@@ -695,7 +715,7 @@ async fn every_production_sse_wire_obeys_transport_contract() {
             retry_after: None,
         }])
         .await;
-        let error = invoke(provider_for(wire, &server.base_url).as_ref())
+        let error = invoke(patient_provider_for(wire, &server.base_url).as_ref())
             .await
             .expect_err("reflected credential response should fail");
         let rendered = format!("{error:?} {error}");
