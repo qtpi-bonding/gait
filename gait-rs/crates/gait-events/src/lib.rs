@@ -1,6 +1,6 @@
 //! Domain events emitted by the initialized gait processes.
 
-pub use concord_telemetry::{Principal, PrincipalKind, Verification};
+pub use concord_telemetry_proto::v1::{Principal, PrincipalKind, Verification};
 
 pub mod gait {
     pub mod events {

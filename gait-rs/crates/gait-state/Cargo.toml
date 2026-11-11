@@ -6,10 +6,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784" }
-message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "2c7f1ff037aa02c2e850a7aa4d7422304d139737" }
-coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d" }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6", optional = true }
+identity-crypto = { workspace = true }
+message-attestation = { workspace = true }
+coded-error = { workspace = true, features = ["anyhow"] }
+concord-telemetry = { workspace = true, optional = true }
 gait-proto    = { path = "../gait-proto" }
 gait-identity = { path = "../gait-identity" }
 gait-types    = { path = "../gait-types" }
@@ -43,4 +43,4 @@ telemetry = ["dep:concord-telemetry"]
 [dev-dependencies]
 tempfile = "3"
 gait-auth = { path = "../gait-auth", features = ["testing"] }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784", features = ["testkit"] }
+identity-keyfile = { workspace = true, features = ["testkit"] }

@@ -732,7 +732,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "concord-fields"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6#d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=7500e62361113ea23282624c1b8f3a9130b027d0#7500e62361113ea23282624c1b8f3a9130b027d0"
 dependencies = [
  "serde",
  "toml",
@@ -740,8 +740,8 @@ dependencies = [
 
 [[package]]
 name = "concord-telemetry"
-version = "0.3.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6#d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6"
+version = "0.4.0"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=7500e62361113ea23282624c1b8f3a9130b027d0#7500e62361113ea23282624c1b8f3a9130b027d0"
 dependencies = [
  "anyhow",
  "coded-error",
@@ -766,7 +766,7 @@ dependencies = [
 [[package]]
 name = "concord-telemetry-derive"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6#d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=7500e62361113ea23282624c1b8f3a9130b027d0#7500e62361113ea23282624c1b8f3a9130b027d0"
 dependencies = [
  "concord-fields",
  "proc-macro2",
@@ -776,8 +776,13 @@ dependencies = [
 
 [[package]]
 name = "concord-telemetry-proto"
-version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6#d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6"
+version = "0.2.0"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry-proto.git?rev=4892badae333cfa7ebfdb4f17c76d65bb63612e4#4892badae333cfa7ebfdb4f17c76d65bb63612e4"
+dependencies = [
+ "prost 0.13.5",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "concurrent-queue"

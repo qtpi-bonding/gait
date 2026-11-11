@@ -19,8 +19,8 @@ fn main() {
             "#[concord_event(package = \"gait.events.v1\")]",
         )
         .extern_path(
-            ".concord_telemetry.v1",
-            "::concord_telemetry::proto::v1",
+            concord_telemetry_proto::PROTO_PACKAGE_PATH,
+            concord_telemetry_proto::RUST_EXTERN_PATH,
         )
         .compile_protos(&[proto], &includes)
         .expect("compile event proto");
@@ -30,8 +30,8 @@ fn main() {
         .register_descriptors(&descriptor_set)
         .expect("register event descriptors")
         .extern_path(
-            ".concord_telemetry.v1",
-            "::concord_telemetry::proto::v1",
+            concord_telemetry_proto::PROTO_PACKAGE_PATH,
+            concord_telemetry_proto::RUST_EXTERN_PATH,
         )
         .build(&[".gait.events"])
         .expect("build event serde");

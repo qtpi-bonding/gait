@@ -76,7 +76,7 @@ gait-proto = { path = "../gait-proto" }
 gait-state = { path = "../gait-state" }
 gait-identity = { path = "../gait-identity" }
 uuid = { version = "1", features = ["v4"] }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6", optional = true }
+concord-telemetry = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
@@ -86,4 +86,4 @@ tempfile = "3"
 serial_test = "3"
 prost        = "0.13"
 pbjson-types = "0.7"
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6", features = ["testing"] }
+concord-telemetry = { workspace = true, features = ["testing"] }

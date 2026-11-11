@@ -6,16 +6,17 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6" }
+concord-telemetry = { workspace = true }
+concord-telemetry-proto = { workspace = true }
 prost = "0.13"
 pbjson = "0.7"
 serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
-concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6" }
+concord-telemetry-proto = { workspace = true }
 prost-build = "0.13"
 pbjson-build = "0.7"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "d4dcd96ba0e17f60acd93ba5fda554dbd4ce0cc6", features = ["testing"] }
+concord-telemetry = { workspace = true, features = ["testing"] }

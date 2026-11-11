@@ -2,12 +2,8 @@
 # gait checks: clippy, the telemetry lint, the OpenTelemetry dependents
 # allowlist, no process::exit in CLI/binary sources, and the crates that must
 # stay telemetry-free. Every cargo build goes through cargo-slot.
-# Needs `concord-lint` installed at the concord-telemetry rev in Cargo.lock; the
-# script refuses a mismatched linter and prints the install command:
-#   cargo-slot cargo install --locked --git https://github.com/qtpi-bonding/concord-telemetry \
-#     --rev <rev> concord-lint
-# CONCORD_LINT=/path overrides the binary (the rev check is then skipped).
-# and a checkout of concord-telemetry for the shared dependents script
+# The linter is installed on demand at the Cargo.lock rev (see below).
+# Also needs a checkout of concord-telemetry for the shared dependents script
 # (CONCORD_TELEMETRY_DIR, default ~/Documents/my-libs/concord-telemetry).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,24 +15,17 @@ export CARGO_SLOT
 # lints in generated code (gait-proto's pbjson output) and on async_trait fns,
 # before any hand-written code. `make lint` keeps the clippy gate.
 "$CARGO_SLOT" cargo check --workspace --all-targets
-# The installed linter must be built from the rev this repo's lock pins.
-lint="${CONCORD_LINT:-concord-lint}"
-if [ -z "${CONCORD_LINT:-}" ]; then
-    want="$(sed -n 's|^source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=\([0-9a-f]*\)#.*|\1|p' Cargo.lock | sort -u)"
-    if [ "$(printf '%s\n' "$want" | grep -c .)" != 1 ]; then
-        echo "Cargo.lock does not pin exactly one concord-telemetry rev: '$want'" >&2
-        exit 1
-    fi
-    crates_toml="${CARGO_HOME:-$HOME/.cargo}/.crates.toml"
-    have=""
-    if [ -r "$crates_toml" ]; then
-        have="$(sed -n 's|^"concord-lint [^(]*(git+[^?]*?rev=\([0-9a-f]*\)#.*|\1|p' "$crates_toml" || true)"
-    fi
-    if [ "$have" != "$want" ]; then
-        echo "concord-lint installed at '${have:-none}', Cargo.lock pins $want. Install it with:" >&2
-        echo "  cargo-slot cargo install --locked --git https://github.com/qtpi-bonding/concord-telemetry --rev $want concord-lint" >&2
-        exit 1
-    fi
+# The linter is keyed on the concord-lint (else concord-telemetry) rev in
+# Cargo.lock: the lookup script ships with concord-telemetry, is found through
+# cargo metadata, and installs that rev into ~/.cache/concord-lint/<rev>.
+# CONCORD_LINT=/path overrides it (no rev check).
+lint="${CONCORD_LINT:-}"
+if [ -z "$lint" ]; then
+    ct_manifest="$("$CARGO_SLOT" cargo metadata --format-version 1 --locked |
+        python3 -c 'import json,sys; print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"] == "concord-telemetry"))')"
+    for_lock="$(dirname "$ct_manifest")/../scripts/concord-lint-for-lock.sh"
+    [ -x "$for_lock" ] || { echo "concord-lint-for-lock.sh not found next to $ct_manifest" >&2; exit 1; }
+    lint="$HOME/.cache/concord-lint/$("$for_lock" Cargo.lock)/bin/concord-lint"
 fi
 "$lint" --local fields.local.toml --baseline lint-baseline.txt crates/*/src crates/*/tests src
 telemetry_dir="${CONCORD_TELEMETRY_DIR:-$HOME/Documents/my-libs/concord-telemetry}"

@@ -7,15 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d" }
+coded-error = { workspace = true, features = ["anyhow"] }
 gait-proto = { path = "../gait-proto" }
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784" }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784" }
+identity-crypto = { workspace = true }
+identity-keyfile = { workspace = true }
 anyhow = "1"
 thiserror = "1"
 prost = "0.13"
 
 [dev-dependencies]
 tempfile = "3"
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784", features = ["testkit"] }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "eeea2904d5bdc976116d94b7ded917009e169784", features = ["testkit"] }
+identity-crypto = { workspace = true, features = ["testkit"] }
+identity-keyfile = { workspace = true, features = ["testkit"] }
