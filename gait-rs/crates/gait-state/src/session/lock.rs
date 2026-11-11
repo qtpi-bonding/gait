@@ -8,6 +8,16 @@ use std::path::{Path, PathBuf};
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
 
+/// Another process holds the session's lock. [`SessionLock::acquire`] returns it
+/// inside its `anyhow::Error`; a caller that treats "busy" differently from an
+/// I/O failure checks for it with `downcast_ref`.
+#[derive(Debug, thiserror::Error)]
+#[error("session {dir} is already running (PID {pid})")]
+pub struct AlreadyRunning {
+    pub dir: String,
+    pub pid: String,
+}
+
 pub struct SessionLock {
     path: PathBuf,
 }
@@ -73,11 +83,11 @@ impl SessionLock {
         if path.exists() {
             let raw = std::fs::read_to_string(&path).unwrap_or_default();
             if lock_is_held(&raw) {
-                anyhow::bail!(
-                    "session {} is already running (PID {})",
-                    session_dir.display(),
-                    raw.split_whitespace().next().unwrap_or("?")
-                );
+                return Err(AlreadyRunning {
+                    dir: session_dir.display().to_string(),
+                    pid: raw.split_whitespace().next().unwrap_or("?").to_owned(),
+                }
+                .into());
             }
         }
         let pid = std::process::id();
@@ -112,6 +122,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("lock"), "999999999").unwrap();
         assert!(!SessionLock::is_running(dir.path()));
+    }
+
+    #[test]
+    fn acquiring_a_held_lock_fails_with_the_typed_already_running_error() {
+        let dir = TempDir::new().unwrap();
+        let _held = SessionLock::acquire(dir.path()).unwrap();
+        let error = SessionLock::acquire(dir.path()).err().expect("second acquire fails");
+        let busy = error.downcast_ref::<super::AlreadyRunning>().expect("typed busy error");
+        assert_eq!(busy.pid, std::process::id().to_string());
     }
 
     #[test]

@@ -131,7 +131,7 @@ fn notify(
     // One-shot lock acquire — the lock IS the "is a turn running?" check.
     let lock = match crate::session::SessionLock::acquire(&target_dir) {
         Ok(l) => l,
-        Err(e) if e.to_string().contains("already running") => return NotifyOutcome::ParentBusy,
+        Err(e) if e.is::<crate::session::lock::AlreadyRunning>() => return NotifyOutcome::ParentBusy,
         Err(_) => return NotifyOutcome::NoParent, // unexpected I/O — leave registry as fallback
     };
     // Dedup: if the parent's log already has a matching *_update for this

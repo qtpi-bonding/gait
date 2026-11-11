@@ -75,11 +75,7 @@ impl gait_core::embed::FsDelegate for AcpFsDelegate {
             .map(|_resp| ())
             // Write error -> hard Err. A failed persist must not report success;
             // the spine withholds the tool's provisional success on Err.
-            .map_err(|e| {
-                coded_error::into_anyhow(crate::error::PromptError::FsWriteFailed(format!(
-                    "fs/write_text_file: {e}"
-                )))
-            })
+            .map_err(|e| coded_error::into_anyhow(crate::error::PromptError::FsWriteFailed(e)))
     }
 }
 #[cfg(test)]

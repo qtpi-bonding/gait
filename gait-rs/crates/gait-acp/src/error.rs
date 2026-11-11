@@ -74,7 +74,7 @@ pub enum PromptError {
     AnswerTransportFailed(String),
     #[error("the client could not write the file: {0}")]
     #[coded(code = "fs_write_failed", class = Infrastructure)]
-    FsWriteFailed(String),
+    FsWriteFailed(#[source] agent_client_protocol::Error),
     #[error("{0}")]
     #[coded(code = "internal", class = Infrastructure)]
     Internal(String),
