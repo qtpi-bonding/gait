@@ -99,7 +99,9 @@ pub fn load_provider_with_credential_and_params(
     credential: Option<ResolvedCredential>,
     params: &gait_types::config::LlmParamsConfig,
 ) -> Result<Box<dyn Provider>, FactoryError> {
-    load_provider_with_credential_params_and_gait_dir(model_str, credential, params, None)
+    load_provider_with_credential_params_and_gait_dir(
+        model_str, credential, params, None, None,
+    )
 }
 
 pub fn load_provider_with_credential_params_and_gait_dir(
@@ -107,6 +109,7 @@ pub fn load_provider_with_credential_params_and_gait_dir(
     credential: Option<ResolvedCredential>,
     params: &gait_types::config::LlmParamsConfig,
     gait_dir: Option<std::path::PathBuf>,
+    prompt_cache_key: Option<String>,
 ) -> Result<Box<dyn Provider>, FactoryError> {
     let (provider_id, model_id) = parse_model_string(model_str)?;
     if provider_id == "local" {
@@ -147,12 +150,16 @@ pub fn load_provider_with_credential_params_and_gait_dir(
             match spec.wire {
                 Wire::CodexResponses => {
                     CodexResponsesProvider::new(subscription, model_id, base, transport)
-                        .map(|provider| Box::new(provider) as Box<dyn Provider>)
+                        .map(|provider| {
+                            Box::new(provider.with_prompt_cache_key(prompt_cache_key)) as Box<dyn Provider>
+                        })
                         .map_err(FactoryError::InvalidCredential)
                 }
                 Wire::ResponsesPlan => {
                     PlanResponsesProvider::new(subscription, model_id, base, transport)
-                        .map(|provider| Box::new(provider) as Box<dyn Provider>)
+                        .map(|provider| {
+                            Box::new(provider.with_prompt_cache_key(prompt_cache_key)) as Box<dyn Provider>
+                        })
                         .map_err(FactoryError::InvalidCredential)
                 }
                 _ => unreachable!(

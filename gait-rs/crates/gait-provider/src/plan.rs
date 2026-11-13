@@ -12,6 +12,7 @@ pub struct PlanResponsesProvider {
     model: String,
     base_url: String,
     transport: crate::transport::ProviderTransport,
+    prompt_cache_key: Option<String>,
 }
 
 impl std::fmt::Debug for PlanResponsesProvider {
@@ -52,7 +53,14 @@ impl PlanResponsesProvider {
             model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()),
             transport,
+            prompt_cache_key: None,
         })
+    }
+
+    /// Send `key` as `prompt_cache_key` on every request (one per gait session).
+    pub fn with_prompt_cache_key(mut self, key: Option<String>) -> Self {
+        self.prompt_cache_key = key;
+        self
     }
 
     fn body(
@@ -63,7 +71,15 @@ impl PlanResponsesProvider {
         params: &gait_types::config::LlmParamsConfig,
         kind: RequestKind,
     ) -> Value {
-        crate::responses_wire::request_body(&self.model, system, messages, tools, params, kind)
+        crate::responses_wire::request_body(
+            &self.model,
+            system,
+            messages,
+            tools,
+            params,
+            kind,
+            self.prompt_cache_key.as_deref(),
+        )
     }
 }
 

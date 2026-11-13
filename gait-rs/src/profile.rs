@@ -390,6 +390,7 @@ impl Profile {
                 credential,
                 &self.llm_params,
                 Some(gait_dir.clone()),
+                Some(session_id.clone()),
             )
             .map_err(|e| anyhow::anyhow!("provider: {e}"))?,
         );

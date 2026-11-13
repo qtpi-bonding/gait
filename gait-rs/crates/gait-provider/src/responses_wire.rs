@@ -13,6 +13,7 @@ pub fn request_body(
     tools: &[Arc<dyn Tool>],
     params: &LlmParamsConfig,
     kind: RequestKind,
+    prompt_cache_key: Option<&str>,
 ) -> Value {
     let mut input = Vec::new();
     for message in messages {
@@ -62,6 +63,11 @@ pub fn request_body(
         "model": model, "input": input, "stream": true,
         "store": false, "parallel_tool_calls": false,
     });
+    // One stable key per gait session routes every call of the session to the
+    // same prompt cache; without it prefix hits depend on request routing.
+    if let Some(key) = prompt_cache_key.filter(|k| !k.is_empty()) {
+        body["prompt_cache_key"] = Value::String(key.to_string());
+    }
     if !system.is_empty() {
         body["instructions"] = Value::String(system.to_string());
     }

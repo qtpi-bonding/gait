@@ -25,6 +25,7 @@ pub struct CodexResponsesProvider {
     model: String,
     base_url: String,
     transport: crate::transport::ProviderTransport,
+    prompt_cache_key: Option<String>,
 }
 
 impl CodexResponsesProvider {
@@ -46,7 +47,14 @@ impl CodexResponsesProvider {
             model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             transport,
+            prompt_cache_key: None,
         })
+    }
+
+    /// Send `key` as `prompt_cache_key` on every request (one per gait session).
+    pub fn with_prompt_cache_key(mut self, key: Option<String>) -> Self {
+        self.prompt_cache_key = key;
+        self
     }
 
     fn request_body(
@@ -57,7 +65,15 @@ impl CodexResponsesProvider {
         params: &gait_types::config::LlmParamsConfig,
         kind: RequestKind,
     ) -> Value {
-        crate::responses_wire::request_body(&self.model, system, messages, tools, params, kind)
+        crate::responses_wire::request_body(
+            &self.model,
+            system,
+            messages,
+            tools,
+            params,
+            kind,
+            self.prompt_cache_key.as_deref(),
+        )
     }
 }
 
@@ -199,6 +215,35 @@ mod tests {
             "input_tokens_details": {"cached_tokens": 900}
         });
         assert_eq!(crate::responses_wire::cached_input_tokens(&usage), 900);
+    }
+
+    #[test]
+    fn every_request_of_a_session_carries_the_same_prompt_cache_key() {
+        let keyed = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-5.6-luna".into(),
+            None,
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
+        )
+        .expect("provider")
+        .with_prompt_cache_key(Some("session-abc".into()));
+        let params = gait_types::config::LlmParamsConfig::default();
+        let first = keyed.request_body("sys", &[], &[], &params, RequestKind::Turn);
+        let second = keyed.request_body("sys", &[], &[], &params, RequestKind::Turn);
+        let compaction = keyed.request_body("sys", &[], &[], &params, RequestKind::Compaction);
+        for body in [&first, &second, &compaction] {
+            assert_eq!(body.get("prompt_cache_key"), Some(&json!("session-abc")));
+        }
+
+        let unkeyed = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-5.6-luna".into(),
+            None,
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
+        )
+        .expect("provider");
+        let body = unkeyed.request_body("sys", &[], &[], &params, RequestKind::Turn);
+        assert!(body.get("prompt_cache_key").is_none());
     }
 
     #[test]
