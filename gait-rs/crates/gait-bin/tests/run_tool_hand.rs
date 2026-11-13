@@ -359,3 +359,72 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
         "detached process must retain a writable TMPDIR after hand exit"
     );
 }
+
+/// Regression: on Linux the spine appends `--cascade-group <handle>` to every
+/// hand it enrolls (`Containment::configure_enrolled`). The hand's argument
+/// parser rejected it, so the hand exited 2 before reading its input and every
+/// relayed tool call failed ("missing a valid full-output reference"). The flag
+/// must be accepted on every target; "0" is a harmless pgid handle (the hand
+/// becomes its own group leader on Linux, a no-op elsewhere).
+#[test]
+fn the_hand_accepts_the_cascade_group_flag_the_spine_passes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("hello.txt"), "hi from a grouped hand").unwrap();
+    let args_struct: pbjson_types::Struct =
+        serde_json::from_value(serde_json::json!({"file_path": "hello.txt"})).unwrap();
+    let dir_str = dir.path().to_string_lossy().into_owned();
+    let impulse = Impulse {
+        tool: "read".into(),
+        args: Some(args_struct),
+        requested: Some(Scope {
+            read_all: true,
+            readable: vec![dir_str.clone()],
+            writable: vec![dir_str],
+            network: Some(NetworkScope {
+                mode: Mode::Deny as i32,
+                hosts: vec![],
+            }),
+            local_bind: false,
+            read_deny: None,
+            write_deny: None,
+        }),
+        prefetch: None,
+        shell_whitelist_patterns: vec![],
+        output_capture_mode: OutputCaptureMode::Returned as i32,
+        output_presentation: OutputPresentation::Unspecified as i32,
+    };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gait"))
+        .args([
+            "__run-tool",
+            "--gait-dir",
+            dir.path().to_str().unwrap(),
+            "--codebase",
+            dir.path().to_str().unwrap(),
+            "--session",
+            "stest123",
+            "--tool",
+            "read",
+            "--cascade-group",
+            "0",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(&impulse.encode_to_vec()).unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "hand rejected --cascade-group: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let feedback = feedback_from_output(out);
+    let text = match feedback.result.expect("Feedback.result must be set").kind {
+        Some(pbjson_types::value::Kind::StringValue(s)) => s,
+        other => panic!("expected StringValue, got {other:?}"),
+    };
+    assert!(text.contains("hi from a grouped hand"), "got: {text:?}");
+}

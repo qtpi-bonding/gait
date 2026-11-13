@@ -178,17 +178,8 @@ pub async fn cmd_run(
             }
         }
         if let Some(cg) = cg_val {
-            if cg.starts_with("/sys/fs/cgroup") {
-                // cgroup v2 path: write our pid into cgroup.procs
-                let pid = std::process::id().to_string();
-                let procs = format!("{cg}/cgroup.procs");
-                let _ = std::fs::write(&procs, &pid);
-            } else if let Ok(pgid) = cg.parse::<i32>() {
-                // pgid degrade path
-                unsafe {
-                    libc::setpgid(0, pgid);
-                }
-            }
+            // A miss is harmless: the parent still reaps this process.
+            let _ = gait_core::process::join_cascade_group(cg);
         }
     }
 

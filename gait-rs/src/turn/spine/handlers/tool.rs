@@ -159,6 +159,14 @@ fn grant_output_capture_target(
     Ok(())
 }
 
+/// How a hand process ended, for the error text of a hand that never answered.
+fn hand_exit_detail(out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stderr = stderr.trim();
+    let stderr: String = stderr.chars().take(600).collect();
+    format!("exited {} with stderr: {stderr}", out.status)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_as_spine(
     impulse: Impulse,
@@ -460,8 +468,15 @@ pub async fn run_tool_as_spine(
             }
         };
         if let Err(e) = stdin.write_all(&bytes).await {
+            // The hand is gone before it read its input: its exit status and
+            // stderr are the only account of why.
+            drop(stdin);
+            let died = child
+                .wait_with_output()
+                .await
+                .map_or_else(|_| "exit status unavailable".to_owned(), |o| hand_exit_detail(&o));
             let _ = std::fs::remove_dir_all(&jail);
-            return error_feedback(&format!("write impulse failed: {e}"));
+            return error_feedback(&format!("write impulse failed: {e}; hand {died}"));
         }
     }
 
@@ -510,7 +525,10 @@ pub async fn run_tool_as_spine(
         Ok(HandResponse {
             outcome: Some(hand_response::Outcome::Error(e)),
         }) => error_feedback(&format!("hand error: {}", e.message)),
-        Ok(HandResponse { outcome: None }) => error_feedback("hand returned empty HandResponse"),
+        Ok(HandResponse { outcome: None }) => error_feedback(&format!(
+            "hand returned empty HandResponse; hand {}",
+            hand_exit_detail(&out)
+        )),
         Err(_) => error_feedback(&format!(
             "hand crashed (exit {}): {}",
             out.status,

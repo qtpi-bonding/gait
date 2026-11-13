@@ -223,8 +223,19 @@ pub async fn __dispatch_role(argv: &[String]) {
                 output_spool: Option<std::path::PathBuf>,
                 #[arg(long, default_value = "true")]
                 seal: String,
+                /// Passed by the spine on Linux (`Containment::configure_enrolled`)
+                /// so this hand joins the brain's cascade group before it runs.
+                #[arg(long = "cascade-group", hide = true)]
+                cascade_group: Option<String>,
             }
             let a = RunToolArgs::parse_from(&argv[1..]);
+            if let Some(group) = a.cascade_group.as_deref() {
+                // A miss is harmless (the spine still reaps this hand); the note
+                // reaches the spine's stderr capture only if the hand later dies.
+                if crate::process::join_cascade_group(group).is_err() {
+                    eprintln!("[gait] __run-tool: could not join the cascade group");
+                }
+            }
             let config = HandConfig {
                 gait_dir: a.gait_dir,
                 codebase: a.codebase,

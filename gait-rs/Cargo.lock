@@ -1824,7 +1824,6 @@ dependencies = [
  "gait-workflow",
  "git2",
  "jsonschema",
- "libc",
  "pbjson-types",
  "prost 0.13.5",
  "serde",

@@ -35,6 +35,33 @@ pub trait Containment: Send + Sync {
     fn handle(&self) -> Option<String>;
 }
 
+/// Joins this process to the cascade group a parent named with `--cascade-group`
+/// (`handle` is a cgroup v2 directory or a pgid). Every gait child the parent
+/// enrolls on Linux receives the flag and calls this before it spawns anything,
+/// so all its descendants land in the group. A no-op where the group is not a
+/// kernel cgroup/pgid (other targets never pass the flag). A process that
+/// misses the group is still reaped by its parent, so callers may ignore `Err`.
+pub fn join_cascade_group(handle: &str) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if handle.starts_with("/sys/fs/cgroup") {
+            return std::fs::write(
+                format!("{handle}/cgroup.procs"),
+                std::process::id().to_string(),
+            );
+        }
+        if let Ok(pgid) = handle.parse::<i32>() {
+            // SAFETY: setpgid takes plain integers and touches only this process.
+            if unsafe { libc::setpgid(0, pgid) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = handle;
+    Ok(())
+}
+
 // ── proc_start_time (relocated from session/daemons.rs, D6) ────────────────────
 
 /// Return the kernel-reported process start time (seconds since boot epoch on
