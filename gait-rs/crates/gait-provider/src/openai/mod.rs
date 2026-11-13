@@ -10,6 +10,7 @@ pub struct OpenAIProvider {
     pub model: String,
     pub base_url: String,
     transport: crate::transport::ProviderTransport,
+    prompt_cache_key: Option<String>,
 }
 
 impl OpenAIProvider {
@@ -31,7 +32,21 @@ impl OpenAIProvider {
             model,
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
             transport,
+            prompt_cache_key: None,
         }
+    }
+
+    /// Send `key` as `prompt_cache_key` (one per gait session). Only the real
+    /// OpenAI host receives it: other compatible hosts may reject unknown fields.
+    pub fn with_prompt_cache_key(mut self, key: Option<String>) -> Self {
+        self.prompt_cache_key = key;
+        self
+    }
+
+    fn cache_key_for_host(&self) -> Option<String> {
+        self.prompt_cache_key
+            .clone()
+            .filter(|k| !k.is_empty() && self.base_url.contains("api.openai.com"))
     }
 }
 
@@ -61,6 +76,8 @@ struct ChatRequest {
     seed: Option<i64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -334,6 +351,7 @@ impl Provider for OpenAIProvider {
             presence_penalty: openai_p.and_then(|o| o.presence_penalty),
             seed: openai_p.and_then(|o| o.seed),
             stop: openai_p.map(|o| o.stop.clone()).unwrap_or_default(),
+            prompt_cache_key: self.cache_key_for_host(),
         };
 
         let body_value = serde_json::to_value(&body)?;
@@ -487,6 +505,7 @@ mod tests {
             presence_penalty: Some(0.2),
             seed: Some(42),
             stop: vec!["<|end|>".into()],
+            prompt_cache_key: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["temperature"].as_f64().unwrap() as f32, 0.8_f32);
@@ -617,6 +636,7 @@ mod tests {
             presence_penalty: None,
             seed: None,
             stop: vec![],
+            prompt_cache_key: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("temperature").is_none());
@@ -643,5 +663,23 @@ mod tests {
             content_str,
             "<incoming-message from=\"agent-2\" trust=\"unverified\">Hello, world!</incoming-message>\n"
         );
+    }
+
+    #[test]
+    fn prompt_cache_key_is_sent_only_to_the_real_openai_host() {
+        let transport = || crate::transport::ProviderTransport::new(Default::default()).expect("t");
+        let key = Some("session-abc".to_string());
+        let openai = OpenAIProvider::new("k".into(), "m".into(), None, transport())
+            .with_prompt_cache_key(key.clone());
+        assert_eq!(openai.cache_key_for_host().as_deref(), Some("session-abc"));
+        assert_eq!(openai.cache_key_for_host(), openai.cache_key_for_host());
+        let other = OpenAIProvider::new(
+            "k".into(),
+            "m".into(),
+            Some("https://api.groq.com/openai/v1".into()),
+            transport(),
+        )
+        .with_prompt_cache_key(key);
+        assert_eq!(other.cache_key_for_host(), None);
     }
 }

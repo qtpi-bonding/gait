@@ -310,3 +310,30 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod cache_prefix_tests {
+    use super::*;
+
+    fn user(text: &str) -> Message {
+        Message::User {
+            content: MessageContent::Text(text.into()),
+            id: String::new(),
+            attribution: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_later_request_extends_the_earlier_one_byte_for_byte() {
+        let params = LlmParamsConfig::default();
+        let history = vec![user("first"), user("second")];
+        let earlier = request_body("m", "sys", &history[..1], &[], &params, RequestKind::Turn, Some("k"));
+        let later = request_body("m", "sys", &history, &[], &params, RequestKind::Turn, Some("k"));
+        let (a, b) = (earlier["input"].as_array().unwrap(), later["input"].as_array().unwrap());
+        assert!(b.len() > a.len());
+        assert_eq!(a[..], b[..a.len()], "history prefix must not change between calls");
+        for field in ["model", "instructions", "tools", "prompt_cache_key"] {
+            assert_eq!(earlier.get(field), later.get(field), "{field} must be stable");
+        }
+    }
+}

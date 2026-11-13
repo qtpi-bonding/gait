@@ -19,6 +19,7 @@ pub fn body_stream(
         let mut args_buf: HashMap<u32, String> = HashMap::new();
         let mut thinking_indices: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
+        let mut start_usage: (u32, u32, u32) = (0, 0, 0);
         let mut saw_terminal = false;
         let mut received_bytes: usize = 0;
 
@@ -40,6 +41,11 @@ pub fn body_stream(
                 // Emit input-token count from the opening message event (C5 fix)
                 AnthropicEvent::MessageStart { message } => {
                     if let Some(u) = message.usage {
+                        start_usage = (
+                            u.input_tokens.unwrap_or(0),
+                            u.cache_read_input_tokens.unwrap_or(0),
+                            u.cache_creation_input_tokens.unwrap_or(0),
+                        );
                         yield StreamChunk::StepUsage(Usage {
                             input_tokens: u.input_tokens.unwrap_or(0),
                             output_tokens: 0,
@@ -110,11 +116,14 @@ pub fn body_stream(
                     }
                 }
                 AnthropicEvent::MessageDelta { usage: Some(u), .. } => {
+                    // message_delta usage is cumulative and may repeat the input
+                    // and cache counts already taken from message_start; add
+                    // only what exceeds them or they would be counted twice.
                     yield StreamChunk::StepUsage(Usage {
-                        input_tokens: u.input_tokens.unwrap_or(0),
+                        input_tokens: u.input_tokens.unwrap_or(0).saturating_sub(start_usage.0),
                         output_tokens: u.output_tokens.unwrap_or(0),
-                        cache_read_tokens: u.cache_read_input_tokens.unwrap_or(0),
-                        cache_write_tokens: u.cache_creation_input_tokens.unwrap_or(0),
+                        cache_read_tokens: u.cache_read_input_tokens.unwrap_or(0).saturating_sub(start_usage.1),
+                        cache_write_tokens: u.cache_creation_input_tokens.unwrap_or(0).saturating_sub(start_usage.2),
                     });
                 }
                 AnthropicEvent::MessageStop => { saw_terminal = true; yield StreamChunk::Done; break; }
@@ -132,5 +141,42 @@ pub fn body_stream(
         if !saw_terminal {
             Err(ProviderError::StreamIncomplete { received_bytes })?;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    fn ev(name: &str, data: serde_json::Value) -> Result<eventsource_stream::Event, ProviderError> {
+        Ok(eventsource_stream::Event {
+            event: name.into(),
+            data: data.to_string(),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn a_message_delta_that_repeats_start_usage_is_not_counted_twice() {
+        let events = futures_util::stream::iter(vec![
+            ev("message_start", serde_json::json!({"type":"message_start","message":{"usage":{
+                "input_tokens": 10, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50}}})),
+            ev("message_delta", serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{
+                "input_tokens": 10, "output_tokens": 7, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50}})),
+            ev("message_stop", serde_json::json!({"type":"message_stop"})),
+        ]);
+        let mut total = Usage::default();
+        let stream = body_stream(events);
+        tokio::pin!(stream);
+        while let Some(chunk) = stream.next().await {
+            if let StreamChunk::StepUsage(u) = chunk.expect("chunk") {
+                total = total.add(&u);
+            }
+        }
+        assert_eq!(
+            (total.input_tokens, total.output_tokens, total.cache_read_tokens, total.cache_write_tokens),
+            (10, 7, 900, 50)
+        );
     }
 }

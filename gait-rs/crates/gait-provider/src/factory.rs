@@ -128,7 +128,10 @@ pub fn load_provider_with_credential_params_and_gait_dir(
                 Wire::Anthropic => {
                     Box::new(AnthropicProvider::new(key, model_id, base, true, transport))
                 }
-                Wire::OpenAI => Box::new(OpenAIProvider::new(key, model_id, base, transport)),
+                Wire::OpenAI => Box::new(
+                    OpenAIProvider::new(key, model_id, base, transport)
+                        .with_prompt_cache_key(prompt_cache_key),
+                ),
                 // CodexResponses always rides on Subscription auth; the table
                 // never pairs it with ApiKey. Guard against drift with a panic
                 // rather than silently falling back to Bearer auth.
