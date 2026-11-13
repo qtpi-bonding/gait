@@ -195,6 +195,22 @@ pub(super) async fn execute_capability_raw(
     })
 }
 
+/// What a relayed result said when it carried no full-output marker: the spine
+/// reports a failed hand ("hand error: ...", "hand crashed ...", a failed
+/// archive) as plain text, and that text is the only account of the cause.
+fn unarchived_result_text(value: &serde_json::Value) -> String {
+    const LIMIT: usize = 600;
+    let text = value
+        .get("output")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.as_str())
+        .map_or_else(|| value.to_string(), str::to_owned);
+    match text.char_indices().nth(LIMIT) {
+        Some((end, _)) => format!("{}...", &text[..end]),
+        None => text,
+    }
+}
+
 /// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.
 /// Used identically by the normal execution loop and the permission-resume path.
 /// Does NOT handle output/mcp/skill special tools — those are never gated.
@@ -259,7 +275,8 @@ pub(super) async fn execute_tool_call(
                             crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
-                                        "relayed tool result missing a valid full-output reference"
+                                        "relayed tool result missing a valid full-output reference: {}",
+                                        unarchived_result_text(&v)
                                     )
                                 })?;
                         (v, Some(full_output))
@@ -285,7 +302,8 @@ pub(super) async fn execute_tool_call(
                             crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
-                                        "archived tool result missing a valid full-output reference"
+                                        "archived tool result missing a valid full-output reference: {}",
+                                        unarchived_result_text(&v)
                                     )
                                 })?;
                         (v, Some(full_output))
@@ -1334,5 +1352,32 @@ mod synapse_routing_tests {
             call_is_present && result_is_present,
             "messages: {messages:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod unarchived_text_tests {
+    use super::unarchived_result_text;
+    use serde_json::json;
+
+    #[test]
+    fn a_hand_failure_string_is_reported_whole() {
+        assert_eq!(
+            unarchived_result_text(&json!("hand error: seal failed: EPERM")),
+            "hand error: seal failed: EPERM"
+        );
+    }
+
+    #[test]
+    fn an_output_field_is_read_and_long_text_is_cut() {
+        let long = "x".repeat(2000);
+        let text = unarchived_result_text(&json!({ "output": long }));
+        assert_eq!(text.chars().count(), 603);
+        assert!(text.ends_with("..."));
+    }
+
+    #[test]
+    fn a_non_text_value_is_shown_as_json() {
+        assert_eq!(unarchived_result_text(&json!({"a": 1})), r#"{"a":1}"#);
     }
 }
