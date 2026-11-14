@@ -22,13 +22,10 @@ pub const MAX_PRUNE_REASON_LEN: usize = 200;
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct PruneParams {
-    /// One or more tool_call_ids (visible in your context) whose results you want to collapse
-    /// into a compact tombstone. Targets must belong to the current or immediately preceding
-    /// turn (older results are handled at compaction time).
+    /// tool_call_ids whose results to collapse into a tombstone (current or
+    /// previous turn only).
     call_ids: Vec<String>,
-    /// Optional short note explaining what was learned or why the result is no longer needed
-    /// (e.g. "no matches relevant to the bug" or "auth lives in session/log/mod.rs").
-    /// Capped at 200 characters — the tombstone must cost less than what it replaces.
+    /// Optional note on what was learned (max 200 characters).
     reason: Option<String>,
 }
 

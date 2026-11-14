@@ -102,16 +102,9 @@ pub fn inject_filter(
         if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
             props.insert("parse".into(), serde_json::json!({
                 "type": "array",
-                "description": "Optional pipeline of filter operations applied in-process before \
-                                the result reaches the model. Operations run in order. \
-                                {\"rg\": \"<pattern>\"} keeps only lines matching the regex \
-                                (linear-time finite automaton, no backtracking, no ReDoS). \
-                                {\"sd\": [\"<from>\", \"<to>\"]} replaces all regex matches of \
-                                <from> with <to> (multiline mode).",
-                "items": {
-                    "type": "object",
-                    "description": "One operation: {\"rg\": \"pattern\"} or {\"sd\": [\"from\", \"to\"]}"
-                }
+                "description": "Optional output filters, run in order: {\"rg\": \"regex\"} \
+                                keeps matching lines; {\"sd\": [\"from\", \"to\"]} regex-replaces.",
+                "items": {"type": "object"}
             }));
         }
     }
@@ -121,9 +114,8 @@ pub fn inject_filter(
                 "curate_prompt".into(),
                 serde_json::json!({
                     "type": "string",
-                    "description": "Route this tool's output through a 1-turn annotation subagent \
-                                    before the model sees it. Describe what counts as relevant. \
-                                    Only the relevant items are returned; dropped count is noted."
+                    "description": "Route output through a 1-turn annotation subagent; say what \
+                                    counts as relevant. Only relevant items are returned."
                 }),
             );
         }

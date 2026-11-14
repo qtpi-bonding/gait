@@ -13,15 +13,10 @@ struct ShellParams {
     cmd: String,
     /// Why this command is needed
     reason: String,
-    /// Optional working directory for this call. Relative paths resolve against
-    /// the codebase root; absolute paths are used as-is. It does not persist to
-    /// later calls. A nonexistent path errors.
+    /// Working directory for this call only (relative to the codebase root).
     cwd: Option<String>,
     /// Run as a background daemon that outlives this turn; returns immediately.
-    /// The daemon inherits the agent's sandbox ceiling (not the per-call scope).
-    /// Output is written to <gait_dir>/daemons/<session_id>/<name>.log for its
-    /// lifetime — namespaced per session so one session can never see another
-    /// session's daemon logs.
+    /// Output goes to a per-session log file.
     #[serde(default)]
     detached: bool,
     /// Name for this daemon (used in registry and log filename).
