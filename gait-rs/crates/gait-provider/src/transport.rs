@@ -27,7 +27,13 @@ pub struct SseRequest {
     pub url: String,
     pub headers: HeaderMap,
     pub body: serde_json::Value,
+    /// When set, the first successful response's header of this name is stored
+    /// in the slot (only if the slot is still empty). Used for sticky routing.
+    pub capture_header: Option<(&'static str, ResponseHeaderSlot)>,
 }
+
+/// Shared slot a request fills from a response header.
+pub type ResponseHeaderSlot = std::sync::Arc<std::sync::Mutex<Option<String>>>;
 
 /// A one-shot JSON-over-HTTP request.
 ///
@@ -48,7 +54,17 @@ impl JsonRequest {
 
 impl SseRequest {
     pub fn new(url: String, headers: HeaderMap, body: serde_json::Value) -> Self {
-        Self { url, headers, body }
+        Self {
+            url,
+            headers,
+            body,
+            capture_header: None,
+        }
+    }
+
+    pub fn capturing_header(mut self, name: &'static str, slot: ResponseHeaderSlot) -> Self {
+        self.capture_header = Some((name, slot));
+        self
     }
 }
 
@@ -167,6 +183,7 @@ impl ProviderTransport {
 
     async fn open(&self, request: SseRequest) -> Result<RawSseStream, ProviderError> {
         let secrets = sensitive_values(&request.headers);
+        let capture_header = request.capture_header.clone();
         let response = self
             .http
             .post(&request.url)
@@ -187,6 +204,16 @@ impl ProviderTransport {
                 retry_after,
                 request_id,
             });
+        }
+
+        if let Some((name, slot)) = &capture_header {
+            if let Some(value) = response.headers().get(*name).and_then(|v| v.to_str().ok()) {
+                if let Ok(mut held) = slot.lock() {
+                    if held.is_none() {
+                        *held = Some(value.to_string());
+                    }
+                }
+            }
         }
 
         Ok(Box::pin(response.bytes_stream().eventsource()))

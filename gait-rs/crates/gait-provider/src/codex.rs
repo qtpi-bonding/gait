@@ -14,6 +14,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 
 /// A provider for the private Codex Responses API. It is deliberately separate
 /// from the public OpenAI Chat Completions adapter: the endpoints, request
@@ -26,6 +27,9 @@ pub struct CodexResponsesProvider {
     base_url: String,
     transport: crate::transport::ProviderTransport,
     prompt_cache_key: Option<String>,
+    /// `x-codex-turn-state` from the first response of this run, replayed on
+    /// later requests so they route to the same backend (sticky routing).
+    turn_state: crate::transport::ResponseHeaderSlot,
 }
 
 impl CodexResponsesProvider {
@@ -48,12 +52,28 @@ impl CodexResponsesProvider {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             transport,
             prompt_cache_key: None,
+            turn_state: Default::default(),
         })
+    }
+
+    /// Session identity headers (`session-id`, `thread-id`, `x-client-request-id`),
+    /// the same value as the cache key. Empty when no key is set.
+    fn session_headers(&self) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let Some(id) = self.prompt_cache_key.as_deref().filter(|k| !k.is_empty()) else {
+            return headers;
+        };
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(id) {
+            for name in ["session-id", "thread-id", "x-client-request-id"] {
+                headers.insert(reqwest::header::HeaderName::from_static(name), value.clone());
+            }
+        }
+        headers
     }
 
     /// Send `key` as `prompt_cache_key` on every request (one per gait session).
     pub fn with_prompt_cache_key(mut self, key: Option<String>) -> Self {
-        self.prompt_cache_key = key;
+        self.prompt_cache_key = key.filter(|k| !k.is_empty()).map(|k| cache_id(&k));
         self
     }
 
@@ -131,6 +151,12 @@ impl Provider for CodexResponsesProvider {
                 crate::transport::sensitive_header(account_id)?,
             );
         }
+        headers.extend(self.session_headers());
+        if let Some(state) = self.turn_state.lock().ok().and_then(|held| held.clone()) {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&state) {
+                headers.insert(TURN_STATE_HEADER, value);
+            }
+        }
         if self.fedramp {
             headers.insert(
                 reqwest::header::HeaderName::from_static("x-openai-fedramp"),
@@ -141,7 +167,8 @@ impl Provider for CodexResponsesProvider {
             format!("{}/responses", self.base_url.trim_end_matches('/')),
             headers,
             body,
-        );
+        )
+        .capturing_header(TURN_STATE_HEADER, self.turn_state.clone());
         Ok(Box::pin(crate::responses_wire::response_stream(
             self.transport.stream(request).await?,
             codex_failure_format,
@@ -151,6 +178,12 @@ impl Provider for CodexResponsesProvider {
     fn model_id(&self) -> &str {
         &self.model
     }
+}
+
+/// The Codex backend keys its prompt cache on UUID-shaped session ids; gait's
+/// own ids are short, so derive a stable UUID (v5) from the gait session id.
+fn cache_id(session_id: &str) -> String {
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, session_id.as_bytes()).to_string()
 }
 
 fn codex_failure_format(failure: &crate::responses_wire::ResponsesFailure) -> String {
@@ -232,7 +265,12 @@ mod tests {
         let second = keyed.request_body("sys", &[], &[], &params, RequestKind::Turn);
         let compaction = keyed.request_body("sys", &[], &[], &params, RequestKind::Compaction);
         for body in [&first, &second, &compaction] {
-            assert_eq!(body.get("prompt_cache_key"), Some(&json!("session-abc")));
+            assert_eq!(body.get("prompt_cache_key"), Some(&json!(cache_id("session-abc"))));
+        }
+
+        let sent = keyed.session_headers();
+        for name in ["session-id", "thread-id", "x-client-request-id"] {
+            assert_eq!(sent.get(name).and_then(|v| v.to_str().ok()), Some(cache_id("session-abc").as_str()));
         }
 
         let unkeyed = CodexResponsesProvider::new(
@@ -244,6 +282,7 @@ mod tests {
         .expect("provider");
         let body = unkeyed.request_body("sys", &[], &[], &params, RequestKind::Turn);
         assert!(body.get("prompt_cache_key").is_none());
+        assert!(unkeyed.session_headers().is_empty());
     }
 
     #[test]
@@ -381,6 +420,71 @@ mod tests {
         }
         assert!(saw_done, "successful retry should deliver Done");
         assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn turn_state_from_the_first_response_is_replayed_on_the_next_request() {
+        use futures_util::StreamExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let n = socket.read(&mut chunk).await.expect("read");
+                    bytes.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok()).flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= end + 4 + len || n == 0 {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&bytes).to_lowercase();
+                let sent = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("x-codex-turn-state:").map(|v| v.trim().to_string()))
+                    .unwrap_or_default();
+                recorded.lock().unwrap().push(sent);
+                let body = "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-codex-turn-state: state-one\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(head.as_bytes()).await.expect("head");
+                socket.write_all(body.as_bytes()).await.expect("body");
+            }
+        });
+
+        let provider = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-test".into(),
+            Some(format!("http://{addr}")),
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
+        )
+        .expect("provider");
+        for _ in 0..2 {
+            let mut stream = provider
+                .stream("", &[], &[], &Default::default(), None)
+                .await
+                .expect("stream");
+            while stream.next().await.is_some() {}
+        }
+        assert_eq!(*seen.lock().unwrap(), vec!["".to_string(), "state-one".to_string()]);
     }
 
     #[test]
