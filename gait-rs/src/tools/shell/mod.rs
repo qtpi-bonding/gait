@@ -182,7 +182,11 @@ impl Tool for ShellTool {
             // status. Single-quote-safe via shell_quote for the embedded values.
             // Use current_exe() when it looks like the real gait binary (production).
             // In test runners current_exe() is the test binary; fall back to "gait" in PATH.
-            let exe = {
+            // GAIT_DAEMON_EXE overrides both: an integration test running
+            // outside the gait binary points it at the binary Cargo built.
+            let exe = if let Some(path) = std::env::var_os("GAIT_DAEMON_EXE") {
+                std::path::PathBuf::from(path)
+            } else {
                 let cur = std::env::current_exe().unwrap_or_default();
                 let name = cur.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if name == "gait" || name == "gait-bin" {

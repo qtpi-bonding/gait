@@ -568,7 +568,7 @@ async fn relay_brain_turn_inner(
     // The caller appended this turn's user input before relay_brain_turn, and the
     // SessionStart write above ran, so `events` is complete.
     {
-        use crate::proto::gait::sandbox::v1::{signal, BrainInit, DaemonStatus, GitStatus, Signal};
+        use crate::proto::gait::sandbox::v1::{signal, BrainInit, GitStatus, Signal};
         use tokio::io::AsyncWriteExt;
         let cfg = crate::config::load_config(gait_dir);
         let config_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
