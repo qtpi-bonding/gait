@@ -277,14 +277,12 @@ facts:
   - gait-rs/docs/gait-min.md
 - id: builtin-tools
   assertion: The model-facing built-in tool set is read, write, apply_patch, glob, grep, ls, shell, structured_done,
-    codesearch, webfetch, enable, spawn_agent, list_agents, clarify, inform and prune, plus a code tool
+    webfetch, enable, spawn_agent, list_agents, clarify, inform and prune, plus a code tool
     registered only when the code-mode feature is compiled in. The annotate tool is defined but not registered
-    as a model tool; only an internal curate filter uses it. The codesearch tool is a regex text search
-    (ripgrep, with a directory-walk fallback), not a semantic or embedding-based search. The prune tool
+    as a model tool; only an internal curate filter uses it. The prune tool
     replaces the agent's own earlier tool results with a short tombstone by appending a Replace event.
   evidence:
   - gait-rs/src/tools/mod.rs
-  - gait-rs/src/tools/codesearch.rs
   - gait-rs/src/tools/prune.rs
   - gait-rs/src/tools/annotate.rs
   - gait-rs/src/turn/curate.rs

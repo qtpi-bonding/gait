@@ -169,7 +169,6 @@ All tools go through the permission gate. Tools in `allow` run immediately; othe
 | `glob` | Glob file paths |
 | `grep` | Regex search over file contents |
 | `ls` | List a directory |
-| `codesearch` | Semantic code search |
 | `webfetch` | Fetch a URL |
 | `shell` | Run a shell command |
 | `structured_done` | Signal turn completion with a structured result |

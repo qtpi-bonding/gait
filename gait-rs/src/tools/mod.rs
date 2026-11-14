@@ -13,7 +13,6 @@ pub mod clarify;
 // the declaration/use pair below must carry the same gate explicitly.
 #[cfg(feature = "code-mode")]
 pub mod code;
-pub mod codesearch;
 pub mod fs_backend;
 pub mod glob;
 pub mod grep;
@@ -35,7 +34,6 @@ pub use annotate::AnnotateTool;
 pub use clarify::ClarifyTool;
 #[cfg(feature = "code-mode")]
 pub use code::CodeTool;
-pub use codesearch::CodesearchTool;
 pub mod ctx;
 pub use apply_patch::ApplyPatchTool;
 pub use ctx::ToolCtx;
@@ -236,7 +234,6 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
         "ls",
         "shell",
         "structured_done",
-        "codesearch",
         "webfetch",
         "enable",
         "spawn_agent",
@@ -261,7 +258,6 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
         "ls",
         "shell",
         "structured_done",
-        "codesearch",
         "webfetch",
         "enable",
         "spawn_agent",
@@ -291,7 +287,6 @@ pub fn builtin_tools(
         LsTool::new(ctx.clone()).arced(),
         ShellTool::new(ctx.clone()).arced(),
         StructuredDoneTool::new().arced(),
-        CodesearchTool::new(ctx.clone()).arced(),
         {
             let wf = if let Some(ref hosts) = ctx.network_allowlist {
                 WebfetchTool::new().with_network_allowlist(hosts.clone())
@@ -319,7 +314,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn builtin_tools_returns_seventeen() {
+    fn builtin_tools_returns_expected_count() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
             vec![],
@@ -327,10 +322,10 @@ mod tests {
             vec![],
             crate::git::Repos::production(),
         );
-        // 17 with the `code-mode` feature's `code` tool registered, 16
+        // 16 with the `code-mode` feature's `code` tool registered, 15
         // without it (Task 6c gates `CodeTool`'s registration on that
         // feature).
-        let expected = if cfg!(feature = "code-mode") { 17 } else { 16 };
+        let expected = if cfg!(feature = "code-mode") { 16 } else { 15 };
         assert_eq!(tools.len(), expected);
     }
 
@@ -602,7 +597,7 @@ mod tests {
                 ..Default::default()
             }
         );
-        for n in ["glob", "grep", "ls", "codesearch"] {
+        for n in ["glob", "grep", "ls"] {
             assert_eq!(
                 by(n),
                 ToolAccess {

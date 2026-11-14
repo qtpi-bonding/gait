@@ -17,7 +17,7 @@ async fn builtin_tools_returns_expected_tools() {
     );
     // 17 with the `code-mode` feature's `code` tool registered, 16 without
     // it (Task 6c gates `CodeTool`'s registration on that feature).
-    let expected_len = if cfg!(feature = "code-mode") { 17 } else { 16 };
+    let expected_len = if cfg!(feature = "code-mode") { 16 } else { 15 };
     assert_eq!(tools.len(), expected_len);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     let mut expected_names = vec![
@@ -29,7 +29,6 @@ async fn builtin_tools_returns_expected_tools() {
         "ls",
         "shell",
         "structured_done",
-        "codesearch",
         "webfetch",
         "enable",
         "spawn_agent",

@@ -517,7 +517,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Whether this tool is safe to run concurrently alongside other parallel-mode tools.
-    /// Read-only tools (read, glob, grep, ls, codesearch, webfetch) return Parallel.
+    /// Read-only tools (read, glob, grep, ls, webfetch) return Parallel.
     /// Anything with side effects (write, edit, shell, mcp, output, clarify) returns Serial.
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Serial

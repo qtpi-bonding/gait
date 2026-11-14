@@ -445,7 +445,7 @@ pub struct GaitConfig {
     #[serde(default = "default_shell_timeout_secs")]
     pub shell_timeout_secs: u64,
     /// Wall-clock timeout (seconds) for a single ripgrep subprocess invocation
-    /// backed by grep/codesearch/ls. On expiry the tool returns an error result
+    /// backed by grep/ls. On expiry the tool returns an error result
     /// instead of blocking the turn on a hung `rg` process — the same
     /// unbounded-subprocess risk `shell_timeout_secs` guards against, so it
     /// shares that default. NOT sized to preempt the spine's watchdog: the

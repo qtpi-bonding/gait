@@ -105,8 +105,6 @@
 1	src/tools/apply_patch.rs: ratchet.error_to_string: error converted to string
 1	src/tools/code.rs: ratchet.error_to_string: error converted to string
 1	src/tools/code.rs: ratchet.error_to_string: error formatted as string
-1	src/tools/codesearch.rs: ratchet.error_to_string: error converted to string
-2	src/tools/codesearch.rs: ratchet.error_to_string: error formatted as string
 1	src/tools/glob.rs: ratchet.error_to_string: error converted to string
 2	src/tools/glob.rs: ratchet.error_to_string: error formatted as string
 1	src/tools/grep.rs: ratchet.error_to_string: error converted to string

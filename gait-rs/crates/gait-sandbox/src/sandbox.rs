@@ -1422,7 +1422,7 @@ pub mod ceiling {
     /// computation; the brain's claimed scope is ignored.
     pub fn access_for_tool(tool_name: &str, cfg: &SandboxConfig) -> ToolAccess {
         let mut access = match tool_name {
-            "read" | "grep" | "glob" | "ls" | "codesearch" => ToolAccess {
+            "read" | "grep" | "glob" | "ls" => ToolAccess {
                 reads: true,
                 ..Default::default()
             },
