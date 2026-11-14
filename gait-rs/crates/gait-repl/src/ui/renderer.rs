@@ -41,7 +41,6 @@ pub(crate) fn tool_target(name: &str, args: &serde_json::Value) -> Option<String
         "glob" => s("pattern").map(|p| trunc(p, 50)),
         "ls" => s("path").map(basename),
         "shell" => s("cmd").map(|c| trunc(c, 60)),
-        "codesearch" => s("query").map(|q| trunc(q, 50)),
         "webfetch" => s("url").map(|u| trunc(u, 80)),
         "spawn_agent" => s("task").map(|t| trunc(t, 50)),
         "apply_patch" => {
@@ -482,12 +481,6 @@ mod tests {
 
         let args = serde_json::json!({"cmd": "cargo test"});
         assert_eq!(tool_target("shell", &args).as_deref(), Some("cargo test"));
-
-        let args = serde_json::json!({"query": "impl Trait"});
-        assert_eq!(
-            tool_target("codesearch", &args).as_deref(),
-            Some("impl Trait")
-        );
 
         let args = serde_json::json!({"url": "https://example.com/page"});
         assert_eq!(
