@@ -17,12 +17,6 @@ public:
   screenshots:
   - file: thumbnail.png
     alt: Gait REPL listing two turns, undoing to turn 1, and the git diff shrinking from 7 changed lines to 4
-private:
-  started: 2026-06
-  visibility: public
-  license: AGPL-3.0-or-later
-  ownership: designed and directed; code written with AI assistance
-  build: agentic
 facts:
 - id: three-process-turns
   assertion: In the sealed path each turn runs as three kinds of process. The parent (the spine) is the
