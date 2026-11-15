@@ -415,15 +415,15 @@ fn body_stream(
             };
 
             if let Some(usage) = chunk.usage {
-                yield StreamChunk::StepUsage(Usage {
-                    input_tokens: usage.prompt_tokens,
-                    output_tokens: usage.completion_tokens,
-                    cache_read_tokens: usage
+                yield StreamChunk::StepUsage(crate::responses_wire::normalized_usage(
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    usage
                         .prompt_tokens_details
                         .and_then(|details| details.cached_tokens)
                         .unwrap_or(0),
-                    cache_write_tokens: 0,
-                });
+                    0,
+                ));
             }
 
             for choice in &chunk.choices {

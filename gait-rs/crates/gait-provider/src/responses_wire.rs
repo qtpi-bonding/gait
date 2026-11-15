@@ -133,7 +133,12 @@ pub fn response_stream(
                 }
                 "response.completed" => {
                     if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
-                        yield StreamChunk::StepUsage(Usage { input_tokens: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, output_tokens: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, cache_read_tokens: cached_input_tokens(usage), cache_write_tokens: 0 });
+                        yield StreamChunk::StepUsage(normalized_usage(
+                            usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
+                            usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
+                            cached_input_tokens(usage),
+                            cache_write_input_tokens(usage),
+                        ));
                     }
                     yield StreamChunk::Done;
                     terminal = true;
@@ -185,6 +190,32 @@ pub(crate) fn failure_from_value(value: &Value, top_level_error: bool) -> Respon
     }
 }
 
+/// OpenAI-style providers report `input_tokens` INCLUDING the cached and the
+/// cache-written tokens. Gait's `Usage.input_tokens` means uncached input (the
+/// Anthropic convention that context estimates, stats totals and cost all
+/// assume), so subtract both here, at the provider boundary.
+///
+/// Assumption: `cache_write_tokens` is a subset of `input_tokens`, like
+/// `cached_tokens` (they are siblings in `input_tokens_details`). Every sample
+/// seen so far had it at 0, so this is unverified; if writes turn out not to
+/// be included, `input` is low by the write amount on turns that write cache.
+pub(crate) fn normalized_usage(input: u32, output: u32, cached: u32, written: u32) -> Usage {
+    Usage {
+        input_tokens: input.saturating_sub(cached).saturating_sub(written),
+        output_tokens: output,
+        cache_read_tokens: cached,
+        cache_write_tokens: written,
+    }
+}
+
+pub(crate) fn cache_write_input_tokens(usage: &Value) -> u32 {
+    usage
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cache_write_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32
+}
+
 pub(crate) fn cached_input_tokens(usage: &Value) -> u32 {
     usage
         .get("input_tokens_details")
@@ -218,6 +249,49 @@ mod tests {
             id: String::new(),
             retry: None,
         }
+    }
+
+    #[test]
+    fn usage_input_excludes_cached_and_cache_written_tokens() {
+        let usage = json!({
+            "input_tokens": 3000,
+            "input_tokens_details": {"cached_tokens": 2688, "cache_write_tokens": 100}
+        });
+        let normalized = normalized_usage(
+            3000,
+            40,
+            cached_input_tokens(&usage),
+            cache_write_input_tokens(&usage),
+        );
+        assert_eq!(
+            (normalized.input_tokens, normalized.output_tokens, normalized.cache_read_tokens, normalized.cache_write_tokens),
+            (212, 40, 2688, 100)
+        );
+        // Never underflows when a backend reports more cache than input.
+        assert_eq!(normalized_usage(10, 0, 50, 5).input_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn completed_event_reports_uncached_input_and_cache_write() {
+        let events = stream::iter([Ok(event(
+            "response.completed",
+            json!({"response": {"usage": {
+                "input_tokens": 3000, "output_tokens": 40,
+                "input_tokens_details": {"cached_tokens": 2688, "cache_write_tokens": 100}
+            }}}),
+        ))]);
+        let chunks: Vec<_> = response_stream(events, |_| String::new()).collect().await;
+        let usage = chunks
+            .into_iter()
+            .find_map(|chunk| match chunk {
+                Ok(StreamChunk::StepUsage(usage)) => Some(usage),
+                _ => None,
+            })
+            .expect("usage chunk");
+        assert_eq!(
+            (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens),
+            (212, 2688, 100)
+        );
     }
 
     #[tokio::test]
