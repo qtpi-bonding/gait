@@ -69,6 +69,8 @@ fn sessions_lists_active_only() {
 #[test]
 fn auth_write_list_remove_roundtrip() {
     let dir = TempDir::new().unwrap();
+    // the auth state refuses a directory looser than 0700 (umask-dependent)
+    std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let path = dir.path().join("auth.json");
     gait_core::auth::write_api_key_to(&path, "anthropic", "sk-test-abc123").unwrap();
     gait_core::auth::write_api_key_to(&path, "openai", "sk-openai-xyz").unwrap();

@@ -2,12 +2,11 @@ use async_trait::async_trait;
 use gait_auth::store::{CredentialStore, PendingLogin, StoreGuard};
 use gait_auth::{AuthError, SubscriptionCredential};
 use serde_json::Value;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::auth_file::{load_auth_map, store_auth_map, AuthFileLock};
+use crate::auth_file::{load_auth_map, store_auth_map, AuthFileLock, AUTH_FILE_MAX_BYTES};
 use crate::gait_home::GaitHome;
 
 const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(30);
@@ -65,6 +64,10 @@ fn map_error(error: crate::auth::AuthError) -> AuthError {
         )),
         other => AuthError::Other(other.to_string()),
     }
+}
+
+fn keyfile_error(error: &identity_keyfile::KeyfileError) -> AuthError {
+    AuthError::Other(crate::auth::AuthError::from_keyfile(error).to_string())
 }
 
 fn validate_provider(provider: &str) -> Result<(), AuthError> {
@@ -146,45 +149,10 @@ fn pending_path(dir: &Path, provider: &str) -> PathBuf {
 
 fn write_pending(dir: &Path, provider: &str, pending: &PendingLogin) -> Result<(), AuthError> {
     validate_provider(provider)?;
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(dir)
-        .map_err(|e| AuthError::Other(e.to_string()))?;
-    let temp = dir.join(format!(".{provider}.{}.tmp", std::process::id()));
-    let result = (|| {
-        let bytes = serde_json::to_vec(pending).map_err(|e| AuthError::Other(e.to_string()))?;
-        let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temp)
-            .map_err(|e| AuthError::Other(e.to_string()))?;
-        file.write_all(&bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|e| AuthError::Other(e.to_string()))?;
-        drop(file);
-        fs::rename(&temp, pending_path(dir, provider))
-            .map_err(|e| AuthError::Other(e.to_string()))?;
-        #[cfg(unix)]
-        if let Ok(directory) = File::open(dir) {
-            let _ = directory.sync_all();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    let bytes = serde_json::to_vec(pending).map_err(|e| AuthError::Other(e.to_string()))?;
+    identity_keyfile::private_fs::create_private_dir(dir).map_err(|e| keyfile_error(&e))?;
+    identity_keyfile::private_fs::write_private_atomic(&pending_path(dir, provider), &bytes, 0o600)
+        .map_err(|e| keyfile_error(&e))
 }
 
 #[async_trait]
@@ -237,12 +205,19 @@ impl StoreGuard for FileGuard {
     }
     fn peek_pending(&self, provider: &str) -> Result<Option<PendingLogin>, AuthError> {
         validate_provider(provider)?;
-        match fs::read(pending_path(&self.pending_dir, provider)) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+        if fs::symlink_metadata(&self.pending_dir).is_ok() {
+            identity_keyfile::private_fs::check_private_dir(&self.pending_dir)
+                .map_err(|e| keyfile_error(&e))?;
+        }
+        match identity_keyfile::private_fs::read_private_file(
+            &pending_path(&self.pending_dir, provider),
+            AUTH_FILE_MAX_BYTES,
+        ) {
+            Ok(bytes) => serde_json::from_slice(&bytes[..])
                 .map(Some)
                 .map_err(|_| AuthError::Other("invalid pending login".into())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(AuthError::Other(e.to_string())),
+            Err(identity_keyfile::KeyfileError::Missing(_)) => Ok(None),
+            Err(e) => Err(keyfile_error(&e)),
         }
     }
     fn clear_pending(&mut self, provider: &str) -> Result<(), AuthError> {
@@ -298,9 +273,9 @@ mod tests {
 
     #[tokio::test]
     async fn guard_roundtrips_subscription_and_preserves_other_providers() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let p = d.path().join("auth.json");
-        fs::write(&p, br#"{"other":{"type":"api","key":"keep"}}"#).unwrap();
+        crate::auth_test_support::write_private(&p, br#"{"other":{"type":"api","key":"keep"}}"#);
         let s = FileCredentialStore::new(p.clone());
         let mut g = s.lock().await.unwrap();
         g.write("openai-signin", &credential(SIGNIN_METHOD))
@@ -324,9 +299,12 @@ mod tests {
     }
     #[tokio::test]
     async fn read_write_on_api_entry_is_incompatible() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let p = d.path().join("auth.json");
-        fs::write(&p, br#"{"openai-signin":{"type":"api","key":"secret"}}"#).unwrap();
+        crate::auth_test_support::write_private(
+            &p,
+            br#"{"openai-signin":{"type":"api","key":"secret"}}"#,
+        );
         let g = FileCredentialStore::new(p).lock().await.unwrap();
         assert!(matches!(
             g.read("openai-signin"),
@@ -335,7 +313,7 @@ mod tests {
     }
     #[tokio::test]
     async fn second_lock_waits_until_first_guard_dropped() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let s = FileCredentialStore::new(d.path().join("auth.json"));
         let first = s.lock().await.unwrap();
         let wait = s.with_lock_wait(Duration::from_millis(300));
@@ -350,7 +328,7 @@ mod tests {
     }
     #[tokio::test]
     async fn dropping_the_lock_future_releases_the_lock() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let s = FileCredentialStore::new(d.path().join("auth.json"));
         let first = s.lock().await.unwrap();
         let b = s.with_lock_wait(Duration::from_millis(300));
@@ -366,9 +344,9 @@ mod tests {
     }
     #[tokio::test]
     async fn corrupt_auth_json_makes_read_fail_not_empty() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let p = d.path().join("auth.json");
-        fs::write(&p, b"{not json").unwrap();
+        crate::auth_test_support::write_private(&p, b"{not json");
         let g = FileCredentialStore::new(p.clone()).lock().await.unwrap();
         let result = g.read("openai-signin");
         assert!(matches!(result, Err(AuthError::Other(x)) if x.contains("corrupt")));
@@ -376,7 +354,7 @@ mod tests {
     }
     #[tokio::test]
     async fn pending_roundtrip_is_0600_and_cleared() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let s = FileCredentialStore::new(d.path().join("auth.json"));
         let mut g = s.lock().await.unwrap();
         g.put_pending("openai-signin", &pending()).unwrap();
@@ -413,7 +391,7 @@ mod tests {
     }
     #[tokio::test]
     async fn two_stores_on_one_path_make_one_refresh_request() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let p = d.path().join("auth.json");
         let seed = FileCredentialStore::new(p.clone());
         let mut guard = seed.lock().await.unwrap();
@@ -476,9 +454,9 @@ mod tests {
 
     #[tokio::test]
     async fn pending_rejects_traversal_provider_ids() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let outside = d.path().join("sentinel");
-        fs::write(&outside, b"keep").unwrap();
+        crate::auth_test_support::write_private(&outside, b"keep");
         let store = FileCredentialStore::new(d.path().join("auth.json"));
         let mut guard = store.lock().await.unwrap();
         for provider in ["../x", "a/b", "", "..", "/abs"] {
@@ -494,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_absent_provider_does_not_create_auth_json() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let path = d.path().join("auth.json");
         let store = FileCredentialStore::new(path.clone());
         let mut guard = store.lock().await.unwrap();
@@ -504,7 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_rejects_mismatched_provider_id() {
-        let d = tempfile::tempdir().unwrap();
+        let d = crate::auth_test_support::private_tempdir();
         let store = FileCredentialStore::new(d.path().join("auth.json"));
         let mut guard = store.lock().await.unwrap();
         let mut mismatched = credential("chatgpt-signin");
@@ -517,9 +495,60 @@ mod tests {
 
     #[test]
     fn new_store_uses_gait_home_pending_directory() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::auth_test_support::private_tempdir();
         let home = GaitHome::from_path(root.path().to_path_buf()).unwrap();
         let store = FileCredentialStore::new(home.auth_file());
         assert_eq!(store.pending_dir, home.auth_pending_dir());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pending_dir_and_files_are_private_and_loose_ones_refused() {
+        let d = crate::auth_test_support::private_tempdir();
+        let p = d.path().join("auth.json");
+        let store = FileCredentialStore::new(p.clone());
+        let mut g = store.lock().await.unwrap();
+        g.put_pending("openai-signin", &pending()).unwrap();
+        let dir = d.path().join("auth-pending");
+        let file = dir.join("openai-signin.json");
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(g.peek_pending("openai-signin").unwrap().is_some());
+
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        let text = g.peek_pending("openai-signin").unwrap_err().to_string();
+        assert!(
+            text.contains(&file.display().to_string()) && text.contains("0644"),
+            "{text}"
+        );
+        assert!(
+            text.contains("run the Wave D permissions-and-replay migration script"),
+            "{text}"
+        );
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let text = g
+            .put_pending("openai-signin", &pending())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            text.contains(&dir.display().to_string()) && text.contains("0755"),
+            "{text}"
+        );
+        assert!(
+            text.contains("run the Wave D permissions-and-replay migration script"),
+            "{text}"
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
     }
 }

@@ -176,6 +176,7 @@ pub fn terminated_fail(msg: &str) -> Signal {
 }
 
 pub fn write_frames(gait_dir: &Path, signals: &[Signal]) {
+    isolate_gait_home();
     // Every mock-driven turn selects the named `mock` inference.  Keep this
     // fixture setup alongside its input frames so lower-level loop tests that
     // do not use `run_one` are valid as well.
@@ -244,6 +245,20 @@ impl TurnDriver for MockDriver {
         sink.diagnostic(Diag::Error, &format!("{e}"));
         ControlFlow::Break(())
     }
+}
+
+/// The spine resolves credentials from `$GAIT_HOME` (default `~/.gait-home`), and
+/// the auth state refuses a directory looser than 0700. Point every test at one
+/// private process-wide home so none of them reads the developer's real one.
+fn isolate_gait_home() {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("GAIT_HOME", dir.path());
+        dir
+    });
 }
 
 pub async fn run_one(

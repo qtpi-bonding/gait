@@ -17,6 +17,8 @@ pub use gait_provider::{anthropic, factory, openai, provider, providers, strict,
 pub mod agent_frontmatter;
 pub mod auth;
 pub mod auth_file;
+#[cfg(test)]
+mod auth_test_support;
 pub mod auth_store;
 pub mod config_hook;
 pub mod daemon_exit;

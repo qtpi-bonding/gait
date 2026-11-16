@@ -438,6 +438,15 @@ mod tests {
         )
     }
 
+    /// `tempfile` directories follow the umask (0775 here); the auth state
+    /// refuses anything but a private (0700) directory.
+    fn private_tempdir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     /// Opens the credential store at `<dir>/auth.json`. Every call builds a new
     /// handle, so tests can re-read what an earlier handle wrote.
     fn open_store(dir: &tempfile::TempDir) -> FileCredentialStore {
@@ -485,7 +494,7 @@ mod tests {
     async fn login_begin_returns_url_and_stores_pending() {
         let server = StubServer::new().await;
         let method = test_method(&server);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("auth.json");
         let store = open_store(&dir);
         let result = login_begin_with(&method, &store, SIGNIN_PROVIDER_ID)
@@ -505,7 +514,7 @@ mod tests {
     async fn login_roundtrip_begin_then_complete() {
         let server = StubServer::new().await;
         let method = test_method(&server);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let store = open_store(&dir);
         let _ = login_begin_with(&method, &store, SIGNIN_PROVIDER_ID)
             .await
@@ -543,7 +552,7 @@ mod tests {
     async fn ensure_fresh_with_refreshes_expired_token() {
         let server = StubServer::new().await;
         let method = test_method(&server);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let store = open_store(&dir);
         let mut g = store.lock().await.unwrap();
         let cred = gait_auth::SubscriptionCredential {
@@ -579,7 +588,7 @@ mod tests {
     async fn logout_with_reports_revoked_flag() {
         let server = StubServer::new().await;
         let method = test_method(&server);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let store = open_store(&dir);
         let mut g = store.lock().await.unwrap();
         let cred = gait_auth::SubscriptionCredential {
@@ -631,7 +640,7 @@ mod tests {
     async fn logout_with_revoke_failure_reports_unconfirmed() {
         let server = StubServer::new().await;
         let method = test_method(&server);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let store = open_store(&dir);
         seed_signin(&store).await;
         server.respond("/revoke", 500, "boom");
@@ -652,7 +661,7 @@ mod tests {
     async fn logout_forget_removes_entry() {
         let server = StubServer::new().await;
         let method = test_method(&server);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let store = open_store(&dir);
         seed_signin(&store).await;
         server.respond("/revoke", 200, "ok");
@@ -669,7 +678,7 @@ mod tests {
 
     #[test]
     fn remove_signin_is_conflict_naming_forget() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("auth.json");
         let cred = gait_auth::SubscriptionCredential {
             provider_id: SIGNIN_PROVIDER_ID.into(),
@@ -694,7 +703,7 @@ mod tests {
 
     #[test]
     fn remove_other_provider_api_key_still_works() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("auth.json");
         gait_state::auth::write_api_key_to(&path, "openai", "sk-test").unwrap();
         gait_state::auth::write_api_key_to(&path, "anthropic", "sk-keep").unwrap();

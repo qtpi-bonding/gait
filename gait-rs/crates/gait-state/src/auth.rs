@@ -9,6 +9,42 @@ use gait_platform::{NativePlatform, Platform};
 
 use crate::gait_home::{GaitHome, GaitHomeError};
 
+impl AuthError {
+    pub(crate) fn from_keyfile(error: &identity_keyfile::KeyfileError) -> Self {
+        use identity_keyfile::KeyfileError;
+        let insecure = |path: &Path, detail: String| AuthError::Insecure {
+            path: path.to_path_buf(),
+            detail,
+        };
+        match error {
+            KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
+                let detail = match std::fs::symlink_metadata(path) {
+                    Ok(meta) => {
+                        use std::os::unix::fs::PermissionsExt;
+                        format!("mode {:04o}", meta.permissions().mode() & 0o7777)
+                    }
+                    Err(_) => "mode unknown".to_string(),
+                };
+                insecure(path, detail)
+            }
+            KeyfileError::WrongOwner(path) => {
+                use std::os::unix::fs::MetadataExt;
+                let detail = match std::fs::symlink_metadata(path) {
+                    Ok(meta) => format!("owned by uid {}, not the user running gait", meta.uid()),
+                    Err(_) => "owned by another user".to_string(),
+                };
+                insecure(path, detail)
+            }
+            KeyfileError::NotAFile(path) => insecure(path, "not a regular file".to_string()),
+            KeyfileError::TooLarge { path, cap } => AuthError::TooLarge {
+                path: path.clone(),
+                cap: *cap,
+            },
+            other => AuthError::Io(std::io::Error::other(other.to_string())),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, coded_error::CodedError)]
 #[coded(namespace = "gait.auth_store")]
 pub enum AuthError {
@@ -18,6 +54,12 @@ pub enum AuthError {
     #[error("corrupt authentication file {path}: {detail}")]
     #[coded(code = "corrupt", class = Infrastructure)]
     Corrupt { path: PathBuf, detail: String },
+    #[error("authentication state {} is not private ({detail}); run the Wave D permissions-and-replay migration script", .path.display())]
+    #[coded(code = "insecure", class = Logical)]
+    Insecure { path: PathBuf, detail: String },
+    #[error("authentication file {} is larger than {cap} bytes", .path.display())]
+    #[coded(code = "too_large", class = Logical)]
+    TooLarge { path: PathBuf, cap: usize },
     #[error("timed out waiting for authentication file lock")]
     #[coded(code = "lock_timeout", class = Transient)]
     LockTimeout,
@@ -298,11 +340,9 @@ fn auth_path_for(platform: &dyn Platform) -> Result<PathBuf, AuthError> {
 }
 
 fn read_raw_auth(path: &std::path::Path) -> HashMap<String, serde_json::Value> {
-    if !path.exists() {
-        return HashMap::new();
-    }
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    serde_json::from_str(&text).unwrap_or_default()
+    crate::auth_file::load_auth_map(path)
+        .map(|m| m.into_iter().collect())
+        .unwrap_or_default()
 }
 
 fn reject_signin_writer(data: &Map<String, Value>, provider: &str) -> Result<(), AuthError> {
@@ -599,8 +639,13 @@ mod tests {
 
     #[test]
     fn no_auth_provider_resolves_without_key_or_env_var() {
-        std::env::remove_var("OLLAMA_API_KEY");
-        let result = resolve_api_key("ollama");
+        // A fake home: the real `~/.gait/auth.json` is never read by a test.
+        let dir = crate::auth_test_support::private_tempdir();
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env: HashMap::new(),
+        };
+        let result = resolve_credential_with(&platform, "ollama").unwrap();
         assert!(
             result.is_some(),
             "ollama requires no auth; should resolve to a placeholder"
@@ -618,7 +663,7 @@ mod tests {
 
     #[test]
     fn write_and_read_api_key() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let auth_path = dir.path().join("auth.json");
         write_api_key_to(&auth_path, "anthropic", "sk-test-123").unwrap();
         let list = list_credentials_from(&auth_path);
@@ -630,7 +675,7 @@ mod tests {
 
     #[test]
     fn default_auth_operations_use_gait_home_only() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let platform = FakePlatform {
             home: dir.path().to_path_buf(),
             env: HashMap::new(),
@@ -653,7 +698,7 @@ mod tests {
 
     #[test]
     fn env_var_cannot_stand_in_for_signin() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let mut env = HashMap::new();
         env.insert(
             "OPENAI_SIGNIN_API_KEY".to_string(),
@@ -710,7 +755,7 @@ mod tests {
 
     #[test]
     fn subscription_round_trips_as_typed_credential_without_displaying_secret() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let credential = gait_auth::SubscriptionCredential {
             provider_id: "openai-codex".into(),
@@ -753,7 +798,7 @@ mod tests {
     #[test]
     fn subscription_file_is_owner_read_write_only() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let credential = gait_auth::SubscriptionCredential {
             provider_id: "openai-codex".into(),
@@ -772,7 +817,7 @@ mod tests {
 
     #[test]
     fn remove_api_key_removes_entry() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let auth_path = dir.path().join("auth.json");
         write_api_key_to(&auth_path, "openai", "sk-abc").unwrap();
         write_api_key_to(&auth_path, "anthropic", "sk-def").unwrap();
@@ -784,9 +829,9 @@ mod tests {
 
     #[test]
     fn list_shows_logged_out_registration() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
-        std::fs::write(
+        crate::auth_test_support::write_private(
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "openai-signin": {
@@ -799,8 +844,7 @@ mod tests {
                 }
             }))
             .unwrap(),
-        )
-        .unwrap();
+        );
         assert_eq!(
             list_credentials_from(&path).get("openai-signin"),
             Some(&"registered (logged out)".to_string())
@@ -809,9 +853,9 @@ mod tests {
 
     #[test]
     fn remove_refuses_signin_entry_and_still_removes_api_keys() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
-        std::fs::write(
+        crate::auth_test_support::write_private(
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "openai-signin": {
@@ -824,13 +868,12 @@ mod tests {
                 "openai": {"type": "api", "key": "sk-test"}
             }))
             .unwrap(),
-        )
-        .unwrap();
+        );
         assert!(matches!(
             remove_api_key_from(&path, "openai-signin"),
             Err(AuthError::ManagedElsewhere(message)) if message.contains("logout openai-signin --forget")
         ));
-        remove_api_key_from(&path, "openai").unwrap();
+        remove_api_key_from(&path, "openai");
         let map = crate::auth_file::load_auth_map(&path).unwrap();
         assert!(map.contains_key("openai-signin"));
         assert!(!map.contains_key("openai"));
@@ -838,7 +881,7 @@ mod tests {
 
     #[test]
     fn list_credentials_masks_keys() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let auth_path = dir.path().join("auth.json");
         write_api_key_to(&auth_path, "minimax", "sk-abcdefghijklmnop").unwrap();
         let list = list_credentials_from(&auth_path);
@@ -852,15 +895,15 @@ mod tests {
 
     #[test]
     fn external_binding_contains_no_secret_and_resolves_from_codex_home() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let platform = FakePlatform {
             home: dir.path().to_path_buf(),
             env: HashMap::new(),
         };
         let gait_auth_path = auth_path_for(&platform).unwrap();
         let codex_home = dir.path().join("codex-home");
-        std::fs::create_dir_all(&codex_home).unwrap();
-        std::fs::write(
+        crate::auth_test_support::private_dirs(&codex_home);
+        crate::auth_test_support::write_private(
             codex_home.join("auth.json"),
             serde_json::to_vec(&serde_json::json!({
                 "auth_mode": "chatgpt",
@@ -872,8 +915,7 @@ mod tests {
                 }
             }))
             .unwrap(),
-        )
-        .unwrap();
+        );
         write_external_binding_to(&gait_auth_path, "openai-codex", "codex", Some(&codex_home))
             .unwrap();
 
@@ -899,7 +941,7 @@ mod tests {
 
     #[test]
     fn unlink_removes_only_external_bindings() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         write_external_binding_to(&path, "openai-codex", "codex", None).unwrap();
         unlink_external_binding_from(&path, "openai-codex").unwrap();
@@ -935,10 +977,10 @@ mod tests {
 
     #[test]
     fn writers_refuse_corrupt_file() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let original = b"{not json";
-        std::fs::write(&path, original).unwrap();
+        crate::auth_test_support::write_private(&path, original);
         let credential = gait_auth::SubscriptionCredential {
             provider_id: "openai".into(),
             method_id: "test".into(),
@@ -964,7 +1006,7 @@ mod tests {
 
     #[test]
     fn writers_refuse_signin_entry() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let original_value = serde_json::json!({
             "openai-signin": {
@@ -975,7 +1017,7 @@ mod tests {
                 "secret": {"tokens": {"refresh_token": "refresh-secret"}}
             }
         });
-        std::fs::write(&path, serde_json::to_vec(&original_value).unwrap()).unwrap();
+        crate::auth_test_support::write_private(&path, serde_json::to_vec(&original_value).unwrap());
         let original = std::fs::read(&path).unwrap();
         let other = gait_auth::SubscriptionCredential {
             provider_id: "openai-signin".into(),
@@ -1005,18 +1047,17 @@ mod tests {
 
     #[test]
     fn unknown_type_entry_does_not_break_resolution() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join(".gait-home/auth.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
+        crate::auth_test_support::private_dirs(path.parent().unwrap());
+        crate::auth_test_support::write_private(
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "future": { "type": "future", "value": 1 },
                 "openai": { "type": "api", "key": "sk-valid" }
             }))
             .unwrap(),
-        )
-        .unwrap();
+        );
         let platform = FakePlatform {
             home: dir.path().to_path_buf(),
             env: HashMap::new(),
@@ -1030,17 +1071,16 @@ mod tests {
 
     #[test]
     fn malformed_entry_for_requested_provider_is_an_error() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join(".gait-home/auth.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
+        crate::auth_test_support::private_dirs(path.parent().unwrap());
+        crate::auth_test_support::write_private(
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "openai": { "type": "api", "key": 42 }
             }))
             .unwrap(),
-        )
-        .unwrap();
+        );
         let platform = FakePlatform {
             home: dir.path().to_path_buf(),
             env: HashMap::new(),
@@ -1056,7 +1096,7 @@ mod tests {
 
     #[test]
     fn noop_unlink_does_not_create_auth_json() {
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         unlink_external_binding_from(&path, "openai").unwrap();
         assert!(!path.exists());
@@ -1076,6 +1116,8 @@ mod coded_tests {
             &[
                 "gait.auth_store.io",
                 "gait.auth_store.corrupt",
+                "gait.auth_store.insecure",
+                "gait.auth_store.too_large",
                 "gait.auth_store.lock_timeout",
                 "gait.auth_store.managed_elsewhere",
                 "gait.auth_store.no_parent",

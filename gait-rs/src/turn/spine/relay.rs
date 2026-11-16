@@ -1212,6 +1212,8 @@ mod tests {
     #[tokio::test]
     async fn logged_out_entry_is_login_required() {
         let dir = tempfile::tempdir().unwrap();
+        // the auth state refuses a directory looser than 0700 (umask-dependent)
+        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let path = dir.path().join("auth.json");
         let credential = gait_auth::SubscriptionCredential {
             provider_id: "openai-signin".into(),
@@ -1242,6 +1244,8 @@ mod tests {
     #[tokio::test]
     async fn prepare_credential_logged_out_error_does_not_leak_secrets() {
         let dir = tempfile::tempdir().unwrap();
+        // the auth state refuses a directory looser than 0700 (umask-dependent)
+        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let path = dir.path().join("auth.json");
         let credential = gait_auth::SubscriptionCredential {
             provider_id: "openai-signin".into(),

@@ -1,11 +1,13 @@
 use serde_json::{Map, Value};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Error, ErrorKind};
+use std::fs::{self, File};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::auth::AuthError;
+
+pub const AUTH_FILE_MAX_BYTES: usize = 1024 * 1024;
 
 pub struct AuthFileLock {
     file: File,
@@ -16,16 +18,11 @@ impl AuthFileLock {
         let parent = auth_path
             .parent()
             .ok_or_else(|| AuthError::NoParent(auth_path.to_owned()))?;
-        fs::create_dir_all(parent)?;
+        identity_keyfile::private_fs::create_private_dir(parent)
+            .map_err(|e| AuthError::from_keyfile(&e))?;
         let path = auth_path.with_file_name("auth.lock");
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(&path)?;
+        let file = identity_keyfile::private_fs::open_private_lock_file(&path)
+            .map_err(|e| AuthError::from_keyfile(&e))?;
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { file })),
             Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(None),
@@ -54,15 +51,21 @@ impl Drop for AuthFileLock {
 }
 
 pub fn load_auth_map(path: &Path) -> Result<Map<String, Value>, AuthError> {
-    let bytes = match fs::read(path) {
+    if let Some(parent) = path.parent() {
+        if fs::symlink_metadata(parent).is_ok() {
+            identity_keyfile::private_fs::check_private_dir(parent)
+                .map_err(|e| AuthError::from_keyfile(&e))?;
+        }
+    }
+    let bytes = match identity_keyfile::private_fs::read_private_file(path, AUTH_FILE_MAX_BYTES) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Map::new()),
-        Err(error) => return Err(error.into()),
+        Err(identity_keyfile::KeyfileError::Missing(_)) => return Ok(Map::new()),
+        Err(error) => return Err(AuthError::from_keyfile(&error)),
     };
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(Map::new());
     }
-    serde_json::from_slice(&bytes).map_err(|error| AuthError::Corrupt {
+    serde_json::from_slice(&bytes[..]).map_err(|error| AuthError::Corrupt {
         path: path.to_owned(),
         detail: error.to_string(),
     })
@@ -72,37 +75,12 @@ pub fn store_auth_map(path: &Path, map: &Map<String, Value>) -> Result<(), AuthE
     let parent = path
         .parent()
         .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
-    fs::create_dir_all(parent)?;
-    let temp_path = parent.join(format!(".auth.{}.tmp", std::process::id()));
-    let cleanup_path = temp_path.clone();
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temp_path)?;
-    let bytes = serde_json::to_vec_pretty(map).map_err(|error| {
-        let _ = fs::remove_file(&cleanup_path);
-        AuthError::Io(Error::new(ErrorKind::InvalidData, error))
-    })?;
-    use std::io::Write;
-    if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-        drop(file);
-        let _ = fs::remove_file(&cleanup_path);
-        return Err(error.into());
-    }
-    drop(file);
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&cleanup_path);
-        return Err(error.into());
-    }
-    #[cfg(unix)]
-    if let Ok(directory) = File::open(parent) {
-        let _ = directory.sync_all();
-    }
-    Ok(())
+    let bytes = serde_json::to_vec_pretty(map)
+        .map_err(|error| AuthError::Io(std::io::Error::new(ErrorKind::InvalidData, error)))?;
+    identity_keyfile::private_fs::create_private_dir(parent)
+        .map_err(|e| AuthError::from_keyfile(&e))?;
+    identity_keyfile::private_fs::write_private_atomic(path, &bytes, 0o600)
+        .map_err(|e| AuthError::from_keyfile(&e))
 }
 
 pub fn update_auth_file<T>(
@@ -125,10 +103,10 @@ mod tests {
 
     #[test]
     fn corrupt_file_is_not_overwritten() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let original = b"{not json";
-        fs::write(&path, original).unwrap();
+        crate::auth_test_support::write_private(&path, original);
 
         let result = update_auth_file(&path, |map| {
             map.insert("new".into(), serde_json::json!({"type": "api"}));
@@ -141,14 +119,13 @@ mod tests {
 
     #[test]
     fn unknown_entries_survive_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let unknown = serde_json::json!({"type": "future", "a": 1});
-        fs::write(
+        crate::auth_test_support::write_private(
             &path,
             serde_json::to_vec(&serde_json::json!({"x": unknown})).unwrap(),
-        )
-        .unwrap();
+        );
 
         update_auth_file(&path, |map| {
             map.insert("y".into(), serde_json::json!({"type": "api", "key": "k"}));
@@ -168,7 +145,7 @@ mod tests {
     #[test]
     fn store_is_0600_and_leaves_no_temp_file() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let mut map = Map::new();
         map.insert("x".into(), serde_json::json!({"type": "api"}));
@@ -188,7 +165,7 @@ mod tests {
 
     #[test]
     fn lock_excludes_second_holder() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let first = AuthFileLock::try_acquire(&path).unwrap().unwrap();
         assert!(AuthFileLock::try_acquire(&path).unwrap().is_none());
@@ -198,7 +175,7 @@ mod tests {
 
     #[test]
     fn acquire_blocking_times_out_with_lock_timeout() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         let _first = AuthFileLock::try_acquire(&path).unwrap().unwrap();
         let result = AuthFileLock::acquire_blocking(&path, Duration::from_millis(100));
@@ -207,15 +184,15 @@ mod tests {
 
     #[test]
     fn stale_lock_file_does_not_block() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
-        fs::write(dir.path().join("auth.lock"), b"stale").unwrap();
+        crate::auth_test_support::write_private(dir.path().join("auth.lock"), b"stale");
         assert!(AuthFileLock::try_acquire(&path).unwrap().is_some());
     }
 
     #[test]
     fn failed_store_leaves_no_temp_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::auth_test_support::private_tempdir();
         let path = dir.path().join("auth.json");
         fs::create_dir(&path).unwrap();
         let result = store_auth_map(&path, &Map::new());
@@ -225,5 +202,130 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(files, vec![std::ffi::OsString::from("auth.json")]);
+    }
+
+    // ---- A1-fix I-2: private_fs, size cap, fail closed on loose modes ----
+
+    #[cfg(unix)]
+    fn chmod(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn code_of(error: AuthError) -> &'static str {
+        use coded_error::CodedError;
+        error.code()
+    }
+
+    #[cfg(unix)]
+    fn assert_refused(error: AuthError, path: &Path, mode: &str) {
+        let text = error.to_string();
+        assert!(matches!(error, AuthError::Insecure { .. }), "{text}");
+        assert_eq!(code_of(error), "gait.auth_store.insecure", "{text}");
+        assert!(text.contains(&path.display().to_string()), "{text}");
+        assert!(text.contains(mode), "{text}");
+        assert!(
+            text.contains("run the Wave D permissions-and-replay migration script"),
+            "{text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loose_auth_dir_is_refused_not_tightened() {
+        let dir = crate::auth_test_support::private_tempdir();
+        chmod(dir.path(), 0o755);
+        let path = dir.path().join("auth.json");
+        let error = update_auth_file(&path, |_| Ok(())).unwrap_err();
+        assert_refused(error, dir.path(), "0755");
+        assert_eq!(mode_of(dir.path()), 0o755);
+        assert!(!path.exists());
+        assert!(!dir.path().join("auth.lock").exists());
+        let error = load_auth_map(&path).unwrap_err();
+        assert_refused(error, dir.path(), "0755");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loose_auth_file_is_refused_not_tightened() {
+        let dir = crate::auth_test_support::private_tempdir();
+        let path = dir.path().join("auth.json");
+        crate::auth_test_support::write_private(&path, b"{}");
+        chmod(&path, 0o644);
+        let error = load_auth_map(&path).unwrap_err();
+        assert_refused(error, &path, "0644");
+        let error = update_auth_file(&path, |_| Ok(())).unwrap_err();
+        assert_refused(error, &path, "0644");
+        assert_eq!(mode_of(&path), 0o644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loose_lock_file_is_refused_not_tightened() {
+        let dir = crate::auth_test_support::private_tempdir();
+        let path = dir.path().join("auth.json");
+        let lock = dir.path().join("auth.lock");
+        crate::auth_test_support::write_private(&lock, b"");
+        chmod(&lock, 0o664);
+        let error = AuthFileLock::try_acquire(&path).err().unwrap();
+        assert_refused(error, &lock, "0664");
+        assert_eq!(mode_of(&lock), 0o664);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversize_auth_file_is_refused() {
+        let dir = crate::auth_test_support::private_tempdir();
+        let path = dir.path().join("auth.json");
+        crate::auth_test_support::write_private(&path, vec![b' '; AUTH_FILE_MAX_BYTES + 1]);
+        chmod(&path, 0o600);
+        let error = load_auth_map(&path).unwrap_err();
+        let text = error.to_string();
+        assert!(matches!(error, AuthError::TooLarge { .. }), "{text}");
+        assert_eq!(code_of(error), "gait.auth_store.too_large", "{text}");
+        assert!(text.contains(&path.display().to_string()), "{text}");
+        assert!(text.contains(&AUTH_FILE_MAX_BYTES.to_string()), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_state_is_created_private() {
+        let root = crate::auth_test_support::private_tempdir();
+        let dir = root.path().join("fresh");
+        let path = dir.join("auth.json");
+        update_auth_file(&path, |map| {
+            map.insert("k".into(), serde_json::json!({"type": "api", "key": "v"}));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(mode_of(&dir.join("auth.lock")), 0o600);
+        assert_eq!(load_auth_map(&path).unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_round_trips_and_replaces() {
+        let dir = crate::auth_test_support::private_tempdir();
+        let path = dir.path().join("auth.json");
+        let mut map = Map::new();
+        map.insert("a".into(), serde_json::json!({"type": "api", "key": "1"}));
+        store_auth_map(&path, &map).unwrap();
+        map.insert("b".into(), serde_json::json!({"type": "api", "key": "2"}));
+        store_auth_map(&path, &map).unwrap();
+        assert_eq!(load_auth_map(&path).unwrap(), map);
+        assert_eq!(mode_of(&path), 0o600);
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("auth.json")]);
     }
 }
