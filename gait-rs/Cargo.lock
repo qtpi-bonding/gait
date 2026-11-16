@@ -2057,8 +2057,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "concord-telemetry",
  "crossterm 0.29.0",
  "gait-core",
+ "gait-events",
  "gait-ops",
  "gait-testkit",
  "gait-turn-runner",
