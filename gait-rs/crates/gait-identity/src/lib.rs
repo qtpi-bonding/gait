@@ -28,12 +28,27 @@ pub enum IdentityError {
     #[error("load agent identity from {}", .dir.display())]
     #[coded(code = "delegation_expired", class = Logical)]
     DelegationExpired { dir: PathBuf, #[source] source: KeyfileError },
+    #[error("identity path {} is not private: it must be owned by this user, a directory 0700 or a key file 0600", .path.display())]
+    #[coded(code = "identity_not_private", class = Logical)]
+    IdentityNotPrivate { path: PathBuf, #[source] source: KeyfileError },
+    #[error("{} holds a root key but no agent identity; restore the device folder next to it, or move the root folder aside to mint a new identity", .root.display())]
+    #[coded(code = "orphan_root", class = Logical)]
+    OrphanRoot { root: PathBuf, #[source] source: KeyfileError },
 }
 
 impl IdentityError {
     fn from_keyfile(dir: &Path, source: KeyfileError) -> Self {
         let dir = dir.to_path_buf();
         match &source {
+            KeyfileError::InsecureDir(path)
+            | KeyfileError::InsecureFile(path)
+            | KeyfileError::WrongOwner(path)
+            | KeyfileError::NotAFile(path)
+            | KeyfileError::TooLarge { path, .. } => {
+                Self::IdentityNotPrivate { path: path.clone(), source }
+            }
+            KeyfileError::InvalidMode(_) => Self::IdentityNotPrivate { path: dir, source },
+            KeyfileError::OrphanRoot(root) => Self::OrphanRoot { root: root.clone(), source },
             KeyfileError::Missing(path) if path != &dir => Self::MissingKeyfile { dir, source },
             KeyfileError::Io { path, .. } if path != &dir => {
                 Self::DeviceKeyUnreadable { dir, source }
@@ -48,7 +63,6 @@ impl IdentityError {
             KeyfileError::DelegationMismatch => Self::DelegationExpired { dir, source },
             KeyfileError::Missing(_)
             | KeyfileError::Io { .. }
-            | KeyfileError::InsecureDir(_)
             | KeyfileError::AlreadyInitialised(_)
             | _ => Self::AgentDirUnloadable { dir, source },
         }
@@ -59,18 +73,6 @@ impl IdentityError {
 fn load_keys(agent_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
     identity_keyfile::DeviceKeys::load(agent_dir)
         .map_err(|source| coded_error::into_anyhow(IdentityError::from_keyfile(agent_dir, source)))
-}
-
-/// How long a minted or renewed root->device delegation lasts.
-pub const DELEGATION_TTL_SECS: i64 = 30 * 86_400;
-/// Renew when the delegation has this much time left or less.
-pub const RENEW_MARGIN_SECS: i64 = 15 * 86_400;
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// The split layout gait mints under its state dir.
@@ -88,38 +90,55 @@ pub fn minted_layout(gait_dir: &Path) -> Result<identity_keyfile::IdentityLayout
 /// policy (never the brain's) covers the identity folders. `:`-separated.
 pub const DENY_PATHS_ENV: &str = "GAIT_IDENTITY_DENY";
 
-/// Folders the model must never read or write: the device folder, and the root
-/// folder next to a minted one.
+/// Folders the model must never read or write: the device folder, the root
+/// folder next to a minted one, and the machine identity directory when it
+/// resolves (an unresolved machine directory adds nothing).
 pub fn identity_deny_paths(agent_dir: &Path) -> Vec<PathBuf> {
+    let machine = identity_keyfile::MachineDir::locate().ok();
+    identity_deny_paths_with(agent_dir, machine.as_ref().map(|m| m.path()))
+}
+
+/// [`identity_deny_paths`] with the machine directory supplied.
+pub fn identity_deny_paths_with(agent_dir: &Path, machine: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = vec![agent_dir.to_path_buf()];
     if agent_dir.file_name().and_then(|n| n.to_str()) == Some("identity") {
         if let Some(parent) = agent_dir.parent() {
             paths.push(parent.join("identity-root"));
         }
     }
+    paths.extend(machine.map(Path::to_path_buf));
     paths
 }
 
 /// [`identity_deny_paths`] joined for [`DENY_PATHS_ENV`].
 pub fn deny_paths_env_value(agent_dir: &Path) -> String {
-    identity_deny_paths(agent_dir)
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join(":")
+    join_paths(&identity_deny_paths(agent_dir))
 }
 
-/// Renews the delegation of a folder gait minted (the root file exists in the
-/// layout's root dir). A device-only folder is never written. Returns whether a
-/// renewal happened.
+/// [`deny_paths_env_value`] with the machine directory supplied.
+pub fn deny_paths_env_value_with(agent_dir: &Path, machine: Option<&Path>) -> String {
+    join_paths(&identity_deny_paths_with(agent_dir, machine))
+}
+
+fn join_paths(paths: &[PathBuf]) -> String {
+    paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(":")
+}
+
+/// Renews the delegation of a folder gait minted (the layout has a root). A device-only
+/// folder is never written. Returns whether a renewal happened.
 pub fn renew_minted(layout: &identity_keyfile::IdentityLayout, now: i64) -> Result<bool> {
-    if !layout.root_dir().join("root.jwk.json").exists() {
+    if !layout.has_root() {
         return Ok(false);
     }
     let dir = layout.device_dir();
     let wrap = |source| coded_error::into_anyhow(IdentityError::from_keyfile(dir, source));
     let mut keys = identity_keyfile::IdentityKeys::load_at(layout).map_err(wrap)?;
-    keys.renew_if_due_at(Some(layout), now, DELEGATION_TTL_SECS, RENEW_MARGIN_SECS)
+    keys.renew_if_due_at(
+        Some(layout),
+        now,
+        identity_crypto::DEFAULT_DELEGATION_SECONDS,
+        identity_crypto::DEFAULT_RENEW_MARGIN_SECONDS,
+    )
         .map_err(wrap)
 }
 
@@ -154,8 +173,8 @@ impl IdentityContext {
         let layout = minted_layout(gait_dir)?;
         identity_keyfile::IdentityKeys::create_or_load_at(
             &layout,
-            unix_now(),
-            DELEGATION_TTL_SECS,
+            identity_crypto::now_unix(),
+            identity_crypto::DEFAULT_DELEGATION_SECONDS,
         )
         .map_err(|source| {
             coded_error::into_anyhow(IdentityError::from_keyfile(layout.device_dir(), source))
@@ -308,6 +327,8 @@ mod tests {
                 "gait.identity.missing_keyfile",
                 "gait.identity.device_key_unreadable",
                 "gait.identity.delegation_expired",
+                "gait.identity.identity_not_private",
+                "gait.identity.orphan_root",
             ]
         );
     }
@@ -673,27 +694,127 @@ mod tests {
         let gait = tempfile::tempdir().unwrap();
         IdentityContext::mint_or_load(gait.path()).unwrap();
         let layout = minted_layout(gait.path()).unwrap();
-        let now = unix_now();
+        let now = identity_crypto::now_unix();
+        let ttl = identity_crypto::DEFAULT_DELEGATION_SECONDS;
+        let margin = identity_crypto::DEFAULT_RENEW_MARGIN_SECONDS;
+        assert_eq!(margin, 7 * 86_400);
         assert!(!renew_minted(&layout, now).unwrap());
-        assert!(renew_minted(&layout, now + DELEGATION_TTL_SECS - RENEW_MARGIN_SECS + 60).unwrap());
+        assert!(!renew_minted(&layout, now + ttl - margin - 600).unwrap());
+        assert!(renew_minted(&layout, now + ttl - margin + 600).unwrap());
     }
 
     #[test]
     fn device_only_folder_is_never_renewed() {
-        let agent = TempIdentityDir::new(unix_now(), DELEGATION_TTL_SECS);
+        let agent = TempIdentityDir::new(
+            identity_crypto::now_unix(),
+            identity_crypto::DEFAULT_DELEGATION_SECONDS,
+        );
         let layout = identity_keyfile::IdentityLayout::split(
             &std::fs::canonicalize(tempfile::tempdir().unwrap().keep()).unwrap().join("no-root"),
             &std::fs::canonicalize(agent.path()).unwrap(),
         )
         .unwrap();
-        assert!(!renew_minted(&layout, unix_now() + 10 * DELEGATION_TTL_SECS).unwrap());
+        assert!(!renew_minted(&layout, identity_crypto::now_unix() + 10 * identity_crypto::DEFAULT_DELEGATION_SECONDS).unwrap());
     }
 
     #[test]
     fn deny_paths_cover_a_minted_root_next_to_the_device_folder() {
-        let paths = identity_deny_paths(Path::new("/g/identity"));
+        let paths = identity_deny_paths_with(Path::new("/g/identity"), None);
         assert_eq!(paths, vec![PathBuf::from("/g/identity"), PathBuf::from("/g/identity-root")]);
-        assert_eq!(identity_deny_paths(Path::new("/handed/agent")), vec![PathBuf::from("/handed/agent")]);
-        assert_eq!(deny_paths_env_value(Path::new("/g/identity")), "/g/identity:/g/identity-root");
+        assert_eq!(
+            identity_deny_paths_with(Path::new("/handed/agent"), None),
+            vec![PathBuf::from("/handed/agent")]
+        );
+    }
+
+    #[test]
+    fn deny_paths_include_the_machine_identity_dir() {
+        let machine = Path::new("/m/machine-identity");
+        assert_eq!(
+            identity_deny_paths_with(Path::new("/g/identity"), Some(machine)),
+            vec![
+                PathBuf::from("/g/identity"),
+                PathBuf::from("/g/identity-root"),
+                PathBuf::from("/m/machine-identity"),
+            ]
+        );
+        assert_eq!(
+            identity_deny_paths_with(Path::new("/handed/agent"), Some(machine)),
+            vec![PathBuf::from("/handed/agent"), PathBuf::from("/m/machine-identity")]
+        );
+    }
+
+    #[test]
+    fn env_value_joins_the_deny_paths_with_colons() {
+        let machine = Path::new("/m/mi");
+        assert_eq!(
+            deny_paths_env_value_with(Path::new("/g/identity"), Some(machine)),
+            "/g/identity:/g/identity-root:/m/mi"
+        );
+        assert_eq!(deny_paths_env_value_with(Path::new("/g/identity"), None), "/g/identity:/g/identity-root");
+    }
+
+    #[test]
+    fn public_deny_paths_follow_the_located_machine_dir() {
+        let located = identity_keyfile::MachineDir::locate().ok();
+        let expected = identity_deny_paths_with(Path::new("/g/identity"), located.as_ref().map(|m| m.path()));
+        assert_eq!(identity_deny_paths(Path::new("/g/identity")), expected);
+    }
+
+    fn mapped(source: KeyfileError) -> (String, String) {
+        use coded_error::CodedError;
+        let err = IdentityError::from_keyfile(Path::new("/agents/one"), source);
+        (err.code().to_string(), err.to_string())
+    }
+
+    #[test]
+    fn path_carrying_keyfile_errors_map_to_a_coded_variant_naming_the_path() {
+        let p = || PathBuf::from("/agents/one/device.jwk.json");
+        let cases = [
+            KeyfileError::InsecureDir(p()),
+            KeyfileError::InsecureFile(p()),
+            KeyfileError::WrongOwner(p()),
+            KeyfileError::NotAFile(p()),
+            KeyfileError::TooLarge { path: p(), cap: 10 },
+        ];
+        for source in cases {
+            let label = format!("{source:?}");
+            let (code, text) = mapped(source);
+            assert_eq!(code, "gait.identity.identity_not_private", "{label}");
+            assert!(text.contains("/agents/one/device.jwk.json"), "{label}: {text}");
+        }
+        // InvalidMode carries no path: the agent dir is named instead.
+        let (code, text) = mapped(KeyfileError::InvalidMode(0o644));
+        assert_eq!(code, "gait.identity.identity_not_private");
+        assert!(text.contains("/agents/one"), "{text}");
+    }
+
+    #[test]
+    fn orphan_root_maps_to_a_coded_variant_with_recovery_text() {
+        let (code, text) = mapped(KeyfileError::OrphanRoot(PathBuf::from("/g/identity-root")));
+        assert_eq!(code, "gait.identity.orphan_root");
+        assert!(text.contains("/g/identity-root"), "{text}");
+        assert!(text.contains("restore") && text.contains("move"), "{text}");
+    }
+
+    #[test]
+    fn an_unmapped_keyfile_error_stays_the_generic_agent_dir_error() {
+        let (code, text) = mapped(KeyfileError::OwnerRoot);
+        assert_eq!(code, "gait.identity.agent_dir_unloadable");
+        assert_eq!(text, "load agent identity from /agents/one");
+    }
+
+    #[test]
+    fn mint_or_load_over_a_root_without_a_device_folder_is_the_orphan_root_error() {
+        let gait = tempfile::tempdir().unwrap();
+        IdentityContext::mint_or_load(gait.path()).unwrap();
+        let base = std::fs::canonicalize(gait.path()).unwrap();
+        std::fs::remove_dir_all(base.join("identity")).unwrap();
+        let err = match IdentityContext::mint_or_load(gait.path()) {
+            Ok(_) => panic!("a root without an identity must not be adopted"),
+            Err(err) => err,
+        };
+        assert_eq!(coded_error::facts_anyhow(&err).code, "gait.identity.orphan_root");
+        assert!(format!("{err:#}").contains("identity-root"), "{err:#}");
     }
 }

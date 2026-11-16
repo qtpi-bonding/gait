@@ -18,7 +18,7 @@
 ## Identity modes
 
 - `GAIT_AGENT_DIR` set: load only. The folder is never minted over, and renewed only if gait minted it.
-- Unset, with a state dir: the top gait-acp process mints a split identity: device folder `<state>/identity`, root `<state>/identity-root` (outside every sandbox grant). It exports `GAIT_AGENT_DIR`; role children only load. Delegations last 30 days and are renewed when 15 days remain.
+- Unset, with a state dir: the top gait-acp process mints a split identity: device folder `<state>/identity`, root `<state>/identity-root` (outside every sandbox grant). It exports `GAIT_AGENT_DIR`; role children only load. Delegations last 30 days and are renewed when 7 days remain (the identity-crypto defaults).
 - Plain `gait` CLI: no identity.
 
 ## Log fields

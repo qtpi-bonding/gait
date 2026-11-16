@@ -38,11 +38,7 @@ pub fn spawn(ctx: Arc<IdentityContext>, verifier: Arc<DirectVerifier>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(CHECK_EVERY).await;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            tick(&ctx, &verifier, now);
+            tick(&ctx, &verifier, identity_crypto::now_unix());
         }
     });
 }
@@ -56,7 +52,7 @@ mod tests {
         let gait = tempfile::tempdir().unwrap();
         let ctx = IdentityContext::mint_or_load(gait.path()).unwrap();
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
-        let later = gait_identity::DELEGATION_TTL_SECS;
+        let later = identity_crypto::DEFAULT_DELEGATION_SECONDS;
         tick(&ctx, &verifier, later);
         let layout = split_layout_of(&ctx).unwrap();
         assert!(!gait_identity::renew_minted(&layout, later).unwrap(), "already renewed");
