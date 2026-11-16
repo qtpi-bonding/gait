@@ -62,6 +62,11 @@ impl DeliveryState {
         self.seen_path.parent().unwrap_or(Path::new("."))
     }
 
+    /// The replay store's file, the path to name when its failure carries none.
+    pub fn replay_path(&self) -> PathBuf {
+        self.dir().join(REPLAY_FILE)
+    }
+
     pub fn replay(&self) -> std::sync::Arc<FileReplayStore> {
         self.replay.clone()
     }

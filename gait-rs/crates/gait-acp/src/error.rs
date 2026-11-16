@@ -150,7 +150,7 @@ impl AttestationStateError {
             return Self::from_keyfile(fallback, keyfile);
         }
         let reason = source.map(|s| s.to_string()).unwrap_or_else(|| error.to_string());
-        if reason.contains("attested_at") {
+        if reason.contains("attested_at") || reason.contains("is not an object") {
             Self::OldLayout { path: fallback.to_owned(), reason }
         } else {
             Self::Unavailable { path: fallback.to_owned(), reason }

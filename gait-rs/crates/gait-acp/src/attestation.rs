@@ -175,7 +175,7 @@ impl Attestor {
         // claim: from here on no other session can confirm it concurrently.
         if let Some(last) = replay
             .last_seen(&self.self_id.to_string(), &deliverer)
-            .map_err(|error| store_failure(self.state.dir(), error))?
+            .map_err(|error| store_failure(&self.state.replay_path(), error))?
         {
             if sequence <= last {
                 bail!(
@@ -261,7 +261,7 @@ impl VerifiedBatch {
                 }
                 Err(error @ AttestationError::Store(_)) => {
                     return Err(coded_error::into_anyhow(AttestationStateError::from_store(
-                        state.dir(),
+                        state.replay_path().as_path(),
                         &error,
                     )));
                 }
@@ -289,13 +289,13 @@ pub fn verify_prompt(
     let attestor = attestor.ok_or_else(|| {
         coded_error::into_anyhow(PromptError::AttestationMissingOwnDevices)
     })?;
-    attestor.verify(meta).map_err(|error| map_attestation_error(error, attestor.state.dir()))
+    attestor.verify(meta).map_err(|error| map_attestation_error(error, &attestor.state.replay_path()))
 }
 
 /// Types a library failure met while verifying a delivery. A store failure
-/// becomes the coded attestation-state error naming `state_dir`; anything not
+/// becomes the coded attestation-state error naming `replay_path`; anything not
 /// listed passes through unchanged.
-fn map_attestation_error(error: anyhow::Error, state_dir: &Path) -> anyhow::Error {
+fn map_attestation_error(error: anyhow::Error, replay_path: &Path) -> anyhow::Error {
         let typed = match coded_error::downcast_ref::<AttestationError>(&error) {
             Some(AttestationError::UnknownDeliverer(who)) => {
                 PromptError::AttestationUnknownDeliverer(who.clone())
@@ -349,7 +349,7 @@ fn map_attestation_error(error: anyhow::Error, state_dir: &Path) -> anyhow::Erro
                 PromptError::Randomness(source.to_string())
             }
             Some(store @ AttestationError::Store(_)) => {
-                return coded_error::into_anyhow(AttestationStateError::from_store(state_dir, store));
+                return coded_error::into_anyhow(AttestationStateError::from_store(replay_path, store));
             }
             _ => return error,
         };
@@ -357,13 +357,8 @@ fn map_attestation_error(error: anyhow::Error, state_dir: &Path) -> anyhow::Erro
 }
 
 /// A replay-store failure outside `verify_prompt`'s match, coded.
-fn store_failure(state_dir: &Path, error: AttestationError) -> anyhow::Error {
-    match &error {
-        AttestationError::Store(_) => {
-            coded_error::into_anyhow(AttestationStateError::from_store(state_dir, &error))
-        }
-        _ => anyhow::Error::new(error),
-    }
+fn store_failure(replay_path: &Path, error: AttestationError) -> anyhow::Error {
+    coded_error::into_anyhow(AttestationStateError::from_store(replay_path, &error))
 }
 
 #[cfg(test)]
@@ -378,7 +373,7 @@ mod tests {
     fn mapped(error: AttestationError) -> anyhow::Error {
         map_attestation_error(
             coded_error::into_anyhow(error),
-            Path::new("/state/attestation/p256:aa"),
+            Path::new("/state/attestation/p256:aa/replay.json"),
         )
     }
 
