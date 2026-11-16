@@ -396,6 +396,7 @@ pub async fn cmd_run(
         result_schema,
         auto: args.auto.then_some(true),
     };
+    let failures_before = gait_core::turn::turn_failures_recorded();
     let turn = async {
         if let Some(source) = input {
             gait_turn_runner::run_turn_source(
@@ -448,12 +449,17 @@ pub async fn cmd_run(
     let outcome = outcome.map_err(|e| CliError::failed_with("[gait] run error", e))?;
 
     if sink.failed {
-        if let Some(error) = outcome.run_result.as_ref().and_then(failure_error) {
-            return Err(error);
-        }
-        return Err(CliError::failed(
-            "[gait] run failed; see the diagnostic above",
-        ));
+        let error = outcome
+            .run_result
+            .as_ref()
+            .and_then(failure_error)
+            .unwrap_or_else(|| CliError::failed("[gait] run failed; see the diagnostic above"));
+        // A turn that recorded its own failure must not be recorded again by `report`.
+        return Err(if gait_core::turn::turn_failures_recorded() > failures_before {
+            super::error::mark_recorded(error)
+        } else {
+            error
+        });
     }
 
     // `GatePaused`/gate concepts don't exist for a bare sealed turn (no gate

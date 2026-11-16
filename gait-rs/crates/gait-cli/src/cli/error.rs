@@ -66,10 +66,47 @@ impl CliError {
 /// `Result<ExitCode>` instead.
 pub type CliResult = anyhow::Result<()>;
 
+/// Marker context on an error whose failure was already recorded as an error
+/// record by the turn that produced it. `gait_bin::report` does not record such
+/// an error again; the printed text and the exit code are unchanged.
+#[derive(Debug)]
+struct Recorded;
+
+impl std::fmt::Display for Recorded {
+    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+impl std::error::Error for Recorded {}
+
+/// Marks `err` as already recorded. Its code, class and text are unchanged.
+pub fn mark_recorded(err: anyhow::Error) -> anyhow::Error {
+    err.context(Recorded)
+}
+
+pub fn is_recorded(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<Recorded>().is_some()
+}
+
 /// Print `err` once to stderr, exactly as the command worded it, and return
 /// its exit code: Logical 65, Infrastructure 69, Transient 75, Unknown 70.
+/// The text `report` prints.
+pub fn text(err: &anyhow::Error) -> String {
+    if !is_recorded(err) {
+        return format!("{err:#}");
+    }
+    // The marker displays as nothing: leave its empty link out of the chain.
+    let parts: Vec<String> = err
+        .chain()
+        .map(|cause| cause.to_string())
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts.join(": ")
+}
+
 pub fn report(err: &anyhow::Error) -> ExitCode {
-    eprintln!("{err:#}");
+    eprintln!("{}", text(err));
     ExitCode::from(coded_error::cli::exit_code_anyhow(err))
 }
 

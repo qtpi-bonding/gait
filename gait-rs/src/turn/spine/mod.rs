@@ -43,7 +43,7 @@ pub(crate) use handlers::{error_feedback, TurnCtx};
 pub(crate) use handlers::tool::delegated_target;
 
 mod relay;
-pub use relay::{relay_brain_turn, SignalSlot};
+pub use relay::{relay_brain_turn, turn_failures_recorded, SignalSlot};
 #[cfg(feature = "telemetry")]
 pub(crate) use relay::emit_agent_reported;
 

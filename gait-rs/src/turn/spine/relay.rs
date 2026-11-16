@@ -976,7 +976,18 @@ fn record_terminal_failure(
         coded_error::into_anyhow(super::error::SpineError::TurnFailedUncoded(turn.message.clone()))
     };
     concord_telemetry::error_anyhow!(&err, source = "gait.turn", gait_session_id = %session_id);
+    TURN_FAILURES_RECORDED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
+
+/// How many failed turns this process has recorded as error records. A caller
+/// that turns a failed turn into its own error reads it before and after the
+/// turn: a rise means the turn already recorded the failure, so the caller
+/// must not record it a second time.
+pub fn turn_failures_recorded() -> u64 {
+    TURN_FAILURES_RECORDED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static TURN_FAILURES_RECORDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Daemons to show the model in `<status>`. Only live ones: a daemon that has
 /// died is reported once through the completion poll, and listing every dead

@@ -136,10 +136,13 @@ pub fn cli() -> clap::Command {
     Cli::command()
 }
 
-/// Record the error (code, class, fingerprint, never the text) and return its exit code.
+/// Record the error (code, class, fingerprint, never the text) unless the turn that
+/// failed already did, print it, and return its exit code.
 pub fn report(error: &anyhow::Error) -> ExitCode {
     #[cfg(feature = "telemetry")]
-    concord_telemetry::error_anyhow!(error, source = "gait.cli");
+    if !gait_cli::cli::error::is_recorded(error) {
+        concord_telemetry::error_anyhow!(error, source = "gait.cli");
+    }
     gait_cli::cli::error::report(error)
 }
 
