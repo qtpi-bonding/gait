@@ -3,7 +3,7 @@
 # allowlist, no process::exit in CLI/binary sources, and the crates that must
 # stay telemetry-free. Every cargo build goes through cargo-slot.
 # The linter is installed on demand at the Cargo.lock rev (see below).
-# Also needs a checkout of concord-telemetry for the shared dependents script
+# Also needs a checkout of concord-telemetry for the shared check scripts
 # (CONCORD_TELEMETRY_DIR, default ~/Documents/my-libs/concord-telemetry).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -29,7 +29,9 @@ if [ -z "$lint" ]; then
 fi
 "$lint" --local fields.local.toml --baseline lint-baseline.txt crates/*/src crates/*/tests src
 telemetry_dir="${CONCORD_TELEMETRY_DIR:-$HOME/Documents/my-libs/concord-telemetry}"
-"$telemetry_dir/scripts/check-otel-dependents.sh" concord-telemetry
+"$telemetry_dir/scripts/check-otel-dependents.sh" -C . concord-telemetry
+# The default gait-bin build exports telemetry.
+"$telemetry_dir/scripts/check-has-telemetry.sh" -p gait-bin
 
 if grep -R --include='*.rs' -n 'process::exit' crates/gait-cli/src crates/gait-repl/src crates/gait-bin/src crates/gait-acp/src \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
@@ -39,12 +41,11 @@ if grep -R --include='*.rs' -n 'process::exit' crates/gait-cli/src crates/gait-r
     exit 1
 fi
 
+no_telemetry=()
 for crate in gait-types gait-proto gait-platform gait-sandbox gait-codemode-js gait-turn-runner; do
-    if cargo tree -p "$crate" -e normal | grep -q concord-telemetry; then
-        echo "$crate unexpectedly depends on concord-telemetry" >&2
-        exit 1
-    fi
+    no_telemetry+=(-p "$crate")
 done
+"$telemetry_dir/scripts/check-no-telemetry.sh" "${no_telemetry[@]}"
 
 # gait-min carries no telemetry crates.
 if cargo tree -p gait-bin --no-default-features --features min -e normal | grep -qE 'concord-telemetry|opentelemetry'; then
