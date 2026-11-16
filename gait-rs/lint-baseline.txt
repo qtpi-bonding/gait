@@ -63,9 +63,8 @@
 3	crates/gait-repl/src/ui/timer.rs: ratchet.dropped_result: result is discarded
 5	crates/gait-sandbox/src/process/mod.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-sandbox/src/process/mod.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
-5	crates/gait-state/src/auth_file.rs: ratchet.dropped_result: result is discarded
-2	crates/gait-state/src/auth_store.rs: ratchet.dropped_result: result is discarded
-7	crates/gait-state/src/auth_store.rs: ratchet.error_to_string: error converted to string
+1	crates/gait-state/src/auth_file.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-state/src/auth_store.rs: ratchet.error_to_string: error converted to string
 1	crates/gait-state/src/config_hook.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-state/src/daemon_exit.rs: ratchet.dropped_result: result is discarded
 2	crates/gait-state/src/gait_dir.rs: ratchet.error_to_string: error converted to string
@@ -150,8 +149,8 @@
 1	src/turn/spine/handlers/output.rs: ratchet.error_to_string: error converted to string
 2	src/turn/spine/handlers/output.rs: ratchet.error_to_string: error formatted as string
 1	src/turn/spine/handlers/send_message.rs: ratchet.error_to_string: error formatted as string
-13	src/turn/spine/handlers/tool.rs: ratchet.dropped_result: result is discarded
+14	src/turn/spine/handlers/tool.rs: ratchet.dropped_result: result is discarded
 1	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error converted to string
-6	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error formatted as string
+7	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error formatted as string
 1	src/turn/spine/lifecycle.rs: ratchet.dropped_result: result is discarded
 2	src/turn/spine/relay.rs: ratchet.dropped_result: result is discarded
