@@ -187,6 +187,9 @@ impl TurnSink for DirectSink<'_> {
         }
         self.inner.diagnostic(level, msg);
     }
+    fn failure_recorded(&mut self) {
+        self.inner.failure_recorded();
+    }
 }
 
 /// Single-turn source: yields exactly one `Input([user_turn, context_status])` then `None`.

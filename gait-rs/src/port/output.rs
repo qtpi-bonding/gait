@@ -47,6 +47,9 @@ pub trait TurnSink {
     /// begin/flush its per-turn view state.
     fn begin_turn(&mut self) {}
     fn end_turn(&mut self) {}
+    /// The turn recorded its own failure as an error record (default no-op).
+    /// Per-turn, so a caller can tell its own failure was recorded.
+    fn failure_recorded(&mut self) {}
 }
 
 /// Forwarding impl so a `&mut dyn TurnSink` trait object (and reborrows of one)
@@ -70,6 +73,9 @@ impl TurnSink for &mut dyn TurnSink {
     }
     fn end_turn(&mut self) {
         (**self).end_turn();
+    }
+    fn failure_recorded(&mut self) {
+        (**self).failure_recorded();
     }
 }
 
@@ -116,6 +122,8 @@ pub struct CliSink<O: Write, E: Write> {
     err: E,
     quiet: bool,
     pub failed: bool,
+    /// Set when this sink's turn recorded its own failure as an error record.
+    pub failure_recorded: bool,
 }
 
 impl CliSink<std::io::Stdout, std::io::Stderr> {
@@ -125,6 +133,7 @@ impl CliSink<std::io::Stdout, std::io::Stderr> {
             err: std::io::stderr(),
             quiet,
             failed: false,
+            failure_recorded: false,
         }
     }
 }
@@ -135,11 +144,15 @@ impl<O: Write, E: Write> CliSink<O, E> {
             err,
             quiet,
             failed: false,
+            failure_recorded: false,
         }
     }
 }
 
 impl<O: Write, E: Write> TurnSink for CliSink<O, E> {
+    fn failure_recorded(&mut self) {
+        self.failure_recorded = true;
+    }
     fn item(&mut self, item: &StreamItem) {
         let to_err = match classify(item) {
             StreamClass::Error => true,
@@ -334,6 +347,18 @@ mod tests {
         assert!(!s.failed, "error EVENT must not flip exit");
         assert!(!e.is_empty(), "error still shown on stderr even when quiet");
         assert!(o.is_empty());
+    }
+    #[test]
+    fn cli_sink_failure_recorded_is_per_sink_and_off_by_default() {
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let mut a = CliSink::new(&mut o, &mut e, true);
+        let (mut o2, mut e2) = (Vec::new(), Vec::new());
+        let mut b = CliSink::new(&mut o2, &mut e2, true);
+        assert!(!a.failure_recorded && !b.failure_recorded);
+        a.failure_recorded();
+        assert!(a.failure_recorded && !b.failure_recorded);
+        b.diagnostic(Diag::Error, "x");
+        assert!(!b.failure_recorded);
     }
     #[test]
     fn cli_sink_diagnostic_error_sets_failed() {

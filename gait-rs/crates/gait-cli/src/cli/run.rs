@@ -396,7 +396,6 @@ pub async fn cmd_run(
         result_schema,
         auto: args.auto.then_some(true),
     };
-    let failures_before = gait_core::turn::turn_failures_recorded();
     let turn = async {
         if let Some(source) = input {
             gait_turn_runner::run_turn_source(
@@ -455,7 +454,7 @@ pub async fn cmd_run(
             .and_then(failure_error)
             .unwrap_or_else(|| CliError::failed("[gait] run failed; see the diagnostic above"));
         // A turn that recorded its own failure must not be recorded again by `report`.
-        return Err(if gait_core::turn::turn_failures_recorded() > failures_before {
+        return Err(if sink.failure_recorded {
             super::error::mark_recorded(error)
         } else {
             error

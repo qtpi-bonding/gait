@@ -63,7 +63,6 @@ pub(crate) mod run_lifecycle;
 mod run_summary;
 mod setup;
 pub(crate) mod spine;
-pub use spine::turn_failures_recorded;
 mod state;
 mod stream;
 pub(crate) mod synapse;
