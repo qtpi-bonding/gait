@@ -458,10 +458,10 @@ fn local_deny_policy_with(
         identity.extend(std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()));
     }
     // The machine identity dir is denied by the hand's own floor too, whether or
-    // not the spine named it; the spine already failed closed if it could not.
-    match gait_identity::machine_dir_with(&var) {
-        Ok(machine) => identity.push(machine),
-        Err(e) => eprintln!("{e:#}"),
+    // not the spine named it; the spine fails closed when identity is in use,
+    // while standalone gait just has no machine dir to deny.
+    if let Ok(machine) = gait_identity::machine_dir_with(&var) {
+        identity.push(machine);
     }
     for path in identity {
         read.subpaths.push(path.clone());
@@ -854,6 +854,32 @@ mod tests {
         assert!(classify_denial_by_path(&key, &read).is_some(), "read of machine dir must be denied");
         assert!(classify_denial_by_path(&key, &write).is_some(), "write of machine dir must be denied");
         assert!(classify_denial_by_path(&machine.path().join("enrolments.json"), &read).is_some());
+    }
+
+    #[tokio::test]
+    async fn plain_shell_succeeds_with_only_home_set_and_no_identity() {
+        // Standalone gait: no identity dir, no deny env, only HOME. The machine
+        // dir lands in the deny list as a path that does not exist; harmless.
+        let gait = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let ws = tempfile::TempDir::new().unwrap();
+        let home_path = home.path().to_path_buf();
+        let var = move |k: &str| (k == "HOME").then(|| home_path.clone().into_os_string());
+        let (read_deny, write_deny) = local_deny_policy_with(gait.path(), var);
+        let machine = home.path().join(".local/share/machine-identity");
+        assert!(!machine.exists());
+        assert!(read_deny.subpaths.contains(&machine));
+        let scope = SandboxScope { read_deny, write_deny, read_all: true, ..SandboxScope::default() };
+        let ctx = ToolCtx::new(ws.path().to_path_buf(), gait.path().to_path_buf(), "s".into())
+            .with_scope(scope);
+        let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
+        let shell = tools.iter().find(|t| t.name() == "shell").unwrap();
+        let rec = Recorder::buffering();
+        let out = shell
+            .execute(serde_json::json!({"cmd": "echo standalone-ok", "reason": "t"}), &rec)
+            .await
+            .expect("plain shell must succeed");
+        assert!(out.to_string().contains("standalone-ok"), "{out}");
     }
 
     #[test]

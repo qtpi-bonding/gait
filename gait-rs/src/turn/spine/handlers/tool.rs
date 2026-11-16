@@ -15,8 +15,11 @@ use crate::types::OutputCaptureMode;
 use super::error_feedback;
 
 /// The `GAIT_IDENTITY_DENY` value handed to a spawned tool hand: the agent's
-/// identity folders plus the machine identity directory. Fails closed — an
-/// unresolvable machine directory is an error, never a dropped entry.
+/// identity folders plus, when identity is in use, the machine identity
+/// directory. "Identity in use" means `GAIT_AGENT_DIR` is set and non-empty, or
+/// `<gait_dir>/identity` exists on disk. Fails closed only when identity is in
+/// use — an unresolvable or `:`-containing machine directory is then an error;
+/// otherwise the machine entry is simply skipped.
 fn hand_identity_deny_env(
     gait_dir: &Path,
     var: impl Fn(&str) -> Option<std::ffi::OsString>,
@@ -25,14 +28,29 @@ fn hand_identity_deny_env(
         Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
         _ => gait_dir.join("identity"),
     };
-    let machine = gait_identity::machine_dir_with(&var)?;
-    if let Some(bad) = [&agent_dir, &machine].into_iter().find(|p| p.to_string_lossy().contains(':')) {
-        anyhow::bail!(
-            "identity path {} contains ':' and cannot be carried in the hand's deny list; move it",
-            bad.display()
-        );
+    let identity_in_use = var("GAIT_AGENT_DIR").is_some_and(|d| !d.is_empty())
+        || gait_dir.join("identity").exists();
+    let machine = match gait_identity::machine_dir_with(&var) {
+        Ok(machine) => Some(machine),
+        Err(e) if identity_in_use => return Err(e),
+        Err(_) => None,
+    };
+    let mut paths = gait_identity::identity_deny_paths_with(&agent_dir, &agent_dir);
+    paths.pop(); // the placeholder machine slot
+    paths.extend(machine);
+    let carries_colon = |p: &std::path::PathBuf| p.to_string_lossy().contains(':');
+    if identity_in_use {
+        if let Some(bad) = paths.iter().find(|p| carries_colon(p)) {
+            anyhow::bail!(
+                "identity path {} contains ':' and cannot be carried in the hand's deny list; move it",
+                bad.display()
+            );
+        }
+    } else {
+        // Standalone: an entry the list cannot carry is skipped, never an error.
+        paths.retain(|p| !carries_colon(p));
     }
-    Ok(gait_identity::deny_paths_env_value_with(&agent_dir, &machine))
+    Ok(paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(":"))
 }
 
 fn shell_access_and_whitelist_hit(
@@ -1034,18 +1052,57 @@ mod tests {
     }
 
     #[test]
+    fn hand_deny_env_with_nothing_set_and_no_identity_is_ok_without_a_machine_entry() {
+        let gait = tempfile::TempDir::new().unwrap();
+        let value = hand_identity_deny_env(gait.path(), env_of(&[])).unwrap();
+        let g = gait.path();
+        let parts: Vec<String> = value.split(':').map(str::to_owned).collect();
+        assert_eq!(
+            parts,
+            vec![
+                g.join("identity").to_string_lossy().into_owned(),
+                g.join("identity-root").to_string_lossy().into_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn hand_deny_env_skips_a_colon_machine_path_that_does_not_exist_when_identity_is_unused() {
+        let gait = tempfile::TempDir::new().unwrap();
+        let value = hand_identity_deny_env(
+            gait.path(),
+            env_of(&[("MACHINE_IDENTITY_DIR", "/nonexistent/m/a:b"), ("HOME", "/h")]),
+        )
+        .unwrap();
+        assert!(!value.contains("a:b"), "{value}");
+    }
+
+    #[test]
     fn hand_deny_env_refuses_a_path_the_colon_list_cannot_carry() {
         let err = hand_identity_deny_env(
             Path::new("/g"),
-            env_of(&[("MACHINE_IDENTITY_DIR", "/m/a:b"), ("HOME", "/h")]),
+            env_of(&[
+                ("GAIT_AGENT_DIR", "/agents/a"),
+                ("MACHINE_IDENTITY_DIR", "/m/a:b"),
+                ("HOME", "/h"),
+            ]),
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("':'"), "{err:#}");
     }
 
     #[test]
+    fn hand_deny_env_fails_closed_when_an_identity_dir_exists_and_machine_dir_is_not_computable() {
+        let gait = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(gait.path().join("identity")).unwrap();
+        let err = hand_identity_deny_env(gait.path(), env_of(&[])).unwrap_err();
+        assert!(format!("{err:#}").contains("machine identity directory"), "{err:#}");
+    }
+
+    #[test]
     fn hand_deny_env_fails_closed_when_the_machine_dir_is_not_computable() {
-        let err = hand_identity_deny_env(Path::new("/g"), env_of(&[])).unwrap_err();
+        let err = hand_identity_deny_env(Path::new("/g"), env_of(&[("GAIT_AGENT_DIR", "/agents/a")]))
+            .unwrap_err();
         assert!(format!("{err:#}").contains("machine identity directory"), "{err:#}");
     }
 }
