@@ -14,6 +14,37 @@ use crate::types::OutputCaptureMode;
 
 use super::error_feedback;
 
+/// Why a hand's identity deny list could not be built (fail closed).
+#[derive(Debug, coded_error::CodedError)]
+#[coded(namespace = "gait.hand")]
+pub(crate) enum HandDenyError {
+    #[coded(code = "deny_path_has_colon", class = Logical)]
+    ColonPath { path: std::path::PathBuf },
+    #[coded(code = "machine_dir_unresolved", class = Logical)]
+    MachineDirUnresolved(anyhow::Error),
+}
+
+impl std::fmt::Display for HandDenyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+impl std::error::Error for HandDenyError {}
+
+impl HandDenyError {
+    /// The text the model sees for the refusal.
+    fn message(&self) -> String {
+        match self {
+            Self::ColonPath { path } => format!(
+                "identity path {} contains ':' and cannot be carried in the hand's deny list; move it",
+                path.display()
+            ),
+            Self::MachineDirUnresolved(source) => format!("{source:#}"),
+        }
+    }
+}
+
 /// The `GAIT_IDENTITY_DENY` value handed to a spawned tool hand: the agent's
 /// identity folders plus, when identity is in use, the machine identity
 /// directory. "Identity in use" means `GAIT_AGENT_DIR` is set and non-empty, or
@@ -23,7 +54,7 @@ use super::error_feedback;
 fn hand_identity_deny_env(
     gait_dir: &Path,
     var: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> anyhow::Result<String> {
+) -> Result<String, HandDenyError> {
     let agent_dir = match var("GAIT_AGENT_DIR") {
         Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
         _ => gait_dir.join("identity"),
@@ -35,7 +66,7 @@ fn hand_identity_deny_env(
         || present(gait_dir.join("identity-root"));
     let machine = match gait_identity::machine_dir_with(&var) {
         Ok(machine) => Some(machine),
-        Err(e) if identity_in_use => return Err(e),
+        Err(e) if identity_in_use => return Err(HandDenyError::MachineDirUnresolved(e)),
         Err(_) => None,
     };
     let mut paths = gait_identity::agent_deny_paths(&agent_dir);
@@ -46,10 +77,7 @@ fn hand_identity_deny_env(
     for p in paths {
         if p.to_string_lossy().contains(':') {
             if identity_in_use || present(p.clone()) {
-                anyhow::bail!(
-                    "identity path {} contains ':' and cannot be carried in the hand's deny list; move it",
-                    p.display()
-                );
+                return Err(HandDenyError::ColonPath { path: p });
             }
             continue;
         }
@@ -244,6 +272,12 @@ pub async fn run_tool_as_spine(
         Ok(ProtoOutputPresentation::ModelPreview)
         | Ok(ProtoOutputPresentation::Unspecified)
         | Err(_) => crate::types::OutputPresentation::ModelPreview,
+    };
+
+    // Built before the jail exists: a refusal leaves nothing to clean up.
+    let deny_env_value = match hand_identity_deny_env(gait_dir, |k| std::env::var_os(k)) {
+        Ok(value) => value,
+        Err(refusal) => return error_feedback(&refusal.message()),
     };
 
     let jail_raw = std::env::temp_dir().join(format!(
@@ -462,13 +496,6 @@ pub async fn run_tool_as_spine(
                 "TMPDIR",
                 shell_process_dir.as_deref().unwrap_or(jail.as_path()),
             );
-        let deny_env_value = match hand_identity_deny_env(gait_dir, |k| std::env::var_os(k)) {
-            Ok(value) => value,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&jail);
-                return error_feedback(&format!("{e:#}"));
-            }
-        };
         std_cmd.env(gait_identity::DENY_PATHS_ENV, deny_env_value);
         crate::launch::with_trace_env(&mut std_cmd);
         // Enroll hand into the cascade group (joins brain's process group).
@@ -1131,5 +1158,41 @@ mod tests {
         let err = hand_identity_deny_env(Path::new("/g"), env_of(&[("GAIT_AGENT_DIR", "/agents/a")]))
             .unwrap_err();
         assert!(format!("{err:#}").contains("machine identity directory"), "{err:#}");
+    }
+
+    #[test]
+    fn hand_deny_env_colon_path_failure_is_the_typed_variant() {
+        let err: anyhow::Error = hand_identity_deny_env(
+            Path::new("/g"),
+            env_of(&[
+                ("GAIT_AGENT_DIR", "/agents/a"),
+                ("MACHINE_IDENTITY_DIR", "/m/a:b"),
+                ("HOME", "/h"),
+            ]),
+        )
+        .unwrap_err()
+        .into();
+        assert!(
+            matches!(
+                err.downcast_ref::<HandDenyError>(),
+                Some(HandDenyError::ColonPath { path }) if path == Path::new("/m/a:b")
+            ),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn hand_deny_env_unresolved_machine_dir_is_the_typed_variant() {
+        let err: anyhow::Error =
+            hand_identity_deny_env(Path::new("/g"), env_of(&[("GAIT_AGENT_DIR", "/agents/a")]))
+                .unwrap_err()
+                .into();
+        assert!(
+            matches!(
+                err.downcast_ref::<HandDenyError>(),
+                Some(HandDenyError::MachineDirUnresolved(_))
+            ),
+            "{err:#}"
+        );
     }
 }
