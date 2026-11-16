@@ -93,7 +93,7 @@ mod tests {
         let identity = tempfile::tempdir().unwrap();
         std::fs::write(identity.path().join("device.jwk.json"), b"one").unwrap();
         let first = DeliveryState::open(state.path(), "p256:aa").unwrap();
-        assert!(first.replay().record("p256:aa", "p256:dd", 5).unwrap());
+        assert!(first.replay().record("p256:aa", "p256:dd", 5, 0, None).unwrap());
         std::fs::remove_dir_all(identity.path()).unwrap();
         std::fs::create_dir_all(identity.path()).unwrap();
         let second = DeliveryState::open(state.path(), "p256:aa").unwrap();
@@ -124,7 +124,7 @@ mod tests {
         let a = DeliveryState::open(state.path(), "p256:aa").unwrap();
         let b = DeliveryState::open(state.path(), "p256:bb").unwrap();
         a.mark_seen(&[("p256:x".into(), "m".into())]).unwrap();
-        a.replay().record("p256:aa", "p256:d", 3).unwrap();
+        a.replay().record("p256:aa", "p256:d", 3, 0, None).unwrap();
         assert!(!b.seen("p256:x", "m"));
         assert_eq!(b.replay().last_seen("p256:bb", "p256:d").unwrap(), None);
     }
@@ -137,7 +137,7 @@ mod tests {
         std::fs::set_permissions(identity.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
         let s = DeliveryState::open(state.path(), "p256:aa").unwrap();
         s.mark_seen(&[("p256:x".into(), "m".into())]).unwrap();
-        assert!(s.replay().record("p256:aa", "p256:d", 1).unwrap());
+        assert!(s.replay().record("p256:aa", "p256:d", 1, 0, None).unwrap());
         std::fs::set_permissions(identity.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 }

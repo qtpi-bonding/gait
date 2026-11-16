@@ -49,7 +49,8 @@ impl IdentityError {
             KeyfileError::Missing(_)
             | KeyfileError::Io { .. }
             | KeyfileError::InsecureDir(_)
-            | KeyfileError::AlreadyInitialised(_) => Self::AgentDirUnloadable { dir, source },
+            | KeyfileError::AlreadyInitialised(_)
+            | _ => Self::AgentDirUnloadable { dir, source },
         }
     }
 }

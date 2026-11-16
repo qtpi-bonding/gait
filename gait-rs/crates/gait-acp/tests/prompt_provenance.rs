@@ -9,8 +9,8 @@ use gait_acp::session_map::SessionMap;
 use gait_proto::gait::log::v1::{Event, Provenance, event, payload};
 use identity_crypto::jwk_duo::{GenerationService, KeyDuo};
 use identity_crypto::{
-    PrincipalId, PublicKey, SessionCredential, Timestamp, delegate_device, mint_session, pb,
-    principal_id, signing_public,
+    PrincipalId, PublicKey, PublicKeyDuo, SessionCredential, Timestamp, delegate_device,
+    mint_session, pb, principal_id, signing_public,
 };
 use identity_keyfile::testkit::TempIdentityDir;
 use message_attestation::{
@@ -209,7 +209,7 @@ fn new_author(now: i64) -> Author {
     let root = GenerationService::generate_key_duo();
     let device = GenerationService::generate_key_duo();
     let id = principal_id(&root);
-    let delegation = delegate_device(&root, &id, &device, now, now + 86_400).unwrap();
+    let delegation = delegate_device(&root, &id, &PublicKeyDuo::from(&device), now, now + 86_400).unwrap();
     let session =
         mint_session(device.signing_key_pair(), &signing_public(&root), now, now + 3600).unwrap();
     Author { id, session, delegation }
@@ -219,7 +219,7 @@ fn new_deliverer(now: i64) -> Deliverer {
     let root = GenerationService::generate_key_duo();
     let device = GenerationService::generate_key_duo();
     let id = principal_id(&root);
-    let delegation = delegate_device(&root, &id, &device, now, now + 86_400).unwrap();
+    let delegation = delegate_device(&root, &id, &PublicKeyDuo::from(&device), now, now + 86_400).unwrap();
     Deliverer { id, device, delegation }
 }
 
@@ -315,7 +315,7 @@ impl Fixture {
                     message: sign_message(
                         &self.author.session,
                         self.author.delegation.clone(),
-                        audience,
+                        &audience.to_string(),
                         now,
                         &message,
                     )
