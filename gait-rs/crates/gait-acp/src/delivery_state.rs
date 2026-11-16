@@ -156,7 +156,6 @@ mod tests {
         std::fs::set_permissions(identity.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-
     fn loose_attestation_dir(state: &Path, agent_id: &str, mode: u32) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = state.join("attestation").join(agent_id);
