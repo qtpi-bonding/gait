@@ -42,6 +42,9 @@ pub struct Profile {
     #[serde(default)]
     pub verified_goal: Option<String>,
     pub model: String,        // "provider/model-id"
+    /// Named inference profile (proto `Inference.name`), for telemetry.
+    #[serde(default)]
+    pub inference: String,
     pub instructions: String, // composed system prompt (preamble + agent body)
     pub allow: Vec<String>,
     pub deny: Vec<String>,
@@ -73,6 +76,7 @@ pub struct ResolvedProfile {
     pub(crate) provider: std::sync::Arc<dyn gait_provider::provider::Provider>,
     pub(crate) permissioned: crate::tools::PermissionedTools,
     pub model: String,
+    pub inference: String,
     pub instructions: String,
     pub(crate) mcp_registry: Vec<crate::config::McpToolDef>,
     pub(crate) mcp_clients: McpClients,
@@ -331,6 +335,7 @@ impl Profile {
         Profile {
             verified_goal: None,
             model,
+            inference: inference.name.clone(),
             instructions,
             allow,
             deny,
@@ -359,6 +364,7 @@ impl Profile {
             anyhow::bail!("selected inference has no model");
         }
         self.model = inference.model.clone();
+        self.inference = inference.name.clone();
         self.llm_params = inference
             .llm_params
             .as_ref()
@@ -490,6 +496,7 @@ impl Profile {
             provider,
             permissioned,
             model: self.model,
+            inference: self.inference,
             instructions: match identity_block {
                 Some(block) => format!("{}\n{block}", self.instructions),
                 None => self.instructions,
@@ -536,6 +543,7 @@ impl ResolvedProfile {
             provider,
             permissioned,
             model: "test/model".into(),
+            inference: String::new(),
             instructions: String::new(),
             mcp_registry: vec![],
             mcp_clients: Default::default(),
@@ -647,6 +655,7 @@ mod tests {
         let profile = Profile {
             verified_goal: None,
             model: "anthropic/claude-x".into(),
+            inference: String::new(),
             instructions: "sys".into(),
             allow: vec!["read".into()],
             deny: vec![],
@@ -694,6 +703,7 @@ mod tests {
         let mut profile = Profile {
             verified_goal: None,
             model: base.clone(),
+            inference: String::new(),
             instructions: String::new(),
             allow: vec![],
             deny: vec![],
@@ -854,6 +864,7 @@ mod tests {
         let p = Profile {
             verified_goal: None,
             model: "anthropic/claude-x".into(),
+            inference: String::new(),
             instructions: "sys".into(),
             allow: vec!["read".into()],
             deny: vec![],
@@ -883,6 +894,7 @@ mod tests {
         let profile = Profile {
             verified_goal: None,
             model: "anthropic/claude-haiku-4-5-20251001".into(),
+            inference: String::new(),
             instructions: String::new(),
             allow: vec![],
             deny: vec![],

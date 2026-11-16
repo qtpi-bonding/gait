@@ -69,6 +69,13 @@ pub(crate) async fn run_step(
             session_id: env.session_id.to_owned(),
             turn_id: std::env::var(crate::trace::TURN_ID_ENV).unwrap_or_default(),
             model: env.model.to_owned(),
+            inference: env.inference.to_owned(),
+            reasoning_effort: env
+                .llm_params
+                .openai
+                .as_ref()
+                .and_then(|o| o.reasoning_effort.clone())
+                .unwrap_or_default(),
         },
         env.provider.stream(
             env.system_prompt,

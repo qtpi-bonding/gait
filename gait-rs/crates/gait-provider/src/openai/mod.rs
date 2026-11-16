@@ -135,6 +135,9 @@ struct StreamChunkData {
     choices: Vec<StreamChoice>,
     #[serde(default)]
     usage: Option<StreamUsage>,
+    /// The model the server says it used.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +178,12 @@ struct StreamUsage {
     prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
+    /// Server-side timings some servers (oMLX) add to the usage object:
+    /// time to first token in seconds, generation speed in tokens/second.
+    #[serde(default)]
+    time_to_first_token: Option<f64>,
+    #[serde(default)]
+    generation_tokens_per_second: Option<f64>,
 }
 
 fn count_or_zero<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
@@ -400,8 +409,20 @@ impl Provider for OpenAIProvider {
             reqwest::header::HeaderValue::from_static("application/json"),
         );
         let request = crate::transport::SseRequest::new(url, headers, body_value);
-        let stream = self.transport.stream(request).await?;
-        Ok(Box::pin(body_stream(stream)))
+        let mut call = crate::telemetry::ModelCall::begin(&crate::telemetry::RequestAttrs {
+            temperature: params.temperature,
+            top_p: params.top_p,
+            max_tokens: params.max_tokens,
+            model_id: self.model.clone(),
+        });
+        let stream = match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                call.fail(&error);
+                return Err(error);
+            }
+        };
+        Ok(Box::pin(body_stream(stream, call)))
     }
 
     fn model_id(&self) -> &str {
@@ -416,6 +437,7 @@ fn body_stream(
             Item = Result<eventsource_stream::Event, crate::provider::ProviderError>,
         > + Send
         + 'static,
+    mut call: crate::telemetry::ModelCall,
 ) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
     use futures_util::StreamExt;
     async_stream::try_stream! {
@@ -452,9 +474,13 @@ fn body_stream(
                 Err(_) if finished => break,
                 // Connection dropped mid-body before [DONE] → silent-truncation
                 // case; surface StreamIncomplete. Parse/Utf8 errors stay Sse.
-                Err(e) => Err(e)?,
+                Err(e) => {
+                    call.fail(&e);
+                    Err(e)?
+                }
             };
             if event.data == "[DONE]" {
+                call.answered();
                 if !finished { trailer_deadline = tokio::time::Instant::now() + TRAILER_GRACE; }
                 finished = true;
                 continue;
@@ -469,10 +495,24 @@ fn body_stream(
                 }
             };
 
+            if let Some(model) = &chunk.model {
+                call.response_model(model);
+            }
             if let Some(usage) = &chunk.usage {
                 // Reasoning tokens are a subset of output_tokens; they go on the
                 // call span, not into Usage.
-                let (usage, _reasoning_tokens) = usage.normalized();
+                let (usage, reasoning) = usage.normalized();
+                call.usage(crate::telemetry::CallUsage {
+                    input: usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens,
+                    output: usage.output_tokens,
+                    cached: usage.cache_read_tokens,
+                    cache_write: usage.cache_write_tokens,
+                    reasoning,
+                });
+                call.server_stats(
+                    usage_server_ttft_ms(&chunk),
+                    chunk.usage.as_ref().and_then(|u| u.generation_tokens_per_second),
+                );
                 last_usage = Some(usage);
             }
 
@@ -480,12 +520,14 @@ fn body_stream(
                 if let Some(text) = &choice.delta.content {
                     if !text.is_empty() {
                         received_bytes += text.len();
+                        call.first_token();
                         yield StreamChunk::Text(text.clone());
                     }
                 }
 
                 if let Some(thinking) = &choice.delta.reasoning_content {
                     if !thinking.is_empty() {
+                        call.first_token();
                         yield StreamChunk::ThinkingDelta(thinking.clone());
                     }
                 }
@@ -502,6 +544,7 @@ fn body_stream(
                             }
                             if let Some(args) = &f.arguments {
                                 tool_args.entry(idx).or_default().push_str(args);
+                                call.first_token();
                                 let id   = tool_ids.get(&idx).cloned().unwrap_or_default();
                                 let name = tool_names.get(&idx).cloned().unwrap_or_default();
                                 yield StreamChunk::ToolCallDelta {
@@ -514,6 +557,9 @@ fn body_stream(
                     }
                 }
 
+                if let Some(reason) = choice.finish_reason.as_deref() {
+                    call.finish_reason(reason);
+                }
                 if matches!(choice.finish_reason.as_deref(), Some("tool_calls") | Some("stop")) {
                     for (idx, args_str) in tool_args.iter().filter(|_| !tools_completed) {
                         let id   = tool_ids.get(idx).cloned().unwrap_or_default();
@@ -521,6 +567,7 @@ fn body_stream(
                         let args = crate::provider::parse_tool_args(args_str);
                         yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
                     }
+                    call.answered();
                     tools_completed = true;
                     if !finished { trailer_deadline = tokio::time::Instant::now() + TRAILER_GRACE; }
                     finished = true;
@@ -532,10 +579,17 @@ fn body_stream(
             yield StreamChunk::StepUsage(usage);
         }
         if !finished {
-            Err(ProviderError::StreamIncomplete { received_bytes })?;
+            let error = ProviderError::StreamIncomplete { received_bytes };
+            call.fail(&error);
+            Err(error)?;
         }
+        call.end();
         yield StreamChunk::Done;
     }
+}
+
+fn usage_server_ttft_ms(chunk: &StreamChunkData) -> Option<f64> {
+    chunk.usage.as_ref()?.time_to_first_token.map(|seconds| seconds * 1000.0)
 }
 
 /// How long to keep reading after the answer finished, for a usage chunk.
@@ -547,7 +601,7 @@ fn log_unparsed_chunk(data: &str, error: &serde_json::Error) {
     #[cfg(feature = "telemetry")]
     {
         let end = (0..=data.len().min(200)).rev().find(|i| data.is_char_boundary(*i)).unwrap_or(0);
-        tracing::warn!(error = %error, head = &data[..end], "unparsed chat stream chunk");
+        tracing::warn!(reason = %format!("{error}: {}", &data[..end]), "unparsed chat stream chunk");
     }
     #[cfg(not(feature = "telemetry"))]
     let _ = (data, error);

@@ -1283,6 +1283,7 @@ mod classify_gate_tests {
             classifier,
             relay: None,
             model: &fx.model,
+            inference: "",
             mcp_registry: &fx.mcp_registry,
             mcp_clients: &fx.mcp_clients,
             plugin_registry: &fx.plugin_registry,

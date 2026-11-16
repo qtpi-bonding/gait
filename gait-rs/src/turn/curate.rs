@@ -42,6 +42,7 @@ pub(super) async fn apply_curate_filter(
             .into_enabled()
             .with_permissions(vec![], vec![]),
         model: model.to_string(),
+        inference: String::new(),
         instructions: CURATE_SYSTEM_PROMPT.to_string(),
         mcp_registry: vec![],
         mcp_clients: Default::default(),

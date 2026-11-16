@@ -48,6 +48,7 @@ pub(crate) struct SetupData {
     pub gait_dir: PathBuf,
     pub codebase_path: PathBuf,
     pub model: String,
+    pub inference: String,
     pub repos: Repos,
     pub system_prompt: String,
     pub mcp_registry: Vec<crate::config::McpToolDef>,
@@ -107,6 +108,7 @@ pub(crate) fn init(
     let gait_dir = session.gait_dir.clone();
     let codebase_path = session.codebase_path.clone();
     let model = caps.model.clone();
+    let inference = caps.inference.clone();
     let repos = session.repos.clone();
     let system_prompt = caps.instructions;
     let mcp_registry = caps.mcp_registry;
@@ -332,6 +334,7 @@ pub(crate) fn init(
         gait_dir: gait_dir.clone(),
         codebase_path,
         model,
+        inference,
         repos,
         system_prompt,
         mcp_registry,

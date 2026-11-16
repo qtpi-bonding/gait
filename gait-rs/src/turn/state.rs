@@ -174,6 +174,8 @@ pub(crate) struct TurnEnv<'a> {
     pub codebase_dirty: bool,
     /// Needed by `stream::run_step` (Task 16) to build the provider.stream() call.
     pub llm_params: &'a crate::config::LlmParamsConfig,
+    /// Named inference profile, for provider telemetry.
+    pub inference: &'a str,
     pub context_policy: crate::profile::ContextPolicy,
     /// Needed by `execute::run_tools` (Task 17) for gate_classify and
     /// execute_tool_call.
