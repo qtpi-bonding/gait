@@ -1,5 +1,5 @@
 //! A loose identity directory is refused at startup with one coded error that
-//! names the path, the observed mode and the Wave D script, and a normal
+//! names the path, the observed mode and the fix, and a normal
 //! non-zero exit (no panic, no chmod).
 
 use std::os::unix::fs::PermissionsExt;
@@ -18,7 +18,7 @@ fn assert_refused(dir: &Path, agent_dir_env: Option<&Path>, state: &Path) {
     assert_eq!(output.status.code(), Some(65), "config-class exit, not a panic (101): {stderr}");
     assert!(stderr.contains(&dir.display().to_string()), "path: {stderr}");
     assert!(stderr.contains("0755"), "mode: {stderr}");
-    assert!(stderr.contains("run the Wave D permissions-and-replay migration script"), "{stderr}");
+    assert!(stderr.contains("tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"), "{stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
     let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o755, "never chmods");

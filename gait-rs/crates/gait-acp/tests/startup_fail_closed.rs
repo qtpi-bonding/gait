@@ -1,6 +1,6 @@
 //! A loose or old-layout attestation state is refused at startup with one
 //! coded, human-readable error and a normal non-zero exit (no panic, no
-//! chmod, no migration): the Wave D script migrates live data.
+//! chmod, no migration).
 
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
@@ -28,7 +28,7 @@ fn gait_acp_refuses_a_loose_attestation_dir_and_exits_once() {
     assert_eq!(output.status.code(), Some(65), "config-class exit, not a panic (101): {stderr}");
     assert!(stderr.contains(&dir.display().to_string()), "{stderr}");
     assert!(stderr.contains("0755"), "{stderr}");
-    assert!(stderr.contains("run the Wave D permissions-and-replay migration script"), "{stderr}");
+    assert!(stderr.contains("tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"), "{stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
     let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o755, "never chmods");

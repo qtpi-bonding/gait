@@ -19,10 +19,10 @@ impl AuthError {
         };
         match error {
             KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
-                insecure(path, gait_identity::mode_detail(path), gait_identity::MIGRATION_HINT_SUFFIX)
+                insecure(path, gait_identity::mode_detail(path), gait_identity::MODE_HINT_SUFFIX)
             }
             KeyfileError::WrongOwner(path) => {
-                insecure(path, gait_identity::owner_detail(path), gait_identity::MIGRATION_HINT_SUFFIX)
+                insecure(path, gait_identity::owner_detail(path), gait_identity::OWNER_HINT_SUFFIX)
             }
             KeyfileError::NotAFile(path) => insecure(path, "not a regular file".to_string(), ""),
             KeyfileError::TooLarge { path, cap } => AuthError::TooLarge {
@@ -1091,17 +1091,17 @@ mod tests {
     }
 
     #[test]
-    fn the_wave_d_hint_is_for_mode_and_owner_only_and_a_symlink_is_named() {
+    fn the_permission_hint_is_for_mode_and_owner_only_and_a_symlink_is_named() {
         use identity_keyfile::KeyfileError as K;
         let p = || PathBuf::from("/g/auth.json");
         for key in [K::InsecureFile(p()), K::InsecureDir(p()), K::WrongOwner(p())] {
             let text = AuthError::from_keyfile(&key).to_string();
-            assert!(text.contains("Wave D"), "{text}");
+            assert!(text.contains(if matches!(key, K::WrongOwner(_)) { "must be owned by the current user" } else { "tighten the permissions" }), "{text}");
         }
         let text = AuthError::from_keyfile(&K::NotAFile(p())).to_string();
-        assert!(!text.contains("Wave D") && text.contains("/g/auth.json"), "{text}");
+        assert!(!text.contains("tighten the permissions") && !text.contains("owned by the current user") && text.contains("/g/auth.json"), "{text}");
         let text = AuthError::from_keyfile(&K::TooLarge { path: p(), cap: 3 }).to_string();
-        assert!(!text.contains("Wave D"), "{text}");
+        assert!(!text.contains("tighten the permissions") && !text.contains("owned by the current user"), "{text}");
 
         let tmp = tempfile::tempdir().unwrap();
         let link = tmp.path().join("link");
@@ -1118,9 +1118,9 @@ mod tests {
         crate::auth_test_support::write_private(&path, br#"{"x":{"type":"api","key":"k"}}"#);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let text = list_credentials_from(&path).unwrap_err().to_string();
-        assert!(text.contains("0644") && text.contains("Wave D"), "{text}");
+        assert!(text.contains("0644") && text.contains("tighten the permissions"), "{text}");
         let text = external_binding_from(&path, "x").unwrap_err().to_string();
-        assert!(text.contains("0644") && text.contains("Wave D"), "{text}");
+        assert!(text.contains("0644") && text.contains("tighten the permissions"), "{text}");
     }
 
     #[test]

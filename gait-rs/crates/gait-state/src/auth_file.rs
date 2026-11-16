@@ -231,7 +231,7 @@ mod tests {
         assert!(text.contains(&path.display().to_string()), "{text}");
         assert!(text.contains(mode), "{text}");
         assert!(
-            text.contains("run the Wave D permissions-and-replay migration script"),
+            text.contains("tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"),
             "{text}"
         );
     }

@@ -156,7 +156,6 @@ mod tests {
         std::fs::set_permissions(identity.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    const SCRIPT: &str = "run the Wave D permissions-and-replay migration script";
 
     fn loose_attestation_dir(state: &Path, agent_id: &str, mode: u32) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -184,7 +183,7 @@ mod tests {
         let text = format!("{error:#}");
         assert!(text.contains(&dir.display().to_string()), "names the path: {text}");
         assert!(text.contains("0755"), "names the octal mode: {text}");
-        assert!(text.contains(SCRIPT), "names the migration script: {text}");
+        assert!(text.contains("tighten the permissions (chmod 700"), "names the fix: {text}");
         let mode = std::fs::metadata(&dir).unwrap();
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(mode.permissions().mode() & 0o777, 0o755, "never chmods");
@@ -202,7 +201,7 @@ mod tests {
         assert_eq!(code_of(&error), "gait.acp.attestation_state.insecure");
         let text = format!("{error:#}");
         assert!(text.contains(&file.display().to_string()), "{text}");
-        assert!(text.contains("0644") && text.contains(SCRIPT), "{text}");
+        assert!(text.contains("0644") && text.contains("tighten the permissions (chmod 700"), "{text}");
     }
 
     #[test]
@@ -216,7 +215,7 @@ mod tests {
         let error = DeliveryState::open(state.path(), "p256:aa").err().expect("must refuse");
         assert_eq!(code_of(&error), "gait.acp.attestation_state.old_layout");
         let text = format!("{error:#}");
-        assert!(text.contains(&file.display().to_string()) && text.contains(SCRIPT), "{text}");
+        assert!(text.contains(&file.display().to_string()) && text.contains("old format and must be converted"), "{text}");
     }
 
     #[test]
@@ -227,7 +226,7 @@ mod tests {
         let wrong = E::from_keyfile(fallback, &K::WrongOwner("/state/x".into()));
         assert!(matches!(wrong, E::Insecure { .. }));
         let text = wrong.to_string();
-        assert!(text.contains("/state/x") && text.contains("owned by") && text.contains(SCRIPT), "{text}");
+        assert!(text.contains("/state/x") && text.contains("owned by") && text.contains("the path must be owned by the current user"), "{text}");
         for key in [
             K::NotAFile("/state/x".into()),
             K::TooLarge { path: "/state/x".into(), cap: 1 },

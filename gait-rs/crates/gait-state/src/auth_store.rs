@@ -532,7 +532,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("run the Wave D permissions-and-replay migration script"),
+            text.contains("tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"),
             "{text}"
         );
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
@@ -547,7 +547,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("run the Wave D permissions-and-replay migration script"),
+            text.contains("tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"),
             "{text}"
         );
         assert_eq!(
@@ -555,7 +555,7 @@ mod tests {
             0o755
         );
         let text = g.clear_pending("openai-signin").unwrap_err().to_string();
-        assert!(text.contains("0755") && text.contains("Wave D"), "{text}");
+        assert!(text.contains("0755") && text.contains("tighten the permissions"), "{text}");
         assert!(file.exists());
     }
 }

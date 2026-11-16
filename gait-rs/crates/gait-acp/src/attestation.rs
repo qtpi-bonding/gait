@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(code(&error), "gait.acp.attestation_state.insecure");
         let text = format!("{error:#}");
         assert!(text.contains("/state/attestation/p256:aa"), "{text}");
-        assert!(text.contains("run the Wave D permissions-and-replay migration script"), "{text}");
+        assert!(text.contains("tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"), "{text}");
     }
 
     #[test]

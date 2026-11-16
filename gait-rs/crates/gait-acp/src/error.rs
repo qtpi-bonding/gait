@@ -1,5 +1,5 @@
 use anyhow::Error as AnyhowError;
-use gait_identity::{mode_detail, owner_detail, MIGRATION_HINT, MIGRATION_HINT_SUFFIX};
+use gait_identity::{mode_detail, owner_detail, MODE_HINT_SUFFIX, OLD_FORMAT_HINT, OWNER_HINT_SUFFIX};
 
 pub const NEW_SESSION: &str = "session/new";
 pub const LOAD_SESSION: &str = "session/load";
@@ -101,8 +101,8 @@ pub enum PromptError {
 
 /// The attestation replay state could not be opened, so the process refuses
 /// to start (or to confirm a batch) rather than run against state that may
-/// let a replayed delivery through. Nothing is changed on disk: the Wave D
-/// script fixes permissions and migrates the replay file. The startup exit
+/// let a replayed delivery through. Nothing is changed on disk: the operator
+/// fixes the permissions or converts the replay file. The startup exit
 /// code is the class's (Logical: 65), which is not a retryable class, so a
 /// supervisor does not crash-loop on it.
 #[derive(Debug, thiserror::Error, coded_error::CodedError)]
@@ -111,7 +111,7 @@ pub enum AttestationStateError {
     #[error("attestation state {} is not private ({detail}){hint}", .path.display())]
     #[coded(code = "insecure", class = Logical)]
     Insecure { path: std::path::PathBuf, detail: String, hint: &'static str },
-    #[error("attestation state {} uses the old layout ({reason}); {MIGRATION_HINT}", .path.display())]
+    #[error("attestation state {} uses the old layout ({reason}); {OLD_FORMAT_HINT}", .path.display())]
     #[coded(code = "old_layout", class = Logical)]
     OldLayout { path: std::path::PathBuf, reason: String },
     #[error("cannot open attestation state at {}: {reason}", .path.display())]
@@ -126,9 +126,9 @@ impl AttestationStateError {
         use identity_keyfile::KeyfileError as K;
         match error {
             K::InsecureDir(path) | K::InsecureFile(path) => {
-                Self::insecure(path, mode_detail(path), MIGRATION_HINT_SUFFIX)
+                Self::insecure(path, mode_detail(path), MODE_HINT_SUFFIX)
             }
-            K::WrongOwner(path) => Self::insecure(path, owner_detail(path), MIGRATION_HINT_SUFFIX),
+            K::WrongOwner(path) => Self::insecure(path, owner_detail(path), OWNER_HINT_SUFFIX),
             K::NotAFile(path) => Self::insecure(path, "not a regular file".to_owned(), ""),
             K::TooLarge { path, cap } => {
                 Self::insecure(path, format!("larger than {cap} bytes"), "")
@@ -281,18 +281,24 @@ mod tests {
         use identity_keyfile::KeyfileError as K;
         use message_attestation::AttestationError as A;
         let path = std::path::Path::new("/state/replay.json");
-        let hint = gait_identity::MIGRATION_HINT;
+        let mode = "tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry";
         let hinted = [
-            AttestationStateError::from_keyfile(path, &K::InsecureDir(path.to_owned())),
-            AttestationStateError::from_keyfile(path, &K::InsecureFile(path.to_owned())),
-            AttestationStateError::from_keyfile(path, &K::WrongOwner(path.to_owned())),
-            AttestationStateError::from_store(
-                path,
-                &A::Store(Box::new(message_attestation::ReplayStateError::OldLayout)),
+            (AttestationStateError::from_keyfile(path, &K::InsecureDir(path.to_owned())), mode),
+            (AttestationStateError::from_keyfile(path, &K::InsecureFile(path.to_owned())), mode),
+            (
+                AttestationStateError::from_keyfile(path, &K::WrongOwner(path.to_owned())),
+                "the path must be owned by the current user",
+            ),
+            (
+                AttestationStateError::from_store(
+                    path,
+                    &A::Store(Box::new(message_attestation::ReplayStateError::OldLayout)),
+                ),
+                "is in an old format and must be converted",
             ),
         ];
-        for err in hinted {
-            assert!(err.to_string().contains(hint), "{err}");
+        for (err, want) in hinted {
+            assert!(err.to_string().contains(want), "{err}");
         }
         let plain = [
             AttestationStateError::from_keyfile(path, &K::NotAFile(path.to_owned())),
@@ -301,7 +307,7 @@ mod tests {
         ];
         for err in plain {
             let text = err.to_string();
-            assert!(!text.contains(hint) && !text.contains("Wave D"), "{text}");
+            assert!(!text.contains("tighten the permissions") && !text.contains("old format") && !text.contains("owned by the current user"), "{text}");
             assert!(text.contains("/state/replay.json"), "{text}");
         }
     }

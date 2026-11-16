@@ -38,9 +38,7 @@ fn hand_identity_deny_env(
         Err(e) if identity_in_use => return Err(e),
         Err(_) => None,
     };
-    let sentinel = std::path::PathBuf::from("\0machine-slot");
-    let mut paths = gait_identity::identity_deny_paths_with(&agent_dir, &sentinel);
-    paths.retain(|p| *p != sentinel);
+    let mut paths = gait_identity::agent_deny_paths(&agent_dir);
     paths.extend(machine);
     // A ':' path cannot ride the list: refuse when identity is in use or the
     // path exists; a standalone gait skips an entry that is not there.

@@ -769,10 +769,10 @@ mod tests {
         // the core helper reports.
         let out = match list() {
             Ok(out) => out,
-            // A host whose real credential directory is still loose (Wave D
-            // not yet run) fails closed instead of listing it.
+            // A host whose real credential directory is still loose (permissions
+            // not yet tightened) fails closed instead of listing it.
             Err(error) => {
-                assert!(error.to_string().contains("Wave D"), "{error}");
+                assert!(error.to_string().contains("tighten the permissions"), "{error}");
                 return;
             }
         };

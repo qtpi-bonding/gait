@@ -10,10 +10,15 @@ use std::path::{Path, PathBuf};
 
 pub const DIRECT_BODY_TYPE: &str = "type.googleapis.com/gait.log.v1.DirectEventDigest";
 
-pub const MIGRATION_HINT: &str = "run the Wave D permissions-and-replay migration script";
+/// Appended to a refusal for a too-open mode: the path is named earlier in the message.
+pub const MODE_HINT_SUFFIX: &str =
+    "; tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry";
 
-/// The hint as an appended clause, so call sites can choose whether to show it.
-pub const MIGRATION_HINT_SUFFIX: &str = "; run the Wave D permissions-and-replay migration script";
+/// Appended to a refusal for a wrong owner.
+pub const OWNER_HINT_SUFFIX: &str = "; the path must be owned by the current user";
+
+/// For replay state in an old format (the bare-number layout).
+pub const OLD_FORMAT_HINT: &str = "the file is in an old format and must be converted";
 
 /// Why an agent directory could not supply its identity. Every variant reads
 /// `load agent identity from <dir>`; the keyfile failure is the `source`, so an
@@ -49,12 +54,12 @@ impl IdentityError {
         let dir = dir.to_path_buf();
         match &source {
             KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
-                Self::IdentityNotPrivate { path: path.clone(), detail: mode_detail(path), hint: MIGRATION_HINT_SUFFIX, source }
+                Self::IdentityNotPrivate { path: path.clone(), detail: mode_detail(path), hint: MODE_HINT_SUFFIX, source }
             }
             KeyfileError::WrongOwner(path) => Self::IdentityNotPrivate {
                 path: path.clone(),
                 detail: owner_detail(path),
-                hint: MIGRATION_HINT_SUFFIX,
+                hint: OWNER_HINT_SUFFIX,
                 source,
             },
             KeyfileError::NotAFile(path) => Self::IdentityNotPrivate {
@@ -159,13 +164,19 @@ pub fn machine_dir() -> Result<PathBuf> {
 /// Folders the model must never read or write: the device folder, the root
 /// folder next to a minted one, and the machine identity directory.
 pub fn identity_deny_paths_with(agent_dir: &Path, machine: &Path) -> Vec<PathBuf> {
+    let mut paths = agent_deny_paths(agent_dir);
+    paths.push(machine.to_path_buf());
+    paths
+}
+
+/// The device folder and, next to a minted one, the root folder (no machine directory).
+pub fn agent_deny_paths(agent_dir: &Path) -> Vec<PathBuf> {
     let mut paths = vec![agent_dir.to_path_buf()];
     if agent_dir.file_name().and_then(|n| n.to_str()) == Some("identity") {
         if let Some(parent) = agent_dir.parent() {
             paths.push(parent.join("identity-root"));
         }
     }
-    paths.push(machine.to_path_buf());
     paths
 }
 
@@ -829,14 +840,18 @@ mod tests {
     #[test]
     fn the_migration_hint_shows_for_mode_and_owner_only() {
         let p = || PathBuf::from("/agents/one/device.jwk.json");
-        for source in [KeyfileError::InsecureDir(p()), KeyfileError::InsecureFile(p()), KeyfileError::WrongOwner(p())] {
+        for (source, want) in [
+            (KeyfileError::InsecureDir(p()), "tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"),
+            (KeyfileError::InsecureFile(p()), "tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"),
+            (KeyfileError::WrongOwner(p()), "the path must be owned by the current user"),
+        ] {
             let (_, text) = mapped(source);
-            assert!(text.contains(MIGRATION_HINT), "{text}");
+            assert!(text.contains(want), "{text}");
         }
         for source in [KeyfileError::NotAFile(p()), KeyfileError::TooLarge { path: p(), cap: 10 }] {
             let (code, text) = mapped(source);
             assert_eq!(code, "gait.identity.identity_not_private");
-            assert!(!text.contains("Wave D"), "{text}");
+            assert!(!text.contains("tighten the permissions") && !text.contains("owned by the current user"), "{text}");
             assert!(text.contains("/agents/one/device.jwk.json"), "{text}");
         }
     }
