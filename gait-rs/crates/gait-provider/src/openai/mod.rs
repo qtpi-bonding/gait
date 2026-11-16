@@ -429,11 +429,16 @@ fn body_stream(
         // turn loop stops reading at `Done`. So `Done` is held back until the
         // stream closes, waiting at most TRAILER_GRACE for a quiet server.
         let mut finished = false;
+        let mut trailer_deadline = tokio::time::Instant::now();
+        let mut tools_completed = false;
+        // The last usage seen wins (a server may repeat it on the finish chunk
+        // and again after it); it is yielded once, before Done.
+        let mut last_usage: Option<Usage> = None;
         let mut received_bytes: usize = 0;
 
         loop {
             let next = if finished {
-                match tokio::time::timeout(TRAILER_GRACE, guarded_events.next()).await {
+                match tokio::time::timeout_at(trailer_deadline, guarded_events.next()).await {
                     Ok(next) => next,
                     Err(_) => None,
                 }
@@ -450,6 +455,7 @@ fn body_stream(
                 Err(e) => Err(e)?,
             };
             if event.data == "[DONE]" {
+                if !finished { trailer_deadline = tokio::time::Instant::now() + TRAILER_GRACE; }
                 finished = true;
                 continue;
             }
@@ -467,7 +473,7 @@ fn body_stream(
                 // Reasoning tokens are a subset of output_tokens; they go on the
                 // call span, not into Usage.
                 let (usage, _reasoning_tokens) = usage.normalized();
-                yield StreamChunk::StepUsage(usage);
+                last_usage = Some(usage);
             }
 
             for choice in &chunk.choices {
@@ -509,17 +515,22 @@ fn body_stream(
                 }
 
                 if matches!(choice.finish_reason.as_deref(), Some("tool_calls") | Some("stop")) {
-                    for (idx, args_str) in &tool_args {
+                    for (idx, args_str) in tool_args.iter().filter(|_| !tools_completed) {
                         let id   = tool_ids.get(idx).cloned().unwrap_or_default();
                         let name = tool_names.get(idx).cloned().unwrap_or_default();
                         let args = crate::provider::parse_tool_args(args_str);
                         yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
                     }
+                    tools_completed = true;
+                    if !finished { trailer_deadline = tokio::time::Instant::now() + TRAILER_GRACE; }
                     finished = true;
                 }
             }
         }
 
+        if let Some(usage) = last_usage {
+            yield StreamChunk::StepUsage(usage);
+        }
         if !finished {
             Err(ProviderError::StreamIncomplete { received_bytes })?;
         }
