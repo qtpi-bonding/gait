@@ -48,6 +48,24 @@ pub enum PromptError {
     #[error("missing own devices")]
     #[coded(code = "attestation_missing_own_devices", class = Logical)]
     AttestationMissingOwnDevices,
+    #[error("too many messages in the delivery: {count} (max {max})")]
+    #[coded(code = "too_many_messages", class = Logical)]
+    TooManyMessages { count: usize, max: usize },
+    #[error("recipient device {index} is not a public key")]
+    #[coded(code = "invalid_recipient_device", class = Logical)]
+    InvalidRecipientDevice { index: usize },
+    #[error("invalid author name: {0}")]
+    #[coded(code = "invalid_name", class = Logical)]
+    InvalidName(String),
+    #[error("name for {0}, who authors no message in the delivery")]
+    #[coded(code = "stray_name", class = Logical)]
+    StrayName(String),
+    #[error("session is not valid at {now} (window ends {not_after})")]
+    #[coded(code = "session_expired", class = Logical)]
+    SessionExpired { not_after: i64, now: i64 },
+    #[error("no OS randomness: {0}")]
+    #[coded(code = "randomness", class = Infrastructure)]
+    Randomness(String),
     #[error("prompt already seen by agent")]
     #[coded(code = "already_seen", class = Logical, acp = -32001)]
     AlreadySeen { key: String },
@@ -183,7 +201,7 @@ mod tests {
     #[test]
     fn prompt_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.prompt.", &[PromptError::ALL_CODES]).unwrap();
-        assert_eq!(PromptError::ALL_CODES.len(), 22);
+        assert_eq!(PromptError::ALL_CODES.len(), 28);
     }
 
     #[test]

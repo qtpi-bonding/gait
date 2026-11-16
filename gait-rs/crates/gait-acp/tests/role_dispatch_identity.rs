@@ -17,7 +17,7 @@ fn role_argv_loads_the_agent_identity_before_dispatching() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "a role process with a broken identity must not start");
     assert!(
-        stderr.contains("load agent identity"),
+        stderr.contains("load agent identity") || stderr.contains("is not private"),
         "the identity must be loaded before the role is dispatched, got: {stderr}"
     );
 }

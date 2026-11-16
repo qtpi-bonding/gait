@@ -23,18 +23,17 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use gait_core::port::input::OnDurable;
-use identity_crypto::{PrincipalId, PublicKey, pb};
+use identity_crypto::{PrincipalId, PublicKey, now_unix, pb};
 use message_attestation::{
     AttestationError, DEFAULT_META_KEY, DeliveryPolicy, PendingSequence, ReplayStore, confirm,
     verify_delivery_meta,
 };
 
 use crate::delivery_state::DeliveryState;
-use crate::error::PromptError;
+use crate::error::{AttestationStateError, PromptError};
 
 /// One verified message from a delivery: the authoritative `Message`, the
 /// targets that caused this recipient to get it, and its verified author.
@@ -111,9 +110,7 @@ impl Attestor {
     /// replay and dedupe state under `state_dir`, and checking at startup that
     /// the agent has a device to accept deliveries for.
     pub fn open(agent_dir: &Path, state_dir: &Path, trusted: Vec<PrincipalId>) -> Result<Self> {
-        let public = identity_keyfile::DeviceKeys::load(agent_dir)
-            .with_context(|| format!("load agent identity from {}", agent_dir.display()))?
-            .public();
+        let public = gait_identity::load_keys(agent_dir)?.public();
         ensure_own_devices(agent_dir, &public.device_keys_at(now_unix()))?;
         let self_id = public.principal_id.clone();
         let state = DeliveryState::open(state_dir, &self_id.to_string())?;
@@ -150,8 +147,7 @@ impl Attestor {
         between_read_and_claim: impl FnOnce(),
     ) -> Result<Option<VerifiedBatch>> {
         let now = now_unix();
-        let own_devices = identity_keyfile::DeviceKeys::load(&self.agent_dir)
-            .with_context(|| format!("load agent identity from {}", self.agent_dir.display()))?
+        let own_devices = gait_identity::load_keys(&self.agent_dir)?
             .public()
             .device_keys_at(now);
         ensure_own_devices(&self.agent_dir, &own_devices)?;
@@ -179,7 +175,7 @@ impl Attestor {
         // claim: from here on no other session can confirm it concurrently.
         if let Some(last) = replay
             .last_seen(&self.self_id.to_string(), &deliverer)
-            .map_err(|error| anyhow!("read attestation replay store: {error}"))?
+            .map_err(|error| store_failure(self.state.dir(), error))?
         {
             if sequence <= last {
                 bail!(
@@ -258,10 +254,16 @@ impl VerifiedBatch {
                     // Already confirmed and logged: the turn goes on, and the record
                     // says it happened.
                     let error = coded_error::into_anyhow(crate::error::PromptError::AttestationReplayConfirmed {
-                        last: last as u64,
-                        got: got as u64,
+                        last,
+                        got,
                     });
                     concord_telemetry::error_anyhow!(&error, source = "gait-acp.attestation");
+                }
+                Err(error @ AttestationError::Store(_)) => {
+                    return Err(coded_error::into_anyhow(AttestationStateError::from_store(
+                        state.dir(),
+                        &error,
+                    )));
                 }
                 Err(error) => return Err(anyhow!("confirm attested batch: {error}")),
             }
@@ -287,7 +289,13 @@ pub fn verify_prompt(
     let attestor = attestor.ok_or_else(|| {
         coded_error::into_anyhow(PromptError::AttestationMissingOwnDevices)
     })?;
-    attestor.verify(meta).map_err(|error| {
+    attestor.verify(meta).map_err(|error| map_attestation_error(error, attestor.state.dir()))
+}
+
+/// Types a library failure met while verifying a delivery. A store failure
+/// becomes the coded attestation-state error naming `state_dir`; anything not
+/// listed passes through unchanged.
+fn map_attestation_error(error: anyhow::Error, state_dir: &Path) -> anyhow::Error {
         let typed = match coded_error::downcast_ref::<AttestationError>(&error) {
             Some(AttestationError::UnknownDeliverer(who)) => {
                 PromptError::AttestationUnknownDeliverer(who.clone())
@@ -322,15 +330,112 @@ pub fn verify_prompt(
                 PromptError::AttestationEmpty
             }
             Some(AttestationError::OwnDevicesMissing) => PromptError::AttestationMissingOwnDevices,
+            Some(AttestationError::TooManyMessages { count, max }) => {
+                PromptError::TooManyMessages { count: *count, max: *max }
+            }
+            Some(AttestationError::InvalidRecipientDevice { index }) => {
+                PromptError::InvalidRecipientDevice { index: *index }
+            }
+            Some(AttestationError::InvalidName { reason }) => {
+                PromptError::InvalidName((*reason).to_owned())
+            }
+            Some(AttestationError::StrayName { principal }) => {
+                PromptError::StrayName(principal.clone())
+            }
+            Some(AttestationError::SessionExpired { not_after, now }) => {
+                PromptError::SessionExpired { not_after: *not_after, now: *now }
+            }
+            Some(AttestationError::Randomness(source)) => {
+                PromptError::Randomness(source.to_string())
+            }
+            Some(store @ AttestationError::Store(_)) => {
+                return coded_error::into_anyhow(AttestationStateError::from_store(state_dir, store));
+            }
             _ => return error,
         };
         coded_error::into_anyhow(typed)
-    })
 }
 
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0)
+/// A replay-store failure outside `verify_prompt`'s match, coded.
+fn store_failure(state_dir: &Path, error: AttestationError) -> anyhow::Error {
+    match &error {
+        AttestationError::Store(_) => {
+            coded_error::into_anyhow(AttestationStateError::from_store(state_dir, &error))
+        }
+        _ => anyhow::Error::new(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn code(error: &anyhow::Error) -> &'static str {
+        coded_error::facts_anyhow(error).code
+    }
+
+    fn mapped(error: AttestationError) -> anyhow::Error {
+        map_attestation_error(
+            coded_error::into_anyhow(error),
+            Path::new("/state/attestation/p256:aa"),
+        )
+    }
+
+    #[test]
+    fn attestation_errors_map_to_coded_prompt_errors() {
+        let boxed = || -> Box<dyn std::error::Error + Send + Sync> { "boom".into() };
+        let table: Vec<(AttestationError, &str)> = vec![
+            (AttestationError::TooManyMessages { count: 9, max: 8 }, "too_many_messages"),
+            (AttestationError::InvalidRecipientDevice { index: 1 }, "invalid_recipient_device"),
+            (AttestationError::InvalidName { reason: "empty" }, "invalid_name"),
+            (AttestationError::StrayName { principal: "p256:aa".into() }, "stray_name"),
+            (AttestationError::SessionExpired { not_after: 1, now: 2 }, "session_expired"),
+            (AttestationError::Randomness(boxed()), "randomness"),
+        ];
+        for (error, want) in table {
+            let got = code(&mapped(error));
+            assert_eq!(got, format!("gait.acp.prompt.{want}"));
+        }
+    }
+
+    #[test]
+    fn a_store_error_maps_to_the_coded_attestation_state_error() {
+        let error = mapped(AttestationError::Store(Box::new(
+            identity_keyfile::KeyfileError::InsecureDir("/state/attestation/p256:aa".into()),
+        )));
+        assert_eq!(code(&error), "gait.acp.attestation_state.insecure");
+        let text = format!("{error:#}");
+        assert!(text.contains("/state/attestation/p256:aa"), "{text}");
+        assert!(text.contains("run the Wave D permissions-and-replay migration script"), "{text}");
+    }
+
+    #[test]
+    fn unmapped_attestation_errors_pass_through() {
+        let error = mapped(AttestationError::NotObject);
+        assert_eq!(code(&error), "message.attestation.not_object");
+    }
+
+    #[test]
+    fn open_refuses_a_loose_attestation_dir_with_a_coded_error() {
+        let keys = identity_keyfile::testkit::TempIdentityDir::new(0, 86_400);
+        let state = tempfile::tempdir().unwrap();
+        let public = identity_keyfile::DeviceKeys::load(keys.path()).unwrap().public();
+        let dir = state.path().join("attestation").join(public.principal_id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = Attestor::open(keys.path(), state.path(), Vec::new()).err().expect("refused");
+        assert_eq!(code(&error), "gait.acp.attestation_state.insecure");
+        let text = format!("{error:#}");
+        assert!(text.contains(&dir.display().to_string()) && text.contains("0755"), "{text}");
+    }
+
+    #[test]
+    fn open_codes_a_loose_agent_dir() {
+        let keys = identity_keyfile::testkit::TempIdentityDir::new(0, 86_400);
+        std::fs::set_permissions(keys.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let error = Attestor::open(keys.path(), state.path(), Vec::new()).err().expect("refused");
+        assert_eq!(code(&error), "gait.identity.identity_not_private");
+    }
 }

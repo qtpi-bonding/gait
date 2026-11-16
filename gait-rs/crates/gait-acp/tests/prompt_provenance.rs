@@ -20,7 +20,7 @@ use message_attestation::{
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use identity_crypto::now_unix;
 
 fn git(dir: &Path, args: &[&str]) {
     let out = std::process::Command::new("git")
@@ -180,13 +180,6 @@ async fn gait_provenance_meta_key_is_ignored_as_plain_user_text() {
         )),
         "ignored metadata prompt is folded into context"
     );
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 fn room(id: &str) -> pb::Target {

@@ -70,7 +70,7 @@ impl IdentityError {
 }
 
 /// Load the device keys in `agent_dir`, typing any failure as an `IdentityError`.
-fn load_keys(agent_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
+pub fn load_keys(agent_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
     identity_keyfile::DeviceKeys::load(agent_dir)
         .map_err(|source| coded_error::into_anyhow(IdentityError::from_keyfile(agent_dir, source)))
 }

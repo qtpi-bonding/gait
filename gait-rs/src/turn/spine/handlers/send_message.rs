@@ -39,7 +39,7 @@ async fn send_with(
     let Some(identity) = ctx.identity.clone() else {
         return error_feedback("send_message: no agent identity configured");
     };
-    let now = crate::tools::spawn_agent::wall_clock_secs();
+    let now = identity_crypto::now_unix();
     let (session, device_delegation) =
         match gait_identity::device_session(&identity, SESSION_TTL_SECS, now) {
             Ok(pair) => pair,
