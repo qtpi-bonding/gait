@@ -135,9 +135,13 @@ impl Provider for PlanResponsesProvider {
             headers,
             self.body(system, &effective, tools, params, kind),
         );
-        let events = self
-            .transport
-            .stream(request)
+        let mut call = crate::telemetry::ModelCall::begin(&crate::telemetry::RequestAttrs {
+            temperature: None,
+            top_p: None,
+            max_tokens: params.max_tokens.filter(|_| kind == RequestKind::Turn),
+            model_id: self.model.clone(),
+        });
+        let events = crate::telemetry::within(call.span(), self.transport.stream(request))
             .await
             .map_err(|error| match error {
                 ProviderError::Http {
@@ -152,10 +156,12 @@ impl Provider for PlanResponsesProvider {
                     request_id,
                 },
                 error => error,
-            })?;
+            })
+            .inspect_err(|error| call.fail(error))?;
         Ok(Box::pin(crate::responses_wire::response_stream(
             events,
             plan_failure_format,
+            call,
         )))
     }
 

@@ -169,9 +169,23 @@ impl Provider for CodexResponsesProvider {
             body,
         )
         .capturing_header(TURN_STATE_HEADER, self.turn_state.clone());
+        let mut call = crate::telemetry::ModelCall::begin(&crate::telemetry::RequestAttrs {
+            temperature: None,
+            top_p: None,
+            max_tokens: params.max_tokens.filter(|_| kind == RequestKind::Turn),
+            model_id: self.model.clone(),
+        });
+        let events = match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
+            Ok(events) => events,
+            Err(error) => {
+                call.fail(&error);
+                return Err(error);
+            }
+        };
         Ok(Box::pin(crate::responses_wire::response_stream(
-            self.transport.stream(request).await?,
+            events,
             codex_failure_format,
+            call,
         )))
     }
 

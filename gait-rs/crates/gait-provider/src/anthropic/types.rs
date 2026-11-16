@@ -188,7 +188,6 @@ pub enum AnthropicEvent {
         index: u32,
     },
     MessageDelta {
-        #[allow(dead_code)] // wire-format mirror; not consumed
         delta: MessageDeltaData,
         usage: Option<DeltaUsage>,
     },
@@ -201,6 +200,8 @@ pub enum AnthropicEvent {
 
 #[derive(Debug, Deserialize)]
 pub struct MessageStartData {
+    #[serde(default)]
+    pub model: Option<String>,
     pub usage: Option<DeltaUsage>,
 }
 
@@ -247,7 +248,6 @@ pub enum ContentDelta {
 
 #[derive(Debug, Deserialize)]
 pub struct MessageDeltaData {
-    #[allow(dead_code)] // wire-format mirror; not consumed
     pub stop_reason: Option<String>,
 }
 

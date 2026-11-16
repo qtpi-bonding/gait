@@ -311,8 +311,20 @@ impl Provider for AnthropicProvider {
             .trim_end_matches('/');
         let request =
             crate::transport::SseRequest::new(format!("{base_url}/messages"), headers, body);
-        let stream = self.transport.stream(request).await?;
-        Ok(Box::pin(crate::anthropic::sse::body_stream(stream)))
+        let mut call = crate::telemetry::ModelCall::begin(&crate::telemetry::RequestAttrs {
+            temperature,
+            top_p,
+            max_tokens: Some(max_tokens),
+            model_id: self.model.clone(),
+        });
+        let stream = match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                call.fail(&error);
+                return Err(error);
+            }
+        };
+        Ok(Box::pin(crate::anthropic::sse::body_stream(stream, call)))
     }
 
     fn model_id(&self) -> &str {

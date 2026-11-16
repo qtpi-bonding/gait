@@ -6,11 +6,12 @@ use std::collections::HashMap;
 
 /// Consume the shared guarded SSE stream into Anthropic chunks. Request
 /// execution, retries, and deadlines have already been handled by ProviderTransport.
-pub fn body_stream(
+pub(crate) fn body_stream(
     guarded_events: impl futures_util::Stream<
             Item = Result<eventsource_stream::Event, crate::provider::ProviderError>,
         > + Send
         + 'static,
+    mut call: crate::telemetry::ModelCall,
 ) -> impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
     async_stream::try_stream! {
         tokio::pin!(guarded_events);
@@ -22,30 +23,54 @@ pub fn body_stream(
         let mut start_usage: (u32, u32, u32) = (0, 0, 0);
         let mut saw_terminal = false;
         let mut received_bytes: usize = 0;
+        // Cumulative counts for the call span: input from message_start,
+        // output (and any repeated input) from message_delta.
+        let mut span_usage = crate::telemetry::CallUsage::default();
 
         while let Some(event) = guarded_events.next().await {
             let event = match event {
                 Ok(ev) => ev,
-                Err(e) => Err(e)?,  // already converted by the shared transport
+                Err(e) => {
+                    // already converted by the shared transport
+                    call.fail(&e);
+                    Err(e)?
+                }
             };
             if event.event == "message_stop" {
                 saw_terminal = true;
+                call.answered();
+                call.end();
                 yield StreamChunk::Done;
                 break;
             }
             if event.data.is_empty() || event.data == "[DONE]" { continue; }
 
-            let parsed: AnthropicEvent = serde_json::from_str(&event.data)?;
+            let parsed: AnthropicEvent = match serde_json::from_str(&event.data) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    let e = ProviderError::from(e);
+                    call.fail(&e);
+                    Err(e)?
+                }
+            };
 
             match parsed {
                 // Emit input-token count from the opening message event (C5 fix)
                 AnthropicEvent::MessageStart { message } => {
+                    if let Some(model) = &message.model {
+                        call.response_model(model);
+                    }
                     if let Some(u) = message.usage {
                         start_usage = (
                             u.input_tokens.unwrap_or(0),
                             u.cache_read_input_tokens.unwrap_or(0),
                             u.cache_creation_input_tokens.unwrap_or(0),
                         );
+                        span_usage.cached = start_usage.1;
+                        span_usage.cache_write = start_usage.2;
+                        span_usage.input = start_usage.0 + start_usage.1 + start_usage.2;
+                        span_usage.output = u.output_tokens.unwrap_or(0);
+                        call.usage(span_usage);
                         yield StreamChunk::StepUsage(Usage {
                             input_tokens: u.input_tokens.unwrap_or(0),
                             output_tokens: 0,
@@ -56,6 +81,7 @@ pub fn body_stream(
                 }
                 AnthropicEvent::ContentBlockStart { index, content_block } => {
                     if let ContentBlock::ToolUse { id, name } = content_block {
+                        call.first_token();
                         tool_id_map.insert(index, id.clone());
                         tool_name_map.insert(index, name.clone());
                         args_buf.insert(index, String::new());
@@ -73,6 +99,7 @@ pub fn body_stream(
                 AnthropicEvent::ContentBlockDelta { index, delta } => match delta {
                     ContentDelta::TextDelta { text } => {
                         received_bytes += text.len();
+                        call.first_token();
                         yield StreamChunk::Text(text);
                     }
                     ContentDelta::InputJsonDelta { partial_json } => {
@@ -90,6 +117,7 @@ pub fn body_stream(
                     ContentDelta::ThinkingDelta { thinking } => {
                         // Always emit — show_thinking gate is in GaitConfig, not here.
                         if thinking_indices.contains(&index) {
+                            call.first_token();
                             yield StreamChunk::ThinkingDelta(thinking);
                         }
                     }
@@ -115,7 +143,19 @@ pub fn body_stream(
                         };
                     }
                 }
-                AnthropicEvent::MessageDelta { usage: Some(u), .. } => {
+                AnthropicEvent::MessageDelta { delta, usage } => {
+                    if let Some(reason) = delta.stop_reason.as_deref() {
+                        call.finish_reason(reason);
+                        call.answered();
+                    }
+                    let Some(u) = usage else { continue };
+                    span_usage.cached = span_usage.cached.max(u.cache_read_input_tokens.unwrap_or(0));
+                    span_usage.cache_write = span_usage.cache_write.max(u.cache_creation_input_tokens.unwrap_or(0));
+                    span_usage.input = u.input_tokens.unwrap_or(0).max(start_usage.0)
+                        + span_usage.cached
+                        + span_usage.cache_write;
+                    span_usage.output = u.output_tokens.unwrap_or(0);
+                    call.usage(span_usage);
                     // message_delta usage is cumulative and may repeat the input
                     // and cache counts already taken from message_start; add
                     // only what exceeds them or they would be counted twice.
@@ -126,20 +166,24 @@ pub fn body_stream(
                         cache_write_tokens: u.cache_creation_input_tokens.unwrap_or(0).saturating_sub(start_usage.2),
                     });
                 }
-                AnthropicEvent::MessageStop => { saw_terminal = true; yield StreamChunk::Done; break; }
+                AnthropicEvent::MessageStop => { saw_terminal = true; call.answered(); call.end(); yield StreamChunk::Done; break; }
                 AnthropicEvent::Error { error } => {
-                    if error.kind == "overloaded_error" {
-                        Err(ProviderError::Overloaded)?;
+                    let e = if error.kind == "overloaded_error" {
+                        ProviderError::Overloaded
                     } else {
-                        Err(ProviderError::Sse(error.message))?;
-                    }
+                        ProviderError::Sse(error.message)
+                    };
+                    call.fail(&e);
+                    Err(e)?;
                 }
                 _ => {}
             }
         }
 
         if !saw_terminal {
-            Err(ProviderError::StreamIncomplete { received_bytes })?;
+            let e = ProviderError::StreamIncomplete { received_bytes };
+            call.fail(&e);
+            Err(e)?;
         }
     }
 }
@@ -167,7 +211,7 @@ mod tests {
             ev("message_stop", serde_json::json!({"type":"message_stop"})),
         ]);
         let mut total = Usage::default();
-        let stream = body_stream(events);
+        let stream = body_stream(events, crate::telemetry::ModelCall::begin(&Default::default()));
         tokio::pin!(stream);
         while let Some(chunk) = stream.next().await {
             if let StreamChunk::StepUsage(u) = chunk.expect("chunk") {

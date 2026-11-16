@@ -95,6 +95,7 @@ pub fn response_stream(
         + Send
         + 'static,
     fmt: fn(&ResponsesFailure) -> String,
+    mut call: crate::telemetry::ModelCall,
 ) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
     async_stream::try_stream! {
         tokio::pin!(events);
@@ -102,11 +103,22 @@ pub fn response_stream(
         let mut terminal = false;
         let mut received_bytes = 0usize;
         while let Some(event) = events.next().await {
-            let event = event?;
+            let event = match event {
+                Ok(event) => event,
+                Err(e) => {
+                    call.fail(&e);
+                    Err(e)?
+                }
+            };
             let value: Value = match serde_json::from_str(&event.data) { Ok(value) => value, Err(_) => continue };
+            if let Some(model) = value.get("response").and_then(|r| r.get("model")).and_then(Value::as_str) {
+                call.response_model(model);
+            }
             match event.event.as_str() {
+                "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => call.first_token(),
                 "response.output_text.delta" => if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                     received_bytes += delta.len();
+                    call.first_token();
                     yield StreamChunk::Text(delta.to_string());
                 },
                 "response.output_item.added" => {
@@ -120,6 +132,7 @@ pub fn response_stream(
                 "response.function_call_arguments.delta" => if let (Some(call_id), Some(delta)) = (value.get("call_id").and_then(Value::as_str), value.get("delta").and_then(Value::as_str)) {
                     let entry = calls.entry(call_id.to_string()).or_insert_with(|| (value.get("name").and_then(Value::as_str).unwrap_or("").to_string(), String::new()));
                     entry.1.push_str(delta);
+                    call.first_token();
                     yield StreamChunk::ToolCallDelta { tool_call_id: call_id.to_string(), tool_name: entry.0.clone(), args_delta: delta.to_string() };
                 },
                 "response.output_item.done" => {
@@ -132,7 +145,20 @@ pub fn response_stream(
                     }
                 }
                 "response.completed" => {
+                    call.answered();
+                    if let Some(status) = value.get("response").and_then(|r| r.get("status")).and_then(Value::as_str) {
+                        call.finish_reason(status);
+                    }
                     if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
+                        let u = |v: Option<&Value>| v.and_then(Value::as_u64).unwrap_or(0) as u32;
+                        call.usage(crate::telemetry::CallUsage {
+                            input: u(usage.get("input_tokens")),
+                            output: u(usage.get("output_tokens")),
+                            cached: cached_input_tokens(usage),
+                            cache_write: cache_write_input_tokens(usage),
+                            // Reported as a subset of output_tokens.
+                            reasoning: u(usage.get("output_tokens_details").and_then(|d| d.get("reasoning_tokens"))),
+                        });
                         yield StreamChunk::StepUsage(normalized_usage(
                             usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
                             usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
@@ -140,17 +166,22 @@ pub fn response_stream(
                             cache_write_input_tokens(usage),
                         ));
                     }
+                    call.end();
                     yield StreamChunk::Done;
                     terminal = true;
                     break;
                 }
                 "response.failed" => {
                     let failure = failure_from_value(&value, false);
-                    Err(ProviderError::Other(fmt(&failure)))?;
+                    let e = ProviderError::Other(fmt(&failure));
+                    call.fail(&e);
+                    Err(e)?;
                 }
                 "error" => {
                     let failure = failure_from_value(&value, true);
-                    Err(ProviderError::Other(fmt(&failure)))?;
+                    let e = ProviderError::Other(fmt(&failure));
+                    call.fail(&e);
+                    Err(e)?;
                 }
                 "response.incomplete" => {
                     let reason = value.get("response")
@@ -158,12 +189,18 @@ pub fn response_stream(
                         .and_then(|details| details.get("reason"))
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
-                    Err(ProviderError::Other(format!("Responses request incomplete: {reason}")))?;
+                    let e = ProviderError::Other(format!("Responses request incomplete: {reason}"));
+                    call.fail(&e);
+                    Err(e)?;
                 }
                 _ => {}
             }
         }
-        if !terminal { Err(ProviderError::StreamIncomplete { received_bytes })?; }
+        if !terminal {
+            let e = ProviderError::StreamIncomplete { received_bytes };
+            call.fail(&e);
+            Err(e)?;
+        }
     }
 }
 
@@ -241,6 +278,14 @@ pub fn text_content(content: &MessageContent) -> String {
 mod tests {
     use super::*;
     use futures_util::{stream, StreamExt};
+
+    /// The stream under test, with a call span nobody reads.
+    fn response_stream(
+        events: impl futures_util::Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send + 'static,
+        fmt: fn(&ResponsesFailure) -> String,
+    ) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
+        super::response_stream(events, fmt, crate::telemetry::ModelCall::begin(&Default::default()))
+    }
 
     fn event(name: &str, data: Value) -> eventsource_stream::Event {
         eventsource_stream::Event {
