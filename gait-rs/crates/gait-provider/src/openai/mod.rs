@@ -130,17 +130,21 @@ struct ChatToolDef {
 
 #[derive(Deserialize)]
 struct StreamChunkData {
+    /// Absent or `[]` on the usage-only chunk.
+    #[serde(default)]
     choices: Vec<StreamChoice>,
+    #[serde(default)]
     usage: Option<StreamUsage>,
 }
 
 #[derive(Deserialize)]
 struct StreamChoice {
+    #[serde(default)]
     delta: Delta,
     finish_reason: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct Delta {
     content: Option<String>,
     tool_calls: Option<Vec<ToolCallDelta>>,
@@ -162,13 +166,43 @@ struct FunctionDelta {
 
 #[derive(Deserialize)]
 struct StreamUsage {
+    /// A missing or null count is 0: one absent field must not drop the rest.
+    #[serde(default, deserialize_with = "count_or_zero", alias = "input_tokens")]
     prompt_tokens: u32,
+    #[serde(default, deserialize_with = "count_or_zero", alias = "output_tokens")]
     completion_tokens: u32,
+    #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+fn count_or_zero<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    Ok(Option::<u32>::deserialize(d)?.unwrap_or(0))
+}
+
+#[derive(Deserialize)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u32>,
+}
+
+impl StreamUsage {
+    /// The normalized usage plus the reasoning tokens, which are a subset of
+    /// the completion tokens (already inside `output_tokens`; never add them again).
+    fn normalized(&self) -> (Usage, u32) {
+        let cached = self.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens).unwrap_or(0);
+        let reasoning = self.completion_tokens_details.as_ref().and_then(|d| d.reasoning_tokens).unwrap_or(0);
+        (
+            crate::responses_wire::normalized_usage(self.prompt_tokens, self.completion_tokens, cached, 0),
+            reasoning,
+        )
+    }
 }
 
 #[derive(Deserialize)]
 struct PromptTokensDetails {
+    #[serde(default)]
     cached_tokens: Option<u32>,
 }
 
@@ -390,40 +424,50 @@ fn body_stream(
         let mut tool_names: HashMap<u32, String> = HashMap::new();
         let mut tool_args:  HashMap<u32, String> = HashMap::new();
 
-        let mut saw_terminal = false;
+        // A finish_reason chunk or [DONE] ends the answer, but OpenAI-compatible
+        // servers send the usage chunk after it (and some after [DONE]), and the
+        // turn loop stops reading at `Done`. So `Done` is held back until the
+        // stream closes, waiting at most TRAILER_GRACE for a quiet server.
+        let mut finished = false;
         let mut received_bytes: usize = 0;
 
-        while let Some(event) = guarded_events.next().await {
+        loop {
+            let next = if finished {
+                match tokio::time::timeout(TRAILER_GRACE, guarded_events.next()).await {
+                    Ok(next) => next,
+                    Err(_) => None,
+                }
+            } else {
+                guarded_events.next().await
+            };
+            let Some(event) = next else { break };
             let event = match event {
                 Ok(ev) => ev,
+                // After the answer finished, a dropped connection loses nothing.
+                Err(_) if finished => break,
                 // Connection dropped mid-body before [DONE] → silent-truncation
                 // case; surface StreamIncomplete. Parse/Utf8 errors stay Sse.
                 Err(e) => Err(e)?,
             };
             if event.data == "[DONE]" {
-                if !saw_terminal {
-                    yield StreamChunk::Done;
-                }
-                saw_terminal = true;
-                break;
+                finished = true;
+                continue;
             }
             if event.data.is_empty() { continue; }
 
             let chunk: StreamChunkData = match serde_json::from_str(&event.data) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) => {
+                    log_unparsed_chunk(&event.data, &e);
+                    continue;
+                }
             };
 
-            if let Some(usage) = chunk.usage {
-                yield StreamChunk::StepUsage(crate::responses_wire::normalized_usage(
-                    usage.prompt_tokens,
-                    usage.completion_tokens,
-                    usage
-                        .prompt_tokens_details
-                        .and_then(|details| details.cached_tokens)
-                        .unwrap_or(0),
-                    0,
-                ));
+            if let Some(usage) = &chunk.usage {
+                // Reasoning tokens are a subset of output_tokens; they go on the
+                // call span, not into Usage.
+                let (usage, _reasoning_tokens) = usage.normalized();
+                yield StreamChunk::StepUsage(usage);
             }
 
             for choice in &chunk.choices {
@@ -471,16 +515,31 @@ fn body_stream(
                         let args = crate::provider::parse_tool_args(args_str);
                         yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
                     }
-                    yield StreamChunk::Done;
-                    saw_terminal = true;
+                    finished = true;
                 }
             }
         }
 
-        if !saw_terminal {
+        if !finished {
             Err(ProviderError::StreamIncomplete { received_bytes })?;
         }
+        yield StreamChunk::Done;
     }
+}
+
+/// How long to keep reading after the answer finished, for a usage chunk.
+const TRAILER_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A chunk that does not parse is skipped, but never silently: a usage chunk
+/// in an unexpected shape would otherwise vanish without a trace.
+fn log_unparsed_chunk(data: &str, error: &serde_json::Error) {
+    #[cfg(feature = "telemetry")]
+    {
+        let end = (0..=data.len().min(200)).rev().find(|i| data.is_char_boundary(*i)).unwrap_or(0);
+        tracing::warn!(error = %error, head = &data[..end], "unparsed chat stream chunk");
+    }
+    #[cfg(not(feature = "telemetry"))]
+    let _ = (data, error);
 }
 
 #[cfg(test)]
@@ -538,6 +597,22 @@ mod tests {
                 .and_then(|details| details.cached_tokens),
             Some(900)
         );
+    }
+
+    #[test]
+    fn reasoning_tokens_are_read_but_not_added_to_output() {
+        let chunk: StreamChunkData = serde_json::from_value(serde_json::json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 40},
+                "completion_tokens_details": {"reasoning_tokens": 12}
+            }
+        }))
+        .unwrap();
+        let (usage, reasoning) = chunk.usage.unwrap().normalized();
+        assert_eq!(reasoning, 12);
+        assert_eq!((usage.input_tokens, usage.output_tokens, usage.cache_read_tokens), (60, 30, 40));
     }
 
     #[test]
