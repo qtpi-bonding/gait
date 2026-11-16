@@ -7,20 +7,6 @@
 use crate::proto::gait::log::v1 as pb;
 use std::path::Path;
 
-/// Validate that a mode name is one safe, normal path component.
-fn validate_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
-        anyhow::bail!("mode name '{name}' is invalid: must be a single normal path component");
-    }
-    Ok(())
-}
-
 /// Split a MODE.md into YAML frontmatter and its markdown body.
 /// Split a MODE.md at the first subsequent whole-line `---` fence.
 fn split_frontmatter<'a>(text: &'a str, name: &str) -> anyhow::Result<(&'a str, &'a str)> {
@@ -94,7 +80,7 @@ fn read_parts(text: &str, name: &str) -> anyhow::Result<(pb::Mode, String)> {
 
 /// Resolve `modes/<name>/MODE.md` into a replay-complete `pb::Mode`.
 pub fn load_mode(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Mode> {
-    validate_name(name)?;
+    crate::names::validate_name("mode", name)?;
     let dir = gait_dir.join("modes").join(name);
     let path = dir.join("MODE.md");
     if !path.is_file() {
@@ -186,7 +172,7 @@ pub fn write_mode(
     description: &str,
     classify_policy: Option<pb::ClassifyPolicy>,
 ) -> anyhow::Result<()> {
-    validate_name(name)?;
+    crate::names::validate_name("mode", name)?;
     if name == "default" {
         anyhow::bail!("'{name}' is not a valid mode name (reserved)");
     }
@@ -219,7 +205,7 @@ pub fn write_mode(
 
 /// Append a pattern to MODE.md's allow list, preserving the body byte-for-byte.
 pub fn append_mode_allow(gait_dir: &Path, mode_name: &str, pattern: &str) -> anyhow::Result<()> {
-    validate_name(mode_name)?;
+    crate::names::validate_name("mode", mode_name)?;
     let dir = gait_dir.join("modes").join(mode_name);
     let path = dir.join("MODE.md");
     let (mut mapping, body) = if path.exists() {

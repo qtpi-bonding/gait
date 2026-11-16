@@ -29,6 +29,7 @@ pub mod mcp;
 pub mod models;
 pub mod models_meta;
 pub mod modes;
+pub mod names;
 pub mod permissions;
 pub mod proto; // the facade: events, emitter (Recorder), error
 pub mod registry;

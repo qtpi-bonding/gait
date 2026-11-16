@@ -4,19 +4,6 @@ use crate::proto::gait::log::v1 as pb;
 use gait_proto::textproto::{inference_to_text, parse_inference_text};
 use std::path::Path;
 
-fn validate_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
-        anyhow::bail!("inference name '{name}' is invalid: must be a single normal path component");
-    }
-    Ok(())
-}
-
 fn validate(
     name: &str,
     model: &str,
@@ -72,7 +59,7 @@ fn validate(
 }
 
 pub fn load_inference(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Inference> {
-    validate_name(name)?;
+    crate::names::validate_name("inference", name)?;
     if name == "default" {
         anyhow::bail!("'default' is not an authored inference");
     }
@@ -119,7 +106,7 @@ pub fn write_inference(
     model: &str,
     threshold: u64,
 ) -> anyhow::Result<()> {
-    validate_name(name)?;
+    crate::names::validate_name("inference", name)?;
     if name == "default" {
         anyhow::bail!("'{name}' is not a valid inference name (reserved)");
     }
@@ -154,7 +141,7 @@ pub fn write_local_qwen_inference(
     gpu_layers: u32,
     threshold: u64,
 ) -> anyhow::Result<()> {
-    validate_name(name)?;
+    crate::names::validate_name("inference", name)?;
     let params = pb::LlmParams {
         max_tokens: Some(1024),
         provider_params: Some(pb::llm_params::ProviderParams::Local(pb::LocalLlmParams {
