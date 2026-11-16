@@ -222,6 +222,10 @@ impl StoreGuard for FileGuard {
     }
     fn clear_pending(&mut self, provider: &str) -> Result<(), AuthError> {
         validate_provider(provider)?;
+        if fs::symlink_metadata(&self.pending_dir).is_ok() {
+            identity_keyfile::private_fs::check_private_dir(&self.pending_dir)
+                .map_err(|e| keyfile_error(&e))?;
+        }
         match fs::remove_file(pending_path(&self.pending_dir, provider)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -550,5 +554,8 @@ mod tests {
             fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
             0o755
         );
+        let text = g.clear_pending("openai-signin").unwrap_err().to_string();
+        assert!(text.contains("0755") && text.contains("Wave D"), "{text}");
+        assert!(file.exists());
     }
 }

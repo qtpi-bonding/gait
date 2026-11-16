@@ -75,7 +75,7 @@ fn auth_write_list_remove_roundtrip() {
     gait_core::auth::write_api_key_to(&path, "anthropic", "sk-test-abc123").unwrap();
     gait_core::auth::write_api_key_to(&path, "openai", "sk-openai-xyz").unwrap();
 
-    let list = gait_core::auth::list_credentials_from(&path);
+    let list = gait_core::auth::list_credentials_from(&path).unwrap();
     assert_eq!(list.len(), 2);
     assert!(
         list["anthropic"].starts_with("sk-test-"),
@@ -89,7 +89,7 @@ fn auth_write_list_remove_roundtrip() {
     );
 
     gait_core::auth::remove_api_key_from(&path, "openai").unwrap();
-    let list2 = gait_core::auth::list_credentials_from(&path);
+    let list2 = gait_core::auth::list_credentials_from(&path).unwrap();
     assert_eq!(list2.len(), 1);
     assert!(!list2.contains_key("openai"));
 }

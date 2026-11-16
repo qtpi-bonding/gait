@@ -339,10 +339,10 @@ fn auth_path_for(platform: &dyn Platform) -> Result<PathBuf, AuthError> {
     Ok(GaitHome::resolve_with(platform)?.auth_file())
 }
 
-fn read_raw_auth(path: &std::path::Path) -> HashMap<String, serde_json::Value> {
-    crate::auth_file::load_auth_map(path)
-        .map(|m| m.into_iter().collect())
-        .unwrap_or_default()
+fn read_raw_auth(
+    path: &std::path::Path,
+) -> Result<HashMap<String, serde_json::Value>, AuthError> {
+    crate::auth_file::load_auth_map(path).map(|m| m.into_iter().collect())
 }
 
 fn reject_signin_writer(data: &Map<String, Value>, provider: &str) -> Result<(), AuthError> {
@@ -464,12 +464,17 @@ pub fn write_external_binding_with(
     write_external_binding_to(&auth_path_for(platform)?, provider, source, home)
 }
 
-pub fn external_binding_from(path: &Path, provider: &str) -> Option<ExternalAuthBinding> {
-    let value = read_raw_auth(path).remove(provider)?;
-    let AuthEntry::External { source, home } = serde_json::from_value(value).ok()? else {
-        return None;
+pub fn external_binding_from(
+    path: &Path,
+    provider: &str,
+) -> Result<Option<ExternalAuthBinding>, AuthError> {
+    let Some(value) = read_raw_auth(path)?.remove(provider) else {
+        return Ok(None);
     };
-    Some(ExternalAuthBinding { source, home })
+    let Ok(AuthEntry::External { source, home }) = serde_json::from_value(value) else {
+        return Ok(None);
+    };
+    Ok(Some(ExternalAuthBinding { source, home }))
 }
 
 pub fn external_binding(provider: &str) -> Result<Option<ExternalAuthBinding>, AuthError> {
@@ -480,7 +485,7 @@ pub fn external_binding_with(
     platform: &dyn Platform,
     provider: &str,
 ) -> Result<Option<ExternalAuthBinding>, AuthError> {
-    Ok(external_binding_from(&auth_path_for(platform)?, provider))
+    external_binding_from(&auth_path_for(platform)?, provider)
 }
 
 pub fn unlink_external_binding_from(path: &Path, provider: &str) -> Result<(), AuthError> {
@@ -537,8 +542,10 @@ pub fn remove_api_key_with(platform: &dyn Platform, provider: &str) -> Result<()
 }
 
 /// Returns provider → masked_display string for `auth list`.
-pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> {
-    read_raw_auth(path)
+pub fn list_credentials_from(
+    path: &std::path::Path,
+) -> Result<HashMap<String, String>, AuthError> {
+    Ok(read_raw_auth(path)?
         .into_iter()
         .map(|(k, v)| {
             let display = match v.get("type").and_then(|t| t.as_str()) {
@@ -584,7 +591,7 @@ pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> 
             };
             (k, display)
         })
-        .collect()
+        .collect())
 }
 
 pub fn list_credentials() -> Result<HashMap<String, String>, AuthError> {
@@ -594,7 +601,7 @@ pub fn list_credentials() -> Result<HashMap<String, String>, AuthError> {
 pub fn list_credentials_with(
     platform: &dyn Platform,
 ) -> Result<HashMap<String, String>, AuthError> {
-    Ok(list_credentials_from(&auth_path_for(platform)?))
+    list_credentials_from(&auth_path_for(platform)?)
 }
 
 #[cfg(test)]
@@ -666,7 +673,7 @@ mod tests {
         let dir = crate::auth_test_support::private_tempdir();
         let auth_path = dir.path().join("auth.json");
         write_api_key_to(&auth_path, "anthropic", "sk-test-123").unwrap();
-        let list = list_credentials_from(&auth_path);
+        let list = list_credentials_from(&auth_path).unwrap();
         assert_eq!(
             list.get("anthropic").map(|s| s.as_str()),
             Some("sk-test-...")
@@ -771,7 +778,7 @@ mod tests {
         let resolved =
             credential_from_entry("openai-codex", entries.get("openai-codex").unwrap()).unwrap();
         assert!(matches!(resolved, ResolvedCredential::Subscription(_)));
-        let listed = list_credentials_from(&path);
+        let listed = list_credentials_from(&path).unwrap();
         assert_eq!(
             listed.get("openai-codex"),
             Some(&"subscription (person@example.test)".into())
@@ -822,7 +829,7 @@ mod tests {
         write_api_key_to(&auth_path, "openai", "sk-abc").unwrap();
         write_api_key_to(&auth_path, "anthropic", "sk-def").unwrap();
         remove_api_key_from(&auth_path, "openai").unwrap();
-        let list = list_credentials_from(&auth_path);
+        let list = list_credentials_from(&auth_path).unwrap();
         assert!(!list.contains_key("openai"), "openai should be removed");
         assert!(list.contains_key("anthropic"), "anthropic should remain");
     }
@@ -846,7 +853,7 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(
-            list_credentials_from(&path).get("openai-signin"),
+            list_credentials_from(&path).unwrap().get("openai-signin"),
             Some(&"registered (logged out)".to_string())
         );
     }
@@ -873,7 +880,7 @@ mod tests {
             remove_api_key_from(&path, "openai-signin"),
             Err(AuthError::ManagedElsewhere(message)) if message.contains("logout openai-signin --forget")
         ));
-        remove_api_key_from(&path, "openai");
+        remove_api_key_from(&path, "openai").unwrap();
         let map = crate::auth_file::load_auth_map(&path).unwrap();
         assert!(map.contains_key("openai-signin"));
         assert!(!map.contains_key("openai"));
@@ -884,7 +891,7 @@ mod tests {
         let dir = crate::auth_test_support::private_tempdir();
         let auth_path = dir.path().join("auth.json");
         write_api_key_to(&auth_path, "minimax", "sk-abcdefghijklmnop").unwrap();
-        let list = list_credentials_from(&auth_path);
+        let list = list_credentials_from(&auth_path).unwrap();
         let masked = list.get("minimax").unwrap();
         assert!(masked.ends_with("..."), "should be masked: {masked}");
         assert!(
@@ -934,7 +941,7 @@ mod tests {
             AuthLocation::File(codex_home.join("auth.json"))
         );
         assert_eq!(
-            list_credentials_from(&gait_auth_path).get("openai-codex"),
+            list_credentials_from(&gait_auth_path).unwrap().get("openai-codex"),
             Some(&"external (codex)".to_string())
         );
     }
@@ -945,7 +952,7 @@ mod tests {
         let path = dir.path().join("auth.json");
         write_external_binding_to(&path, "openai-codex", "codex", None).unwrap();
         unlink_external_binding_from(&path, "openai-codex").unwrap();
-        assert!(external_binding_from(&path, "openai-codex").is_none());
+        assert!(external_binding_from(&path, "openai-codex").unwrap().is_none());
 
         write_api_key_to(&path, "openai", "sk-test").unwrap();
         assert!(matches!(
@@ -953,7 +960,7 @@ mod tests {
             Err(AuthError::NotExternalBinding(provider)) if provider == "openai"
         ));
         assert_eq!(
-            list_credentials_from(&path).get("openai"),
+            list_credentials_from(&path).unwrap().get("openai"),
             Some(&"sk-test...".to_string())
         );
     }
@@ -1092,6 +1099,19 @@ mod tests {
             Err(AuthError::Corrupt { path: error_path, detail })
                 if error_path == path && detail.contains("entry for 'openai' is invalid")
         ));
+    }
+
+    #[test]
+    fn list_and_external_binding_surface_a_loose_file_as_a_coded_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::auth_test_support::private_tempdir();
+        let path = dir.path().join("auth.json");
+        crate::auth_test_support::write_private(&path, br#"{"x":{"type":"api","key":"k"}}"#);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let text = list_credentials_from(&path).unwrap_err().to_string();
+        assert!(text.contains("0644") && text.contains("Wave D"), "{text}");
+        let text = external_binding_from(&path, "x").unwrap_err().to_string();
+        assert!(text.contains("0644") && text.contains("Wave D"), "{text}");
     }
 
     #[test]

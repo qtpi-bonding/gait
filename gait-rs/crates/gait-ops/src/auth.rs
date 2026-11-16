@@ -698,7 +698,7 @@ mod tests {
             coded_error::downcast_ref::<OpError>(&error),
             Some(OpError::Conflict(message)) if message.contains("logout openai-signin --forget")
         ));
-        assert!(gait_state::auth::list_credentials_from(&path).contains_key(SIGNIN_PROVIDER_ID));
+        assert!(gait_state::auth::list_credentials_from(&path).unwrap().contains_key(SIGNIN_PROVIDER_ID));
     }
 
     #[test]
@@ -712,7 +712,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(out.provider, "openai");
-        let listed = gait_state::auth::list_credentials_from(&path);
+        let listed = gait_state::auth::list_credentials_from(&path).unwrap();
         assert!(!listed.contains_key("openai"));
         assert!(listed.contains_key("anthropic"));
     }
@@ -767,7 +767,15 @@ mod tests {
         // The user's home-dir credential store is unlikely to exist in CI;
         // even when it does, `list()` must not panic — it returns whatever
         // the core helper reports.
-        let out = list().unwrap();
+        let out = match list() {
+            Ok(out) => out,
+            // A host whose real credential directory is still loose (Wave D
+            // not yet run) fails closed instead of listing it.
+            Err(error) => {
+                assert!(error.to_string().contains("Wave D"), "{error}");
+                return;
+            }
+        };
         // Insertion-order check is too strict (depends on the host's real
         // auth.json), so just assert the value is a well-formed map.
         for v in out.values() {
