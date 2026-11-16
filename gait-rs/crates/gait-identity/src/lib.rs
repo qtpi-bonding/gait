@@ -101,7 +101,7 @@ pub fn mode_detail(path: &Path) -> String {
     use std::os::unix::fs::PermissionsExt as _;
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            format!("{} is a symlink; identity paths must be real directories, not symlinks", path.display())
+            format!("{} is a symlink; refusing to follow it", path.display())
         }
         Ok(meta) => format!("mode {:04o}", meta.permissions().mode() & 0o7777),
         Err(_) => "mode unknown".to_owned(),
@@ -113,7 +113,7 @@ pub fn owner_detail(path: &Path) -> String {
     use std::os::unix::fs::MetadataExt as _;
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            format!("{} is a symlink; identity paths must be real directories, not symlinks", path.display())
+            format!("{} is a symlink; refusing to follow it", path.display())
         }
         Ok(meta) => format!("owned by uid {}, not the user running gait", meta.uid()),
         Err(_) => "owned by another user".to_owned(),
@@ -858,6 +858,24 @@ mod tests {
         }
         let (_, text) = mapped(KeyfileError::InsecureDir(link.clone()));
         assert!(text.contains("symlink") && text.contains(&link.display().to_string()), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_through_a_symlinked_agent_dir_names_the_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = load_keys(&link).err().expect("a symlinked dir is refused");
+        let text = format!("{err:#}");
+        assert!(text.contains(&link.display().to_string()), "{text}");
+        let coded = coded_error::downcast_ref::<IdentityError>(&err).expect("typed");
+        let IdentityError::IdentityNotPrivate { detail, .. } = coded else {
+            panic!("expected identity_not_private, got {coded:?}");
+        };
+        assert!(detail.contains("symlink"), "{detail}");
     }
 
     fn mapped(source: KeyfileError) -> (String, String) {
