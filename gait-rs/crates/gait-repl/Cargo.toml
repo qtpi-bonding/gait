@@ -36,6 +36,8 @@ gait-testkit = { path = "../gait-testkit", optional = true }
 tempfile = "3"
 pbjson-types = "0.7"
 serial_test = "3"
+concord-telemetry = { workspace = true, features = ["testing"] }
+gait-events = { path = "../gait-events" }
 
 [features]
 default = ["workflow", "rich-tui"]
@@ -91,6 +93,9 @@ dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2",
 # module first, gated on `#[cfg(feature = "workflow")]` there instead of
 # riding along with `repl::driver`'s `rich-tui` gate.
 workflow = ["dep:gait-workflow"]
+# Lets the REPL's permission decisions emit `PermissionDecided` through
+# gait-ops (the single emitter). Off by default; no concord-telemetry dep here.
+telemetry = ["gait-ops/telemetry"]
 
 [[bin]]
 name = "mock_brain"

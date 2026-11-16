@@ -186,3 +186,15 @@ mod tests {
         assert_eq!(preview_block(Some("")), Vec::<String>::new());
     }
 }
+
+/// After the REPL appends an interaction reply to the session log, emit
+/// `PermissionDecided` (via gait-ops, the single emitter) when that reply is a
+/// `PermissionsReply`. Other reply kinds are ignored.
+pub(crate) fn emit_decision(appended: &gait_core::proto::gait::log::v1::Event, session_id: &str) {
+    use gait_core::proto::gait::log::v1 as pb;
+    if let Some(pb::event::Body::Payload(p)) = &appended.body {
+        if let Some(pb::payload::Kind::PermissionsReply(r)) = &p.kind {
+            gait_ops::permission::emit_reply_decided(&appended.id, session_id, &r.items);
+        }
+    }
+}

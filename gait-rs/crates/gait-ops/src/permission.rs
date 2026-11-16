@@ -115,6 +115,55 @@ fn emit_permission_decided(
     });
 }
 
+/// Emit `PermissionDecided` for a `PermissionsReply` that was written to the
+/// session log (`source_record_id` is that record's id). Shared by
+/// [`reply_for_items`] and by the interactive REPL, which appends its own
+/// reply event: the decision is derived from the reply items (any allow means
+/// an allow at the broadest allowed scope; otherwise a deny with no scope).
+/// A no-op without the `telemetry` feature.
+pub fn emit_reply_decided(
+    source_record_id: &str,
+    session_id: &str,
+    reply_items: &[gait_state::proto::gait::log::v1::PermissionsReplyItem],
+) {
+    #[cfg(feature = "telemetry")]
+    {
+        use gait_state::proto::gait::log::v1 as pb;
+        if reply_items.is_empty() {
+            return;
+        }
+        let broadest = reply_items
+            .iter()
+            .filter(|i| i.decision == pb::Decision::Allow as i32)
+            .filter_map(|i| match pb::Scope::try_from(i.scope).ok()? {
+                pb::Scope::Once => Some(GrantScope::Once),
+                pb::Scope::Session => Some(GrantScope::Session),
+                pb::Scope::Mode => Some(GrantScope::Mode),
+                pb::Scope::Global => Some(GrantScope::Global),
+                _ => None,
+            })
+            .max_by_key(|s| scope_rank(*s));
+        let decision = if reply_items
+            .iter()
+            .any(|i| i.decision == pb::Decision::Allow as i32)
+        {
+            gait_events::gait::events::v1::PermissionDecision::Allow
+        } else {
+            gait_events::gait::events::v1::PermissionDecision::Deny
+        };
+        emit_permission_decided(
+            source_record_id.to_owned(),
+            session_id,
+            decision,
+            broadest,
+            reply_items.len(),
+            broadest.is_some_and(scope_persists),
+        );
+    }
+    #[cfg(not(feature = "telemetry"))]
+    let _ = (source_record_id, session_id, reply_items);
+}
+
 /// Outcome returned by [`allow`]. Carries the reply items the op wrote (so the
 /// adapter can render them under `--json`) and the scope it stamped on each.
 #[derive(Debug)]
@@ -418,28 +467,8 @@ pub fn reply_for_items(
     if reply_items.is_empty() {
         return Ok(ReplyOutcome { reply_items });
     }
-    let _record_id = write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
-    #[cfg(feature = "telemetry")]
-    {
-        let broadest = choices
-            .iter()
-            .filter(|c| c.decision == pb::Decision::Allow)
-            .map(|c| c.scope)
-            .max_by_key(|s| scope_rank(*s));
-        let decision = if broadest.is_some() {
-            gait_events::gait::events::v1::PermissionDecision::Allow
-        } else {
-            gait_events::gait::events::v1::PermissionDecision::Deny
-        };
-        emit_permission_decided(
-            _record_id,
-            session_id,
-            decision,
-            broadest,
-            choices.len(),
-            broadest.is_some_and(scope_persists),
-        );
-    }
+    let record_id = write_permissions_reply(&tx_path, "user", reply_items.clone()).coded()?;
+    emit_reply_decided(&record_id, session_id, &reply_items);
     Ok(ReplyOutcome { reply_items })
 }
 // -----------------------------------------------------------------------------

@@ -328,9 +328,11 @@ impl TurnSource for ReplSource {
             };
             match interaction {
                 Some(Ok(outcome)) => {
-                    if wire::append(&self.log_path(), outcome.event_body).is_ok() && outcome.respawn
-                    {
-                        return Some(TurnStart::Resume); // fold the appended reply (no re-append)
+                    if let Ok(ev) = wire::append(&self.log_path(), outcome.event_body) {
+                        crate::ui::permission::emit_decision(&ev, &self.session_id);
+                        if outcome.respawn {
+                            return Some(TurnStart::Resume); // fold the appended reply (no re-append)
+                        }
                     }
                     self.shared.borrow_mut().builder.write_raw("\r\n");
                 }
@@ -1954,5 +1956,102 @@ mod command_tests {
                 "/skill must not raise a control signal before /q"
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod permission_telemetry_tests {
+    //! The rich REPL (`ReplBuilder` -> `ReplSource::next`) must emit exactly one
+    //! `PermissionDecided` per permission reply it appends.
+    use super::*;
+    use gait_core::embed::TurnSource;
+    use gait_core::proto::gait::log::v1 as pb;
+    use gait_events::gait::events::v1 as ev;
+
+    async fn decide(line: &str) -> ev::PermissionDecided {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let d = tempfile::tempdir().unwrap();
+        let reader = Box::new(crate::repl::ScriptedReader::lines(&[line]));
+        let builder = crate::ui::ReplBuilder::new(reader, crate::theme::Theme::dark());
+        let shared: crate::repl::Shared =
+            std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
+                builder,
+                status_text: String::new(),
+                turn_done_blocks: None,
+                control: None,
+                sandbox_on: true,
+            }));
+        let sid = "rpd00001".to_string();
+        let mut src = ReplSource {
+            shared: shared.clone(),
+            gait_dir: d.path().to_path_buf(),
+            codebase: d.path().to_path_buf(),
+            session_id: sid.clone(),
+            agent_path: None,
+            repos: gait_core::git::Repos::production(),
+            shell_history_path: d.path().join("sh.jsonl"),
+            model_override: None,
+            last_blocks: Vec::new(),
+            ran_turn: true,
+            undo_note: None,
+        };
+        let log = gait_core::session::live::log_path(d.path(), &sid);
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let req = gait_core::proto::envelope::mint(
+            gait_core::proto::events::permissions(&[pb::PermissionItem {
+                id: "p1".into(),
+                cmd: "ls".into(),
+                patterns: vec!["ls".into()],
+                tool_name: "shell".into(),
+                ..Default::default()
+            }]),
+            None,
+            gait_core::proto::envelope::EventScope::Session,
+        );
+        shared
+            .borrow_mut()
+            .builder
+            .handle_stream_item(pb::StreamItem {
+                item: Some(pb::stream_item::Item::Event(req)),
+            });
+        assert!(matches!(
+            src.next().await,
+            Some(gait_core::embed::TurnStart::Resume)
+        ));
+        let last = gait_core::session::log::read_events(&log)
+            .unwrap()
+            .last()
+            .unwrap()
+            .id
+            .clone();
+        let event =
+            capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
+        assert_eq!(event.source_record_id, last);
+        event
+    }
+
+    #[tokio::test]
+    async fn approve_once_emits_one_permission_decided() {
+        let e = decide("1").await;
+        assert_eq!(e.decision, ev::PermissionDecision::Allow as i32);
+        assert_eq!(e.scope, ev::GrantScope::Once as i32);
+        assert!(!e.persisted);
+        assert_eq!(e.item_count, 1);
+    }
+
+    #[tokio::test]
+    async fn deny_emits_one_permission_decided() {
+        let e = decide("r").await;
+        assert_eq!(e.decision, ev::PermissionDecision::Deny as i32);
+        assert_eq!(e.scope, ev::GrantScope::Unspecified as i32);
+        assert!(!e.persisted);
+    }
+
+    #[tokio::test]
+    async fn always_mode_emits_persisted() {
+        let e = decide("m").await;
+        assert_eq!(e.decision, ev::PermissionDecision::Allow as i32);
+        assert_eq!(e.scope, ev::GrantScope::Mode as i32);
+        assert!(e.persisted);
     }
 }

@@ -645,8 +645,11 @@ impl TurnSource for PlainSource {
     async fn next(&mut self) -> Option<TurnStart> {
         if self.ran_turn {
             if let Some((body, respawn)) = self.run_interaction() {
-                if wire::append(&self.log_path(), body).is_ok() && respawn {
-                    return Some(TurnStart::Resume);
+                if let Ok(ev) = wire::append(&self.log_path(), body) {
+                    crate::ui::permission::emit_decision(&ev, &self.session_id);
+                    if respawn {
+                        return Some(TurnStart::Resume);
+                    }
                 }
             }
         }
@@ -1177,5 +1180,83 @@ mod tests {
         assert!(text.contains("/skill"));
         // /workflow is not in MIN_REPL_COMMANDS (Task 5's job to gate).
         assert!(!text.contains("/workflow"));
+    }
+
+    #[cfg(feature = "telemetry")]
+    mod permission_telemetry {
+        use super::*;
+        use gait_events::gait::events::v1 as ev;
+
+        async fn decide(line: &str) -> (ev::PermissionDecided, String) {
+            let capture = concord_telemetry::testing::capture_exclusive();
+            let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+            let reader = Rc::new(RefCell::new(
+                Box::new(crate::repl::ScriptedReader::lines(&[line])) as Box<dyn LineReader>,
+            ));
+            let tmp = tempfile::tempdir().unwrap();
+            let sid = format!("plainpd-{}-{}", std::process::id(), line);
+            let shared: Shared = Rc::new(RefCell::new(PlainState {
+                control: None,
+                sandbox_on: true,
+                pending: Pending::Permission(vec![pb::PermissionItem {
+                    id: "p1".into(),
+                    cmd: "ls".into(),
+                    patterns: vec!["ls".into()],
+                    tool_name: "shell".into(),
+                    ..Default::default()
+                }]),
+                turn_text: String::new(),
+            }));
+            let mut source = PlainSource {
+                shared,
+                reader,
+                err: Box::new(SharedBuf(buf)),
+                gait_dir: tmp.path().to_path_buf(),
+                codebase: tmp.path().to_path_buf(),
+                session_id: sid.clone(),
+                agent_path: None,
+                repos: gait_core::git::Repos::production(),
+                model_override: None,
+                ran_turn: true,
+            };
+            let log = source.log_path();
+            std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+            assert!(matches!(source.next().await, Some(TurnStart::Resume)));
+            let last = gait_core::session::log::read_events(&log)
+                .unwrap()
+                .last()
+                .unwrap()
+                .id
+                .clone();
+            let event =
+                capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
+            assert_eq!(event.source_record_id, last);
+            (event, sid)
+        }
+
+        #[tokio::test]
+        async fn approve_once_emits_one_permission_decided() {
+            let (e, _) = decide("1").await;
+            assert_eq!(e.decision, ev::PermissionDecision::Allow as i32);
+            assert_eq!(e.scope, ev::GrantScope::Once as i32);
+            assert!(!e.persisted);
+            assert_eq!(e.item_count, 1);
+        }
+
+        #[tokio::test]
+        async fn deny_emits_one_permission_decided() {
+            let (e, _) = decide("r").await;
+            assert_eq!(e.decision, ev::PermissionDecision::Deny as i32);
+            assert_eq!(e.scope, ev::GrantScope::Unspecified as i32);
+            assert!(!e.persisted);
+        }
+
+        #[tokio::test]
+        async fn always_mode_emits_persisted() {
+            let (e, _) = decide("m").await;
+            assert_eq!(e.decision, ev::PermissionDecision::Allow as i32);
+            assert_eq!(e.scope, ev::GrantScope::Mode as i32);
+            assert!(e.persisted);
+        }
     }
 }
