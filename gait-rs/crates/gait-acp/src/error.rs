@@ -80,6 +80,88 @@ pub enum PromptError {
     Internal(String),
 }
 
+const MIGRATION_HINT: &str = "run the Wave D permissions-and-replay migration script";
+
+/// The attestation replay state could not be opened, so the process refuses
+/// to start (or to confirm a batch) rather than run against state that may
+/// let a replayed delivery through. Nothing is changed on disk: the Wave D
+/// script fixes permissions and migrates the replay file. The startup exit
+/// code is the class's (Logical: 65), which is not a retryable class, so a
+/// supervisor does not crash-loop on it.
+#[derive(Debug, thiserror::Error, coded_error::CodedError)]
+#[coded(namespace = "gait.acp.attestation_state")]
+pub enum AttestationStateError {
+    #[error("attestation state {} is not private ({detail}); {MIGRATION_HINT}", .path.display())]
+    #[coded(code = "insecure", class = Logical)]
+    Insecure { path: std::path::PathBuf, detail: String },
+    #[error("attestation state {} uses the old layout ({reason}); {MIGRATION_HINT}", .path.display())]
+    #[coded(code = "old_layout", class = Logical)]
+    OldLayout { path: std::path::PathBuf, reason: String },
+    #[error("cannot open attestation state at {}: {reason}; if it predates the current layout, {MIGRATION_HINT}", .path.display())]
+    #[coded(code = "unavailable", class = Infrastructure)]
+    Unavailable { path: std::path::PathBuf, reason: String },
+}
+
+impl AttestationStateError {
+    /// From a keyfile failure. `fallback` names the state when the failure
+    /// carries no path of its own.
+    pub fn from_keyfile(fallback: &std::path::Path, error: &identity_keyfile::KeyfileError) -> Self {
+        use identity_keyfile::KeyfileError as K;
+        match error {
+            K::InsecureDir(path) | K::InsecureFile(path) => {
+                Self::insecure(path, mode_detail(path))
+            }
+            K::WrongOwner(path) => Self::insecure(path, owner_detail(path)),
+            K::NotAFile(path) => Self::insecure(path, "not a regular file".to_owned()),
+            K::TooLarge { path, cap } => {
+                Self::insecure(path, format!("larger than {cap} bytes"))
+            }
+            K::InvalidMode(mode) => {
+                Self::insecure(fallback, format!("mode {:04o}", mode & 0o7777))
+            }
+            other => Self::Unavailable { path: fallback.to_owned(), reason: other.to_string() },
+        }
+    }
+
+    /// From a replay-store failure. `fallback` is the state path to name when
+    /// the cause carries none.
+    pub fn from_store(fallback: &std::path::Path, error: &message_attestation::AttestationError) -> Self {
+        use std::error::Error as _;
+        let source = error.source();
+        if let Some(keyfile) = source.and_then(|s| s.downcast_ref::<identity_keyfile::KeyfileError>()) {
+            return Self::from_keyfile(fallback, keyfile);
+        }
+        let reason = source.map(|s| s.to_string()).unwrap_or_else(|| error.to_string());
+        if reason.contains("attested_at") {
+            Self::OldLayout { path: fallback.to_owned(), reason }
+        } else {
+            Self::Unavailable { path: fallback.to_owned(), reason }
+        }
+    }
+
+    fn insecure(path: &std::path::Path, detail: String) -> Self {
+        Self::Insecure { path: path.to_owned(), detail }
+    }
+}
+
+/// `mode 0755`, read from the path now (mode bits only).
+fn mode_detail(path: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => format!("mode {:04o}", meta.permissions().mode() & 0o7777),
+        Err(_) => "mode unknown".to_owned(),
+    }
+}
+
+/// `owned by uid 0, not the user running gait`.
+fn owner_detail(path: &std::path::Path) -> String {
+    use std::os::unix::fs::MetadataExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => format!("owned by uid {}, not the user running gait", meta.uid()),
+        Err(_) => "owned by another user".to_owned(),
+    }
+}
+
 pub fn acp_error(err: &AnyhowError, method: &'static str) -> agent_client_protocol::Error {
     let wire = coded_error::acp::to_acp_error_anyhow_redacted(err, method, "request failed");
     concord_telemetry::error_anyhow!(err, source = method, rpc.method = method);

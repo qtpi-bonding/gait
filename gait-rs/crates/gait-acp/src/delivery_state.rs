@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
+use identity_keyfile::private_fs::create_private_dir;
 use message_attestation::FileReplayStore;
+
+use crate::error::AttestationStateError;
 
 const REPLAY_FILE: &str = "replay.json";
 const SEEN_FILE: &str = "seen.jsonl";
@@ -30,10 +33,12 @@ impl DeliveryState {
     /// Opens (creating) the state for `agent_id` under `state_dir`.
     pub fn open(state_dir: &Path, agent_id: &str) -> Result<Self> {
         let dir = state_dir.join("attestation").join(agent_id);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("create delivery state {}", dir.display()))?;
-        let replay = FileReplayStore::open(&dir.join(REPLAY_FILE))
-            .map_err(|error| anyhow::anyhow!("open attestation replay store: {error}"))?;
+        let coded = |error| coded_error::into_anyhow(error);
+        create_private_dir(&dir)
+            .map_err(|error| coded(AttestationStateError::from_keyfile(&dir, &error)))?;
+        let replay_path = dir.join(REPLAY_FILE);
+        let replay = FileReplayStore::open(&replay_path)
+            .map_err(|error| coded(AttestationStateError::from_store(&replay_path, &error)))?;
         let seen_path = dir.join(SEEN_FILE);
         let seen = match std::fs::read_to_string(&seen_path) {
             Ok(text) => text
@@ -50,6 +55,11 @@ impl DeliveryState {
             }
         };
         Ok(Self { replay: std::sync::Arc::new(replay), seen_path, seen: Mutex::new(seen) })
+    }
+
+    /// The directory holding this agent's delivery state.
+    pub fn dir(&self) -> &Path {
+        self.seen_path.parent().unwrap_or(Path::new("."))
     }
 
     pub fn replay(&self) -> std::sync::Arc<FileReplayStore> {
@@ -139,5 +149,89 @@ mod tests {
         s.mark_seen(&[("p256:x".into(), "m".into())]).unwrap();
         assert!(s.replay().record("p256:aa", "p256:d", 1, 0, None).unwrap());
         std::fs::set_permissions(identity.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    const SCRIPT: &str = "run the Wave D permissions-and-replay migration script";
+
+    fn loose_attestation_dir(state: &Path, agent_id: &str, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = state.join("attestation").join(agent_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        dir
+    }
+
+    fn code_of(error: &anyhow::Error) -> &'static str {
+        coded_error::facts_anyhow(error).code
+    }
+
+    #[test]
+    fn a_loose_attestation_dir_fails_closed_with_a_coded_error() {
+        let state = tempfile::tempdir().unwrap();
+        let dir = loose_attestation_dir(state.path(), "p256:aa", 0o755);
+        std::fs::write(dir.join(REPLAY_FILE), br#"{"p256:aa":{"p256:dd":5}}"#).unwrap();
+        let error = DeliveryState::open(state.path(), "p256:aa").err().expect("must refuse");
+        assert!(
+            coded_error::downcast_ref::<crate::error::AttestationStateError>(&error).is_some(),
+            "coded, got {error:#}"
+        );
+        assert_eq!(code_of(&error), "gait.acp.attestation_state.insecure");
+        let text = format!("{error:#}");
+        assert!(text.contains(&dir.display().to_string()), "names the path: {text}");
+        assert!(text.contains("0755"), "names the octal mode: {text}");
+        assert!(text.contains(SCRIPT), "names the migration script: {text}");
+        let mode = std::fs::metadata(&dir).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(mode.permissions().mode() & 0o777, 0o755, "never chmods");
+    }
+
+    #[test]
+    fn a_loose_replay_file_fails_closed_with_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = tempfile::tempdir().unwrap();
+        let dir = loose_attestation_dir(state.path(), "p256:aa", 0o700);
+        let file = dir.join(REPLAY_FILE);
+        std::fs::write(&file, b"{}").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = DeliveryState::open(state.path(), "p256:aa").err().expect("must refuse");
+        assert_eq!(code_of(&error), "gait.acp.attestation_state.insecure");
+        let text = format!("{error:#}");
+        assert!(text.contains(&file.display().to_string()), "{text}");
+        assert!(text.contains("0644") && text.contains(SCRIPT), "{text}");
+    }
+
+    #[test]
+    fn an_old_bare_number_replay_file_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = tempfile::tempdir().unwrap();
+        let dir = loose_attestation_dir(state.path(), "p256:aa", 0o700);
+        let file = dir.join(REPLAY_FILE);
+        std::fs::write(&file, br#"{"p256:aa":{"p256:dd":5}}"#).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = DeliveryState::open(state.path(), "p256:aa").err().expect("must refuse");
+        assert_eq!(code_of(&error), "gait.acp.attestation_state.old_layout");
+        let text = format!("{error:#}");
+        assert!(text.contains(&file.display().to_string()) && text.contains(SCRIPT), "{text}");
+    }
+
+    #[test]
+    fn keyfile_failures_map_to_the_coded_state_error() {
+        use crate::error::AttestationStateError as E;
+        use identity_keyfile::KeyfileError as K;
+        let fallback = Path::new("/state/attestation/p256:aa/replay.json");
+        let wrong = E::from_keyfile(fallback, &K::WrongOwner("/state/x".into()));
+        assert!(matches!(wrong, E::Insecure { .. }));
+        let text = wrong.to_string();
+        assert!(text.contains("/state/x") && text.contains("owned by") && text.contains(SCRIPT), "{text}");
+        for key in [
+            K::NotAFile("/state/x".into()),
+            K::TooLarge { path: "/state/x".into(), cap: 1 },
+            K::InsecureFile("/state/x".into()),
+        ] {
+            assert!(matches!(E::from_keyfile(fallback, &key), E::Insecure { .. }), "{key}");
+        }
+        let other = E::from_keyfile(fallback, &K::Missing("/state/y".into()));
+        assert!(matches!(other, E::Unavailable { .. }));
+        assert!(other.to_string().contains("/state/attestation/p256:aa/replay.json"));
     }
 }
