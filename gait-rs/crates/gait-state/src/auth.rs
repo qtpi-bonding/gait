@@ -12,30 +12,19 @@ use crate::gait_home::{GaitHome, GaitHomeError};
 impl AuthError {
     pub(crate) fn from_keyfile(error: &identity_keyfile::KeyfileError) -> Self {
         use identity_keyfile::KeyfileError;
-        let insecure = |path: &Path, detail: String| AuthError::Insecure {
+        let insecure = |path: &Path, detail: String, hint: &'static str| AuthError::Insecure {
             path: path.to_path_buf(),
             detail,
+            hint,
         };
         match error {
             KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
-                let detail = match std::fs::symlink_metadata(path) {
-                    Ok(meta) => {
-                        use std::os::unix::fs::PermissionsExt;
-                        format!("mode {:04o}", meta.permissions().mode() & 0o7777)
-                    }
-                    Err(_) => "mode unknown".to_string(),
-                };
-                insecure(path, detail)
+                insecure(path, gait_identity::mode_detail(path), gait_identity::MIGRATION_HINT_SUFFIX)
             }
             KeyfileError::WrongOwner(path) => {
-                use std::os::unix::fs::MetadataExt;
-                let detail = match std::fs::symlink_metadata(path) {
-                    Ok(meta) => format!("owned by uid {}, not the user running gait", meta.uid()),
-                    Err(_) => "owned by another user".to_string(),
-                };
-                insecure(path, detail)
+                insecure(path, gait_identity::owner_detail(path), gait_identity::MIGRATION_HINT_SUFFIX)
             }
-            KeyfileError::NotAFile(path) => insecure(path, "not a regular file".to_string()),
+            KeyfileError::NotAFile(path) => insecure(path, "not a regular file".to_string(), ""),
             KeyfileError::TooLarge { path, cap } => AuthError::TooLarge {
                 path: path.clone(),
                 cap: *cap,
@@ -54,9 +43,9 @@ pub enum AuthError {
     #[error("corrupt authentication file {path}: {detail}")]
     #[coded(code = "corrupt", class = Infrastructure)]
     Corrupt { path: PathBuf, detail: String },
-    #[error("authentication state {} is not private ({detail}); run the Wave D permissions-and-replay migration script", .path.display())]
+    #[error("authentication state {} is not private ({detail}){hint}", .path.display())]
     #[coded(code = "insecure", class = Logical)]
-    Insecure { path: PathBuf, detail: String },
+    Insecure { path: PathBuf, detail: String, hint: &'static str },
     #[error("authentication file {} is larger than {cap} bytes", .path.display())]
     #[coded(code = "too_large", class = Logical)]
     TooLarge { path: PathBuf, cap: usize },
@@ -1099,6 +1088,26 @@ mod tests {
             Err(AuthError::Corrupt { path: error_path, detail })
                 if error_path == path && detail.contains("entry for 'openai' is invalid")
         ));
+    }
+
+    #[test]
+    fn the_wave_d_hint_is_for_mode_and_owner_only_and_a_symlink_is_named() {
+        use identity_keyfile::KeyfileError as K;
+        let p = || PathBuf::from("/g/auth.json");
+        for key in [K::InsecureFile(p()), K::InsecureDir(p()), K::WrongOwner(p())] {
+            let text = AuthError::from_keyfile(&key).to_string();
+            assert!(text.contains("Wave D"), "{text}");
+        }
+        let text = AuthError::from_keyfile(&K::NotAFile(p())).to_string();
+        assert!(!text.contains("Wave D") && text.contains("/g/auth.json"), "{text}");
+        let text = AuthError::from_keyfile(&K::TooLarge { path: p(), cap: 3 }).to_string();
+        assert!(!text.contains("Wave D"), "{text}");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(tmp.path(), &link).unwrap();
+        let text = AuthError::from_keyfile(&K::InsecureDir(link.clone())).to_string();
+        assert!(text.contains("symlink") && text.contains(&link.display().to_string()), "{text}");
     }
 
     #[test]

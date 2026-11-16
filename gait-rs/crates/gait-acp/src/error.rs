@@ -1,5 +1,5 @@
 use anyhow::Error as AnyhowError;
-use gait_identity::{mode_detail, owner_detail, MIGRATION_HINT};
+use gait_identity::{mode_detail, owner_detail, MIGRATION_HINT, MIGRATION_HINT_SUFFIX};
 
 pub const NEW_SESSION: &str = "session/new";
 pub const LOAD_SESSION: &str = "session/load";
@@ -108,13 +108,13 @@ pub enum PromptError {
 #[derive(Debug, thiserror::Error, coded_error::CodedError)]
 #[coded(namespace = "gait.acp.attestation_state")]
 pub enum AttestationStateError {
-    #[error("attestation state {} is not private ({detail}); {MIGRATION_HINT}", .path.display())]
+    #[error("attestation state {} is not private ({detail}){hint}", .path.display())]
     #[coded(code = "insecure", class = Logical)]
-    Insecure { path: std::path::PathBuf, detail: String },
+    Insecure { path: std::path::PathBuf, detail: String, hint: &'static str },
     #[error("attestation state {} uses the old layout ({reason}); {MIGRATION_HINT}", .path.display())]
     #[coded(code = "old_layout", class = Logical)]
     OldLayout { path: std::path::PathBuf, reason: String },
-    #[error("cannot open attestation state at {}: {reason}; if it predates the current layout, {MIGRATION_HINT}", .path.display())]
+    #[error("cannot open attestation state at {}: {reason}", .path.display())]
     #[coded(code = "unavailable", class = Infrastructure)]
     Unavailable { path: std::path::PathBuf, reason: String },
 }
@@ -126,45 +126,44 @@ impl AttestationStateError {
         use identity_keyfile::KeyfileError as K;
         match error {
             K::InsecureDir(path) | K::InsecureFile(path) => {
-                Self::insecure(path, mode_detail(path))
+                Self::insecure(path, mode_detail(path), MIGRATION_HINT_SUFFIX)
             }
-            K::WrongOwner(path) => Self::insecure(path, owner_detail(path)),
-            K::NotAFile(path) => Self::insecure(path, "not a regular file".to_owned()),
+            K::WrongOwner(path) => Self::insecure(path, owner_detail(path), MIGRATION_HINT_SUFFIX),
+            K::NotAFile(path) => Self::insecure(path, "not a regular file".to_owned(), ""),
             K::TooLarge { path, cap } => {
-                Self::insecure(path, format!("larger than {cap} bytes"))
+                Self::insecure(path, format!("larger than {cap} bytes"), "")
             }
             K::InvalidMode(mode) => {
-                Self::insecure(fallback, format!("mode {:04o}", mode & 0o7777))
+                Self::insecure(fallback, format!("mode {:04o}", mode & 0o7777), "")
             }
             other => Self::Unavailable { path: fallback.to_owned(), reason: other.to_string() },
         }
     }
 
     /// From a replay-store failure. `fallback` is the state path to name when
-    /// the cause carries none.
-    /// The library gives the old-layout failure only as an untyped message (no
-    /// typed source), so classification is by exclusion of the typed sources:
-    /// keyfile failures are classified from their own types, io and serde_json
-    /// failures are Unavailable, and any remaining untyped source is the
-    /// old-layout failure.
+    /// the cause carries none. Classification is by the source's type, never
+    /// its message text: a `ReplayStateError` source is the old layout,
+    /// keyfile failures are classified from their own types, and everything
+    /// else (io, serde_json, any other untyped source, or no source) is
+    /// Unavailable.
     pub fn from_store(fallback: &std::path::Path, error: &message_attestation::AttestationError) -> Self {
         use std::error::Error as _;
         let source = error.source();
-        if let Some(keyfile) = source.and_then(|s| s.downcast_ref::<identity_keyfile::KeyfileError>()) {
-            return Self::from_keyfile(fallback, keyfile);
-        }
-        let path = fallback.to_owned();
         match source {
-            Some(s) if s.is::<std::io::Error>() || s.is::<serde_json::Error>() => {
-                Self::Unavailable { path, reason: s.to_string() }
+            Some(s) if s.downcast_ref::<message_attestation::ReplayStateError>().is_some() => {
+                Self::OldLayout { path: fallback.to_owned(), reason: s.to_string() }
             }
-            Some(s) => Self::OldLayout { path, reason: s.to_string() },
-            None => Self::Unavailable { path, reason: error.to_string() },
+            Some(s) if s.downcast_ref::<identity_keyfile::KeyfileError>().is_some() => {
+                let keyfile = s.downcast_ref::<identity_keyfile::KeyfileError>().unwrap();
+                Self::from_keyfile(fallback, keyfile)
+            }
+            Some(s) => Self::Unavailable { path: fallback.to_owned(), reason: s.to_string() },
+            None => Self::Unavailable { path: fallback.to_owned(), reason: error.to_string() },
         }
     }
 
-    fn insecure(path: &std::path::Path, detail: String) -> Self {
-        Self::Insecure { path: path.to_owned(), detail }
+    fn insecure(path: &std::path::Path, detail: String, hint: &'static str) -> Self {
+        Self::Insecure { path: path.to_owned(), detail, hint }
     }
 }
 
@@ -256,14 +255,55 @@ mod tests {
         let parse = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
         let err = AttestationStateError::from_store(path, &A::Store(Box::new(parse)));
         assert!(matches!(err, AttestationStateError::Unavailable { .. }), "{err}");
-        // The library's untyped layout failure (a plain message) is the old layout,
-        // whatever its wording.
-        let err = AttestationStateError::from_store(path, &A::Store("reworded".to_owned().into()));
-        assert!(matches!(err, AttestationStateError::OldLayout { .. }), "{err}");
+        // The library's typed layout failures are the old layout, whatever their wording.
+        for typed in [
+            message_attestation::ReplayStateError::OldLayout,
+            message_attestation::ReplayStateError::StateNotObject,
+            message_attestation::ReplayStateError::InvalidSequence,
+        ] {
+            let err = AttestationStateError::from_store(path, &A::Store(Box::new(typed)));
+            assert!(matches!(err, AttestationStateError::OldLayout { .. }), "{typed:?}: {err}");
+        }
+        // Any other untyped source is never classified as the old layout, even when its
+        // text says so.
+        for text in ["reworded", "replay entry is in the old layout (no attested_at)"] {
+            let err = AttestationStateError::from_store(path, &A::Store(text.to_owned().into()));
+            assert!(matches!(err, AttestationStateError::Unavailable { .. }), "{text}: {err}");
+        }
         // A keyfile failure is never the old layout.
         let key = identity_keyfile::KeyfileError::InsecureDir(path.to_owned());
         let err = AttestationStateError::from_store(path, &A::Store(Box::new(key)));
         assert!(matches!(err, AttestationStateError::Insecure { .. }), "{err}");
+    }
+
+    #[test]
+    fn the_migration_hint_shows_for_mode_owner_and_old_layout_only() {
+        use identity_keyfile::KeyfileError as K;
+        use message_attestation::AttestationError as A;
+        let path = std::path::Path::new("/state/replay.json");
+        let hint = gait_identity::MIGRATION_HINT;
+        let hinted = [
+            AttestationStateError::from_keyfile(path, &K::InsecureDir(path.to_owned())),
+            AttestationStateError::from_keyfile(path, &K::InsecureFile(path.to_owned())),
+            AttestationStateError::from_keyfile(path, &K::WrongOwner(path.to_owned())),
+            AttestationStateError::from_store(
+                path,
+                &A::Store(Box::new(message_attestation::ReplayStateError::OldLayout)),
+            ),
+        ];
+        for err in hinted {
+            assert!(err.to_string().contains(hint), "{err}");
+        }
+        let plain = [
+            AttestationStateError::from_keyfile(path, &K::NotAFile(path.to_owned())),
+            AttestationStateError::from_keyfile(path, &K::TooLarge { path: path.to_owned(), cap: 9 }),
+            AttestationStateError::from_store(path, &A::Store("boom".to_owned().into())),
+        ];
+        for err in plain {
+            let text = err.to_string();
+            assert!(!text.contains(hint) && !text.contains("Wave D"), "{text}");
+            assert!(text.contains("/state/replay.json"), "{text}");
+        }
     }
 
     #[test]

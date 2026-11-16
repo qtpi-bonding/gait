@@ -12,6 +12,9 @@ pub const DIRECT_BODY_TYPE: &str = "type.googleapis.com/gait.log.v1.DirectEventD
 
 pub const MIGRATION_HINT: &str = "run the Wave D permissions-and-replay migration script";
 
+/// The hint as an appended clause, so call sites can choose whether to show it.
+pub const MIGRATION_HINT_SUFFIX: &str = "; run the Wave D permissions-and-replay migration script";
+
 /// Why an agent directory could not supply its identity. Every variant reads
 /// `load agent identity from <dir>`; the keyfile failure is the `source`, so an
 /// anyhow chain prints the same text as before the coding.
@@ -30,9 +33,9 @@ pub enum IdentityError {
     #[error("load agent identity from {}", .dir.display())]
     #[coded(code = "delegation_expired", class = Logical)]
     DelegationExpired { dir: PathBuf, #[source] source: KeyfileError },
-    #[error("identity path {path} is not private ({detail}): it must be owned by this user, a directory 0700 or a key file 0600; {MIGRATION_HINT}")]
+    #[error("identity path {path} is not private ({detail}): it must be owned by this user, a directory 0700 or a key file 0600{hint}")]
     #[coded(code = "identity_not_private", class = Logical)]
-    IdentityNotPrivate { path: PathBuf, detail: String, #[source] source: KeyfileError },
+    IdentityNotPrivate { path: PathBuf, detail: String, hint: &'static str, #[source] source: KeyfileError },
     #[error("{} holds a root key but no agent identity; restore the device folder next to it, or move the root folder aside to mint a new identity", .root.display())]
     #[coded(code = "orphan_root", class = Logical)]
     OrphanRoot { root: PathBuf, #[source] source: KeyfileError },
@@ -46,26 +49,30 @@ impl IdentityError {
         let dir = dir.to_path_buf();
         match &source {
             KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
-                Self::IdentityNotPrivate { path: path.clone(), detail: mode_detail(path), source }
+                Self::IdentityNotPrivate { path: path.clone(), detail: mode_detail(path), hint: MIGRATION_HINT_SUFFIX, source }
             }
             KeyfileError::WrongOwner(path) => Self::IdentityNotPrivate {
                 path: path.clone(),
                 detail: owner_detail(path),
+                hint: MIGRATION_HINT_SUFFIX,
                 source,
             },
             KeyfileError::NotAFile(path) => Self::IdentityNotPrivate {
                 path: path.clone(),
                 detail: "not a regular file".to_owned(),
+                hint: "",
                 source,
             },
             KeyfileError::TooLarge { path, cap } => Self::IdentityNotPrivate {
                 path: path.clone(),
                 detail: format!("larger than {cap} bytes"),
+                hint: "",
                 source,
             },
             KeyfileError::InvalidMode(mode) => Self::IdentityNotPrivate {
                 path: dir,
                 detail: format!("mode {:04o}", mode & 0o7777),
+                hint: "",
                 source,
             },
             KeyfileError::OrphanRoot(root) => Self::OrphanRoot { root: root.clone(), source },
@@ -93,6 +100,9 @@ impl IdentityError {
 pub fn mode_detail(path: &Path) -> String {
     use std::os::unix::fs::PermissionsExt as _;
     match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            format!("{} is a symlink; identity paths must be real directories, not symlinks", path.display())
+        }
         Ok(meta) => format!("mode {:04o}", meta.permissions().mode() & 0o7777),
         Err(_) => "mode unknown".to_owned(),
     }
@@ -102,6 +112,9 @@ pub fn mode_detail(path: &Path) -> String {
 pub fn owner_detail(path: &Path) -> String {
     use std::os::unix::fs::MetadataExt as _;
     match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            format!("{} is a symlink; identity paths must be real directories, not symlinks", path.display())
+        }
         Ok(meta) => format!("owned by uid {}, not the user running gait", meta.uid()),
         Err(_) => "owned by another user".to_owned(),
     }
@@ -811,6 +824,40 @@ mod tests {
         assert_eq!(coded.code(), "gait.identity.machine_dir_unresolved");
         let rel = machine_dir_with(env_of(&[("HOME", "relative")])).unwrap_err();
         assert!(coded_error::downcast_ref::<IdentityError>(&rel).is_some());
+    }
+
+    #[test]
+    fn the_migration_hint_shows_for_mode_and_owner_only() {
+        let p = || PathBuf::from("/agents/one/device.jwk.json");
+        for source in [KeyfileError::InsecureDir(p()), KeyfileError::InsecureFile(p()), KeyfileError::WrongOwner(p())] {
+            let (_, text) = mapped(source);
+            assert!(text.contains(MIGRATION_HINT), "{text}");
+        }
+        for source in [KeyfileError::NotAFile(p()), KeyfileError::TooLarge { path: p(), cap: 10 }] {
+            let (code, text) = mapped(source);
+            assert_eq!(code, "gait.identity.identity_not_private");
+            assert!(!text.contains("Wave D"), "{text}");
+            assert!(text.contains("/agents/one/device.jwk.json"), "{text}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_identity_dir_is_refused_as_a_symlink() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("real");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = tmp.path().join("link");
+        symlink(&target, &link).unwrap();
+        for detail in [mode_detail(&link), owner_detail(&link)] {
+            assert!(detail.contains("symlink"), "{detail}");
+            assert!(detail.contains(&link.display().to_string()), "{detail}");
+            assert!(!detail.contains("0777") && !detail.contains("mode 07"), "{detail}");
+        }
+        let (_, text) = mapped(KeyfileError::InsecureDir(link.clone()));
+        assert!(text.contains("symlink") && text.contains(&link.display().to_string()), "{text}");
     }
 
     fn mapped(source: KeyfileError) -> (String, String) {
