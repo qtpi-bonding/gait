@@ -64,6 +64,11 @@ expression = "LicenseRef-qtpi-unlicensed"
 license-files = []
 
 [[licenses.clarify]]
+crate = "concord-fields"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.clarify]]
 crate = "concord-telemetry-proto"
 expression = "LicenseRef-qtpi-unlicensed"
 license-files = []
@@ -94,6 +99,10 @@ allow = ["LicenseRef-qtpi-unlicensed"]
 
 [[licenses.exceptions]]
 crate = "concord-telemetry-derive"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "concord-fields"
 allow = ["LicenseRef-qtpi-unlicensed"]
 
 [[licenses.exceptions]]
