@@ -26,6 +26,12 @@ fn hand_identity_deny_env(
         _ => gait_dir.join("identity"),
     };
     let machine = gait_identity::machine_dir_with(&var)?;
+    if let Some(bad) = [&agent_dir, &machine].into_iter().find(|p| p.to_string_lossy().contains(':')) {
+        anyhow::bail!(
+            "identity path {} contains ':' and cannot be carried in the hand's deny list; move it",
+            bad.display()
+        );
+    }
     Ok(gait_identity::deny_paths_env_value_with(&agent_dir, &machine))
 }
 
@@ -1025,6 +1031,16 @@ mod tests {
         .unwrap();
         let parts: Vec<&str> = value.split(':').collect();
         assert_eq!(parts, vec!["/agents/a", "/h/.local/share/machine-identity"]);
+    }
+
+    #[test]
+    fn hand_deny_env_refuses_a_path_the_colon_list_cannot_carry() {
+        let err = hand_identity_deny_env(
+            Path::new("/g"),
+            env_of(&[("MACHINE_IDENTITY_DIR", "/m/a:b"), ("HOME", "/h")]),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("':'"), "{err:#}");
     }
 
     #[test]
