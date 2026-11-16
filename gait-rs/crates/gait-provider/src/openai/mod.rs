@@ -170,9 +170,9 @@ struct FunctionDelta {
 #[derive(Deserialize)]
 struct StreamUsage {
     /// A missing or null count is 0: one absent field must not drop the rest.
-    #[serde(default, deserialize_with = "count_or_zero", alias = "input_tokens")]
+    #[serde(default, deserialize_with = "count_or_zero")]
     prompt_tokens: u32,
-    #[serde(default, deserialize_with = "count_or_zero", alias = "output_tokens")]
+    #[serde(default, deserialize_with = "count_or_zero")]
     completion_tokens: u32,
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
@@ -480,10 +480,10 @@ fn body_stream(
                 }
             };
             if event.data == "[DONE]" {
+                // The protocol terminator: nothing follows it.
                 call.answered();
-                if !finished { trailer_deadline = tokio::time::Instant::now() + TRAILER_GRACE; }
                 finished = true;
-                continue;
+                break;
             }
             if event.data.is_empty() { continue; }
 
@@ -569,7 +569,11 @@ fn body_stream(
                     }
                     call.answered();
                     tools_completed = true;
-                    if !finished { trailer_deadline = tokio::time::Instant::now() + TRAILER_GRACE; }
+                    if !finished {
+                        // Usage already seen: no trailer to wait for.
+                        trailer_deadline = tokio::time::Instant::now()
+                            + if last_usage.is_some() { std::time::Duration::ZERO } else { TRAILER_GRACE };
+                    }
                     finished = true;
                 }
             }

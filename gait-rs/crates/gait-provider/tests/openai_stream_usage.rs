@@ -112,8 +112,8 @@ async fn usage_is_recorded_whatever_shape_the_server_sends_it_in() {
     // extra non-standard fields next to the standard ones.
     let extra = r#"data: {"id":"x","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"peak_memory":1.5,"time_to_first_token":0.2,"generation_tokens_per_second":41.0,"prompt_tokens_details":{"cached_tokens":null}},"timings":{"x":1}}"#;
     assert_eq!(usage_for(&[FINISH, extra, "data: [DONE]"]).await, usage(10, 3, 0), "extra fields");
-    // usage after [DONE].
-    assert_eq!(usage_for(&[FINISH, "data: [DONE]", std_usage]).await, usage(60, 20, 40), "usage after [DONE]");
+    // [DONE] is the terminator: a chunk after it is not read.
+    assert_eq!(usage_for(&[FINISH, "data: [DONE]", std_usage]).await, usage(0, 0, 0), "usage after [DONE] is ignored");
     // No [DONE] at all, the connection just closes after the usage chunk.
     assert_eq!(usage_for(&[FINISH, std_usage]).await, usage(60, 20, 40), "no [DONE]");
 }
@@ -131,4 +131,24 @@ async fn repeated_finish_and_usage_chunks_count_once_and_a_held_open_socket_does
     let (usage, _, dones) = run(&[FINISH, r#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#], true).await;
     assert_eq!((usage, dones), ((10, 3, 0), 1));
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "a server that never closes must not hold Done for long");
+}
+
+#[tokio::test]
+async fn done_ends_the_stream_at_once_even_if_the_server_keeps_the_socket_open() {
+    let _env = ENV.lock().await;
+    let usage_chunk = r#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#;
+    let started = std::time::Instant::now();
+    let (usage, _, dones) = run(&[FINISH, usage_chunk, "data: [DONE]"], true).await;
+    assert_eq!((usage, dones), ((10, 3, 0), 1));
+    assert!(started.elapsed() < std::time::Duration::from_millis(500), "[DONE] is the terminator: took {:?}", started.elapsed());
+}
+
+#[tokio::test]
+async fn a_finish_chunk_that_already_carried_usage_does_not_wait_for_a_trailer() {
+    let _env = ENV.lock().await;
+    let on_finish = r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#;
+    let started = std::time::Instant::now();
+    let (usage, _, dones) = run(&[on_finish], true).await;
+    assert_eq!((usage, dones), ((10, 3, 0), 1));
+    assert!(started.elapsed() < std::time::Duration::from_millis(500), "took {:?}", started.elapsed());
 }

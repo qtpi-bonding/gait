@@ -1,0 +1,6 @@
+data: {"id":"chatcmpl-a5ac7995","object":"chat.completion.chunk","created":1794807844,"model":"GLM-5.3-Flash-oQ4e-mtp","choices":[{"index":0,"delta":{"reasoning_content":"\n"}}]}
+data: {"id":"chatcmpl-a5ac7995","object":"chat.completion.chunk","created":1794807844,"model":"GLM-5.3-Flash-oQ4e-mtp","choices":[{"index":0,"delta":{"content":"Hello, my dear friend"}}]}
+data: {"id":"chatcmpl-a5ac7995","object":"chat.completion.chunk","created":1794807844,"model":"GLM-5.3-Flash-oQ4e-mtp","choices":[{"index":0,"delta":{"content":"!"}}]}
+data: {"id":"chatcmpl-a5ac7995","object":"chat.completion.chunk","created":1794807844,"model":"GLM-5.3-Flash-oQ4e-mtp","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-a5ac7995","object":"chat.completion.chunk","created":1794807844,"model":"GLM-5.3-Flash-oQ4e-mtp","choices":[],"usage":{"prompt_tokens":18,"completion_tokens":7,"total_tokens":25,"input_tokens":18,"output_tokens":7,"prompt_tokens_details":{"cached_tokens":16},"completion_tokens_details":{"reasoning_tokens":1},"time_to_first_token":0.08,"time_to_first_visible_token":0.08,"total_time":0.22,"prompt_eval_duration":0.08,"generation_duration":0.13,"prompt_tokens_per_second":24.66,"generation_tokens_per_second":52.15}}
+data: [DONE]

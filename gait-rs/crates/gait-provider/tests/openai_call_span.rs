@@ -36,14 +36,32 @@ async fn read_request(sock: &mut tokio::net::TcpStream) {
 
 /// Answers every request: a streamed body whose first token comes after a
 /// pause, or an HTTP error status.
-async fn serve(listener: TcpListener, status: u16) {
+#[derive(Clone)]
+enum Mode {
+    Ok,
+    Status(u16),
+    /// First chunk, then silence: the client drops the stream mid-body.
+    Stall,
+    /// This exact SSE body, then close.
+    Raw(String),
+}
+
+async fn serve(listener: TcpListener, mode: Mode) {
     loop {
         let (mut sock, _) = listener.accept().await.unwrap();
         read_request(&mut sock).await;
-        if status != 200 {
+        if let Mode::Raw(body) = &mode {
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            continue;
+        }
+        if let Mode::Status(status) = mode {
             let body = r#"{"error":{"message":"nope"}}"#;
             let resp = format!(
-                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} X\r\nretry-after: 0\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = sock.write_all(resp.as_bytes()).await;
@@ -52,6 +70,11 @@ async fn serve(listener: TcpListener, status: u16) {
         let _ = sock
             .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"id\":\"c\",\"model\":\"served-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
             .await;
+        if matches!(mode, Mode::Stall) {
+            let _ = sock.write_all(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n").await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            continue;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         let _ = sock.write_all(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n").await;
         tokio::time::sleep(std::time::Duration::from_millis(40)).await;
@@ -61,11 +84,16 @@ async fn serve(listener: TcpListener, status: u16) {
     }
 }
 
-async fn call(status: u16) -> Result<(), String> {
+async fn call(mode: Mode) -> Result<(), String> {
+    call_with(mode, false).await
+}
+
+/// `drop_after_first`: read one chunk past the opening one, then drop the stream.
+async fn call_with(mode: Mode, drop_after_first: bool) -> Result<(), String> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     std::env::set_var("LMSTUDIO_BASE_URL", format!("http://{addr}/v1"));
-    let server = tokio::spawn(serve(listener, status));
+    let server = tokio::spawn(serve(listener, mode));
     let params = LlmParamsConfig { temperature: Some(0.5), top_p: Some(0.9), max_tokens: Some(512), ..Default::default() };
     let provider = load_provider_with_credential_and_params("lmstudio/some-model", None, &params).unwrap();
     let msgs = vec![Message::User { content: MessageContent::Text("hello".into()), id: "m1".into(), attribution: Vec::new() }];
@@ -78,9 +106,15 @@ async fn call(status: u16) -> Result<(), String> {
     };
     let result = with_call(ctx, async {
         let mut stream = provider.stream("sys", &msgs, &[], &params, None).await.map_err(|e| e.to_string())?;
+        let mut seen = 0;
         while let Some(chunk) = stream.next().await {
             chunk.map_err(|e| e.to_string())?;
+            seen += 1;
+            if drop_after_first && seen == 1 {
+                break;
+            }
         }
+        drop(stream);
         Ok(())
     })
     .await;
@@ -98,7 +132,7 @@ macro_rules! model_call_spans {
 async fn a_call_emits_one_gen_ai_span_with_usage_timing_and_who_it_is_for() {
     let _env = ENV.lock().await;
     let _capture = capture_exclusive();
-    call(200).await.unwrap();
+    call(Mode::Ok).await.unwrap();
     let found = model_call_spans!();
     assert_eq!(found.len(), 1, "one span per model call");
     let s = &found[0];
@@ -135,7 +169,7 @@ async fn a_call_emits_one_gen_ai_span_with_usage_timing_and_who_it_is_for() {
 async fn a_failing_call_carries_its_error_class() {
     let _env = ENV.lock().await;
     let _capture = capture_exclusive();
-    assert!(call(400).await.is_err());
+    assert!(call(Mode::Status(400)).await.is_err());
     let found = model_call_spans!();
     assert_eq!(found.len(), 1);
     let s = &found[0];
@@ -143,4 +177,51 @@ async fn a_failing_call_carries_its_error_class() {
     assert_eq!(span_attr(s, "http_status").as_deref(), Some("400"));
     assert!(span_attr(s, "error.type").is_some());
     assert_eq!(span_attr(s, "gen_ai.request.model").as_deref(), Some("some-model"));
+}
+
+#[tokio::test]
+async fn a_429_carries_error_class_and_type_on_the_call_span() {
+    let _env = ENV.lock().await;
+    let _capture = capture_exclusive();
+    assert!(call(Mode::Status(429)).await.is_err());
+    let found = model_call_spans!();
+    assert_eq!(found.len(), 1, "retries stay inside the one call span");
+    let s = &found[0];
+    assert!(span_attr(s, "error.class").is_some(), "attrs: {:?}", s.attributes);
+    assert_eq!(span_attr(s, "error.type").as_deref(), span_attr(s, "error.code").as_deref());
+    assert!(span_attr(s, "error.type").is_some());
+    assert_eq!(span_attr(s, "http_status").as_deref(), Some("429"));
+}
+
+#[tokio::test]
+async fn dropping_the_stream_mid_body_still_ends_the_span() {
+    let _env = ENV.lock().await;
+    let _capture = capture_exclusive();
+    call_with(Mode::Stall, true).await.unwrap();
+    let found = model_call_spans!();
+    assert_eq!(found.len(), 1, "the dropped call's span was exported");
+    let s = &found[0];
+    assert!(span_attr(s, "gait.duration_ms").is_some(), "attrs: {:?}", s.attributes);
+    assert!(span_attr(s, "gait.time_to_first_token_ms").is_some());
+}
+
+#[tokio::test]
+async fn a_real_omlx_tail_records_usage_and_server_timings() {
+    let _env = ENV.lock().await;
+    let _capture = capture_exclusive();
+    let tail = include_str!("fixtures/omlx_sse_tail.txt");
+    let body: String = tail.lines().filter(|l| !l.is_empty()).map(|l| format!("{l}\n\n")).collect();
+    call(Mode::Raw(body)).await.unwrap();
+    let found = model_call_spans!();
+    assert_eq!(found.len(), 1);
+    let s = &found[0];
+    let a = |k: &str| span_attr(s, k);
+    assert_eq!(a("gen_ai.usage.input_tokens").as_deref(), Some("18"));
+    assert_eq!(a("gen_ai.usage.output_tokens").as_deref(), Some("7"));
+    assert_eq!(a("gait.usage.cached_tokens").as_deref(), Some("16"));
+    assert_eq!(a("gait.usage.reasoning_tokens").as_deref(), Some("1"));
+    assert_eq!(a("gen_ai.response.model").as_deref(), Some("GLM-5.3-Flash-oQ4e-mtp"));
+    assert_eq!(a("gen_ai.response.finish_reasons").as_deref(), Some("stop"));
+    assert_eq!(a("gait.server.time_to_first_token_ms").as_deref(), Some("80"));
+    assert_eq!(a("gait.server.generation_tokens_per_second").as_deref(), Some("52.15"));
 }
