@@ -1,44 +1,32 @@
 [fields]
 turn = { type = "int", meaning = "Turn number" }
 iterations = { type = "int", meaning = "Turn iterations" }
-outcome = { type = "str", meaning = "Turn outcome" }
-message_count = { type = "int", meaning = "Accepted message count" }
 message_ids = { type = "str", meaning = "Accepted message ids" }
 source = { type = "str", meaning = "Event source" }
-key_id = { type = "str", meaning = "Attestation key id" }
 parent_session_id = { type = "str", meaning = "Parent session id" }
 child_session_id = { type = "str", meaning = "Child session id" }
 signed = { type = "bool", meaning = "Whether report was signed" }
 provider = { type = "str", meaning = "Model provider" }
 model = { type = "str", meaning = "Model name" }
-attempt = { type = "int", meaning = "Attempt number" }
 phase = { type = "str", meaning = "Operation phase" }
 status_code = { type = "int", meaning = "Status code" }
 agent_name = { type = "str", meaning = "Spawned agent name" }
-status = { type = "str", meaning = "Agent report status" }
 started_ms = { type = "int", meaning = "Start time of the turn, epoch milliseconds" }
 input_tokens = { type = "int", meaning = "Input tokens the turn used" }
 output_tokens = { type = "int", meaning = "Output tokens the turn produced" }
 cache_read_tokens = { type = "int", meaning = "Input tokens served from the provider cache" }
 cache_write_tokens = { type = "int", meaning = "Input tokens written to the provider cache" }
-version = { type = "str", meaning = "Build version of the running binary" }
-reason = { type = "str", meaning = "Why the service is stopping" }
-uptime_ms = { type = "int", meaning = "Milliseconds since the service started" }
 attempt_max = { type = "int", meaning = "Attempts the transport allows" }
 http_status = { type = "int", meaning = "HTTP status of a failed model call, 0 when none" }
 retry_after_ms = { type = "int", meaning = "Milliseconds the server asked to wait before a retry" }
 will_retry = { type = "bool", meaning = "Whether the failed call will be retried" }
-kind = { type = "str", meaning = "Kind of failure" }
-pid = { type = "int", meaning = "Process id" }
 finalized = { type = "bool", meaning = "Whether the turn finished cleanly" }
 tool = { type = "str", meaning = "Tool name" }
 dimension = { type = "str", meaning = "Sandbox dimension that was denied" }
 item_count = { type = "int", meaning = "Number of items in the request" }
 deliverer = { type = "str", meaning = "Principal id of the party that delivered a batch of messages" }
 failed_started_ms = { type = "int", meaning = "Start time of the failed turn a retry follows, in ms since the epoch" }
-error_code = { type = "str", meaning = "Stable code of the error a failed turn ended with" }
 error_class = { type = "str", meaning = "Class of the error a failed turn ended with" }
-acp_session_id = { type = "str", meaning = "Session id of a gait ACP session (the same value as gait_session_id); apart from the upstream session id" }
 gait_session_id = { type = "str", meaning = "Id of one gait session; apart from the upstream session id" }
 provider_request_id = { type = "str", meaning = "The model provider's x-request-id for one call; apart from request_id" }
 decision = { type = "str", meaning = "Decision a permission was given" }
@@ -46,7 +34,6 @@ scope = { type = "str", meaning = "Scope a permission grant covers" }
 persisted = { type = "bool", meaning = "Whether a permission decision was saved beyond this turn" }
 disposition = { type = "str", meaning = "What became of a session when it was disposed" }
 step = { type = "int", meaning = "Model step number within a turn" }
-ok = { type = "bool", meaning = "Whether a tool call succeeded" }
 mode = { type = "str", meaning = "Session mode" }
 daemon = { type = "str", meaning = "Name of a detached daemon" }
 "answer.kind" = { type = "str", meaning = "What a received answer replies to" }

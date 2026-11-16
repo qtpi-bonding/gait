@@ -48,20 +48,7 @@ pub fn init(service: &'static str, agent_id: Option<String>, local_json: bool) {
                     *slot = Some(guard);
                 }
             }
-            Err(error) => {
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({
-                            "level": "error",
-                            "code": "gait.telemetry.init_failed",
-                            "service": service,
-                            "message": error.to_string(),
-                        })
-                    );
-                }
-            }
+            Err(error) => concord_telemetry::report_init_failure(service, &error),
         }
     }
     #[cfg(not(feature = "telemetry"))]
