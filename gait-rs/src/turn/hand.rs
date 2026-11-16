@@ -439,6 +439,14 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
 /// these two fields regardless of what it sends over the wire. This is what
 /// makes the deny policy a floor rather than a claim.
 fn local_deny_policy(gait_dir: &Path) -> (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy) {
+    local_deny_policy_with(gait_dir, |k| std::env::var_os(k))
+}
+
+/// [`local_deny_policy`] with the environment supplied by `var`.
+fn local_deny_policy_with(
+    gait_dir: &Path,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy) {
     let cfg = gait_types::config::load_config(gait_dir);
     let read = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.read);
     let mut write = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.write);
@@ -446,8 +454,14 @@ fn local_deny_policy(gait_dir: &Path) -> (crate::sandbox::DenyPolicy, crate::san
     // The agent's identity folders: the device key must never reach the model.
     // The spine names them; the minted default beside gait_dir is always covered.
     let mut identity: Vec<PathBuf> = vec![gait_dir.join("identity"), gait_dir.join("identity-root")];
-    if let Some(list) = std::env::var_os(gait_identity::DENY_PATHS_ENV) {
+    if let Some(list) = var(gait_identity::DENY_PATHS_ENV) {
         identity.extend(std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()));
+    }
+    // The machine identity dir is denied by the hand's own floor too, whether or
+    // not the spine named it; the spine already failed closed if it could not.
+    match gait_identity::machine_dir_with(&var) {
+        Ok(machine) => identity.push(machine),
+        Err(e) => eprintln!("{e:#}"),
     }
     for path in identity {
         read.subpaths.push(path.clone());
@@ -824,6 +838,31 @@ mod tests {
         let root = dir.path().join("identity-root").join("root.jwk.json");
         assert!(classify_denial_by_path(&root, &read).is_some());
         assert!(classify_denial_by_path(&dir.path().join("notes.txt"), &read).is_none());
+    }
+
+    #[test]
+    fn machine_identity_dir_is_denied_with_gait_agent_dir_and_deny_env_unset() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gait_ops::workspace::run_init(dir.path()).unwrap();
+        let machine = tempfile::TempDir::new().unwrap();
+        let machine_path = machine.path().to_path_buf();
+        let var = move |k: &str| {
+            (k == "MACHINE_IDENTITY_DIR").then(|| machine_path.clone().into_os_string())
+        };
+        let (read, write) = local_deny_policy_with(dir.path(), var);
+        let key = machine.path().join("services").join("some.jwk.json");
+        assert!(classify_denial_by_path(&key, &read).is_some(), "read of machine dir must be denied");
+        assert!(classify_denial_by_path(&key, &write).is_some(), "write of machine dir must be denied");
+        assert!(classify_denial_by_path(&machine.path().join("enrolments.json"), &read).is_some());
+    }
+
+    #[test]
+    fn deny_env_value_from_the_spine_is_honoured() {
+        let dir = tempfile::TempDir::new().unwrap();
+        gait_ops::workspace::run_init(dir.path()).unwrap();
+        let var = |k: &str| (k == gait_identity::DENY_PATHS_ENV).then(|| "/spine/a:/spine/m".into());
+        let (read, _) = local_deny_policy_with(dir.path(), var);
+        assert!(classify_denial_by_path(Path::new("/spine/m/x"), &read).is_some());
     }
 
     #[test]

@@ -14,6 +14,21 @@ use crate::types::OutputCaptureMode;
 
 use super::error_feedback;
 
+/// The `GAIT_IDENTITY_DENY` value handed to a spawned tool hand: the agent's
+/// identity folders plus the machine identity directory. Fails closed — an
+/// unresolvable machine directory is an error, never a dropped entry.
+fn hand_identity_deny_env(
+    gait_dir: &Path,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> anyhow::Result<String> {
+    let agent_dir = match var("GAIT_AGENT_DIR") {
+        Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
+        _ => gait_dir.join("identity"),
+    };
+    let machine = gait_identity::machine_dir_with(&var)?;
+    Ok(gait_identity::deny_paths_env_value_with(&agent_dir, &machine))
+}
+
 fn shell_access_and_whitelist_hit(
     cmd: &str,
     sandbox_cfg: &SandboxConfig,
@@ -414,20 +429,18 @@ pub async fn run_tool_as_spine(
             .stderr(std::process::Stdio::piped())
             .env_clear()
             .envs(std::env::vars().filter(|(k, _)| crate::env_passes_to_children(k)))
-            .envs(
-                std::env::var_os("GAIT_AGENT_DIR")
-                    .map(|dir| {
-                        (
-                            gait_identity::DENY_PATHS_ENV,
-                            gait_identity::deny_paths_env_value(std::path::Path::new(&dir)),
-                        )
-                    })
-                    .into_iter(),
-            )
             .env(
                 "TMPDIR",
                 shell_process_dir.as_deref().unwrap_or(jail.as_path()),
             );
+        let deny_env_value = match hand_identity_deny_env(gait_dir, |k| std::env::var_os(k)) {
+            Ok(value) => value,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&jail);
+                return error_feedback(&format!("{e:#}"));
+            }
+        };
+        std_cmd.env(gait_identity::DENY_PATHS_ENV, deny_env_value);
         crate::launch::with_trace_env(&mut std_cmd);
         // Enroll hand into the cascade group (joins brain's process group).
         if let Err(e) = group.configure_enrolled(&mut std_cmd) {
@@ -984,5 +997,39 @@ mod tests {
             !called.load(Ordering::SeqCst),
             "delegate write must NOT run for an out-of-scope path"
         );
+    }
+
+    fn env_of(
+        pairs: &'static [(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+        move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(*v))
+    }
+
+    #[test]
+    fn hand_deny_env_covers_machine_dir_without_gait_agent_dir() {
+        let value = hand_identity_deny_env(
+            Path::new("/g"),
+            env_of(&[("MACHINE_IDENTITY_DIR", "/m/mi"), ("HOME", "/h")]),
+        )
+        .unwrap();
+        let parts: Vec<&str> = value.split(':').collect();
+        assert_eq!(parts, vec!["/g/identity", "/g/identity-root", "/m/mi"]);
+    }
+
+    #[test]
+    fn hand_deny_env_uses_the_default_machine_dir_and_the_handed_agent_dir() {
+        let value = hand_identity_deny_env(
+            Path::new("/g"),
+            env_of(&[("GAIT_AGENT_DIR", "/agents/a"), ("HOME", "/h")]),
+        )
+        .unwrap();
+        let parts: Vec<&str> = value.split(':').collect();
+        assert_eq!(parts, vec!["/agents/a", "/h/.local/share/machine-identity"]);
+    }
+
+    #[test]
+    fn hand_deny_env_fails_closed_when_the_machine_dir_is_not_computable() {
+        let err = hand_identity_deny_env(Path::new("/g"), env_of(&[])).unwrap_err();
+        assert!(format!("{err:#}").contains("machine identity directory"), "{err:#}");
     }
 }

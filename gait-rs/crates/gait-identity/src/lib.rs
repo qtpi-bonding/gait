@@ -34,6 +34,9 @@ pub enum IdentityError {
     #[error("{} holds a root key but no agent identity; restore the device folder next to it, or move the root folder aside to mint a new identity", .root.display())]
     #[coded(code = "orphan_root", class = Logical)]
     OrphanRoot { root: PathBuf, #[source] source: KeyfileError },
+    #[error("the machine identity directory cannot be resolved: set MACHINE_IDENTITY_DIR, XDG_DATA_HOME or HOME to an absolute path (the hand's deny list must name it)")]
+    #[coded(code = "machine_dir_unresolved", class = Logical)]
+    MachineDirUnresolved { #[source] source: KeyfileError },
 }
 
 impl IdentityError {
@@ -90,33 +93,36 @@ pub fn minted_layout(gait_dir: &Path) -> Result<identity_keyfile::IdentityLayout
 /// policy (never the brain's) covers the identity folders. `:`-separated.
 pub const DENY_PATHS_ENV: &str = "GAIT_IDENTITY_DENY";
 
-/// Folders the model must never read or write: the device folder, the root
-/// folder next to a minted one, and the machine identity directory when it
-/// resolves (an unresolved machine directory adds nothing).
-pub fn identity_deny_paths(agent_dir: &Path) -> Vec<PathBuf> {
-    let machine = identity_keyfile::MachineDir::locate().ok();
-    identity_deny_paths_with(agent_dir, machine.as_ref().map(|m| m.path()))
+/// The machine identity directory, resolved through the environment. It always
+/// names the deny list; a machine directory that cannot be resolved is a
+/// failure, not a dropped entry.
+pub fn machine_dir_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf> {
+    match identity_keyfile::MachineDir::locate_with(var) {
+        Ok(dir) => Ok(dir.path().to_path_buf()),
+        Err(source) => Err(coded_error::into_anyhow(IdentityError::MachineDirUnresolved { source })),
+    }
 }
 
-/// [`identity_deny_paths`] with the machine directory supplied.
-pub fn identity_deny_paths_with(agent_dir: &Path, machine: Option<&Path>) -> Vec<PathBuf> {
+/// [`machine_dir_with`] with the process environment.
+pub fn machine_dir() -> Result<PathBuf> {
+    machine_dir_with(|name| std::env::var_os(name))
+}
+
+/// Folders the model must never read or write: the device folder, the root
+/// folder next to a minted one, and the machine identity directory.
+pub fn identity_deny_paths_with(agent_dir: &Path, machine: &Path) -> Vec<PathBuf> {
     let mut paths = vec![agent_dir.to_path_buf()];
     if agent_dir.file_name().and_then(|n| n.to_str()) == Some("identity") {
         if let Some(parent) = agent_dir.parent() {
             paths.push(parent.join("identity-root"));
         }
     }
-    paths.extend(machine.map(Path::to_path_buf));
+    paths.push(machine.to_path_buf());
     paths
 }
 
-/// [`identity_deny_paths`] joined for [`DENY_PATHS_ENV`].
-pub fn deny_paths_env_value(agent_dir: &Path) -> String {
-    join_paths(&identity_deny_paths(agent_dir))
-}
-
-/// [`deny_paths_env_value`] with the machine directory supplied.
-pub fn deny_paths_env_value_with(agent_dir: &Path, machine: Option<&Path>) -> String {
+/// [`identity_deny_paths_with`] joined for [`DENY_PATHS_ENV`].
+pub fn deny_paths_env_value_with(agent_dir: &Path, machine: &Path) -> String {
     join_paths(&identity_deny_paths_with(agent_dir, machine))
 }
 
@@ -329,6 +335,7 @@ mod tests {
                 "gait.identity.delegation_expired",
                 "gait.identity.identity_not_private",
                 "gait.identity.orphan_root",
+                "gait.identity.machine_dir_unresolved",
             ]
         );
     }
@@ -719,46 +726,47 @@ mod tests {
 
     #[test]
     fn deny_paths_cover_a_minted_root_next_to_the_device_folder() {
-        let paths = identity_deny_paths_with(Path::new("/g/identity"), None);
-        assert_eq!(paths, vec![PathBuf::from("/g/identity"), PathBuf::from("/g/identity-root")]);
+        let machine = Path::new("/m/mi");
         assert_eq!(
-            identity_deny_paths_with(Path::new("/handed/agent"), None),
-            vec![PathBuf::from("/handed/agent")]
-        );
-    }
-
-    #[test]
-    fn deny_paths_include_the_machine_identity_dir() {
-        let machine = Path::new("/m/machine-identity");
-        assert_eq!(
-            identity_deny_paths_with(Path::new("/g/identity"), Some(machine)),
-            vec![
-                PathBuf::from("/g/identity"),
-                PathBuf::from("/g/identity-root"),
-                PathBuf::from("/m/machine-identity"),
-            ]
+            identity_deny_paths_with(Path::new("/g/identity"), machine),
+            vec![PathBuf::from("/g/identity"), PathBuf::from("/g/identity-root"), PathBuf::from("/m/mi")]
         );
         assert_eq!(
-            identity_deny_paths_with(Path::new("/handed/agent"), Some(machine)),
-            vec![PathBuf::from("/handed/agent"), PathBuf::from("/m/machine-identity")]
+            identity_deny_paths_with(Path::new("/handed/agent"), machine),
+            vec![PathBuf::from("/handed/agent"), PathBuf::from("/m/mi")]
         );
     }
 
     #[test]
     fn env_value_joins_the_deny_paths_with_colons() {
-        let machine = Path::new("/m/mi");
         assert_eq!(
-            deny_paths_env_value_with(Path::new("/g/identity"), Some(machine)),
+            deny_paths_env_value_with(Path::new("/g/identity"), Path::new("/m/mi")),
             "/g/identity:/g/identity-root:/m/mi"
         );
-        assert_eq!(deny_paths_env_value_with(Path::new("/g/identity"), None), "/g/identity:/g/identity-root");
+    }
+
+    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+        move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(*v))
     }
 
     #[test]
-    fn public_deny_paths_follow_the_located_machine_dir() {
-        let located = identity_keyfile::MachineDir::locate().ok();
-        let expected = identity_deny_paths_with(Path::new("/g/identity"), located.as_ref().map(|m| m.path()));
-        assert_eq!(identity_deny_paths(Path::new("/g/identity")), expected);
+    fn machine_dir_follows_the_library_resolution_order() {
+        let both = env_of(&[("MACHINE_IDENTITY_DIR", "/x/m"), ("XDG_DATA_HOME", "/xdg"), ("HOME", "/h")]);
+        assert_eq!(machine_dir_with(both).unwrap(), PathBuf::from("/x/m"));
+        let xdg = env_of(&[("XDG_DATA_HOME", "/xdg"), ("HOME", "/h")]);
+        assert_eq!(machine_dir_with(xdg).unwrap(), PathBuf::from("/xdg/machine-identity"));
+        let home = env_of(&[("HOME", "/h")]);
+        assert_eq!(machine_dir_with(home).unwrap(), PathBuf::from("/h/.local/share/machine-identity"));
+    }
+
+    #[test]
+    fn an_unresolvable_machine_dir_is_a_coded_error_not_a_dropped_entry() {
+        use coded_error::CodedError;
+        let err = machine_dir_with(env_of(&[])).unwrap_err();
+        let coded = coded_error::downcast_ref::<IdentityError>(&err).expect("typed IdentityError");
+        assert_eq!(coded.code(), "gait.identity.machine_dir_unresolved");
+        let rel = machine_dir_with(env_of(&[("HOME", "relative")])).unwrap_err();
+        assert!(coded_error::downcast_ref::<IdentityError>(&rel).is_some());
     }
 
     fn mapped(source: KeyfileError) -> (String, String) {
