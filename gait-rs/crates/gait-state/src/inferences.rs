@@ -36,16 +36,17 @@ fn validate(
     }
     if let Some(p) = params {
         if let Some(pp) = &p.provider_params {
-            let ok = matches!(
-                (provider, pp),
-                ("anthropic", pb::llm_params::ProviderParams::Anthropic(_))
-                    | (
-                        "openai" | "openai-codex",
-                        pb::llm_params::ProviderParams::Openai(_)
-                    )
-                    | ("gemini", pb::llm_params::ProviderParams::Gemini(_))
-                    | ("local", pb::llm_params::ProviderParams::Local(_))
-            );
+            // `openai` params apply to every provider that speaks the OpenAI
+            // chat wire (lmstudio, groq, ...), not just the two named ones.
+            let openai_wire = matches!(provider, "openai" | "openai-codex")
+                || gait_provider::providers::lookup(provider)
+                    .is_some_and(|spec| spec.wire == gait_provider::providers::Wire::OpenAI);
+            let ok = match pp {
+                pb::llm_params::ProviderParams::Openai(_) => openai_wire,
+                pb::llm_params::ProviderParams::Anthropic(_) => provider == "anthropic",
+                pb::llm_params::ProviderParams::Gemini(_) => provider == "gemini",
+                pb::llm_params::ProviderParams::Local(_) => provider == "local",
+            };
             if !ok {
                 anyhow::bail!(
                     "inference '{name}' has llm_params for a different provider than '{provider}'"
@@ -266,6 +267,11 @@ mod tests {
             ("openai", "model: \"anthropic/claude\"\ncompaction_threshold_tokens: 1\nllm_params { openai {} }\n", "different provider"),
             ("gemini", "model: \"openai/gpt\"\ncompaction_threshold_tokens: 1\nllm_params { gemini {} }\n", "different provider"),
             ("local-provider", "model: \"openai/gpt\"\ncompaction_threshold_tokens: 1\nllm_params { local { model_path: \"/tmp/x\" } }\n", "different provider"),
+            ("anthropic-wire-openai", "model: \"minimax/m\"\ncompaction_threshold_tokens: 1\nllm_params { openai {} }\n", "different provider"),
+            ("openai-wire-anthropic", "model: \"lmstudio/x\"\ncompaction_threshold_tokens: 1\nllm_params { anthropic {} }\n", "different provider"),
+            ("openai-wire-gemini", "model: \"lmstudio/x\"\ncompaction_threshold_tokens: 1\nllm_params { gemini {} }\n", "different provider"),
+            ("openai-wire-local", "model: \"lmstudio/x\"\ncompaction_threshold_tokens: 1\nllm_params { local { model_path: \"/tmp/x\" } }\n", "different provider"),
+            ("gemini-openai", "model: \"gemini/g\"\ncompaction_threshold_tokens: 1\nllm_params { openai {} }\n", "different provider"),
             ("local-missing", "model: \"local/qwen\"\ncompaction_threshold_tokens: 1\n", "missing llm_params.local.model_path"),
             ("local-empty", "model: \"local/qwen\"\ncompaction_threshold_tokens: 1\nllm_params { local {} }\n", "model_path is empty"),
         ] {
@@ -282,6 +288,24 @@ mod tests {
             load_inference(dir.path(), "codex").unwrap().model,
             "openai-codex/x"
         );
+    }
+
+    #[test]
+    fn openai_params_are_accepted_on_every_openai_wire_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        for provider in ["lmstudio", "groq", "ollama", "mistral", "openrouter"] {
+            profile(
+                &dir,
+                provider,
+                &format!("model: \"{provider}/x\"\ncompaction_threshold_tokens: 1\nllm_params {{ openai {{ reasoning_effort: \"low\" }} }}\n"),
+            );
+            let loaded = load_inference(dir.path(), provider).unwrap();
+            assert!(
+                matches!(loaded.llm_params.unwrap().provider_params,
+                    Some(ProviderParams::Openai(o)) if o.reasoning_effort.as_deref() == Some("low")),
+                "{provider}"
+            );
+        }
     }
 
     #[test]
