@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 pub const DIRECT_BODY_TYPE: &str = "type.googleapis.com/gait.log.v1.DirectEventDigest";
 
+pub const MIGRATION_HINT: &str = "run the Wave D permissions-and-replay migration script";
+
 /// Why an agent directory could not supply its identity. Every variant reads
 /// `load agent identity from <dir>`; the keyfile failure is the `source`, so an
 /// anyhow chain prints the same text as before the coding.
@@ -28,9 +30,9 @@ pub enum IdentityError {
     #[error("load agent identity from {}", .dir.display())]
     #[coded(code = "delegation_expired", class = Logical)]
     DelegationExpired { dir: PathBuf, #[source] source: KeyfileError },
-    #[error("identity path {} is not private: it must be owned by this user, a directory 0700 or a key file 0600", .path.display())]
+    #[error("identity path {path} is not private ({detail}): it must be owned by this user, a directory 0700 or a key file 0600; {MIGRATION_HINT}")]
     #[coded(code = "identity_not_private", class = Logical)]
-    IdentityNotPrivate { path: PathBuf, #[source] source: KeyfileError },
+    IdentityNotPrivate { path: PathBuf, detail: String, #[source] source: KeyfileError },
     #[error("{} holds a root key but no agent identity; restore the device folder next to it, or move the root folder aside to mint a new identity", .root.display())]
     #[coded(code = "orphan_root", class = Logical)]
     OrphanRoot { root: PathBuf, #[source] source: KeyfileError },
@@ -43,14 +45,29 @@ impl IdentityError {
     fn from_keyfile(dir: &Path, source: KeyfileError) -> Self {
         let dir = dir.to_path_buf();
         match &source {
-            KeyfileError::InsecureDir(path)
-            | KeyfileError::InsecureFile(path)
-            | KeyfileError::WrongOwner(path)
-            | KeyfileError::NotAFile(path)
-            | KeyfileError::TooLarge { path, .. } => {
-                Self::IdentityNotPrivate { path: path.clone(), source }
+            KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
+                Self::IdentityNotPrivate { path: path.clone(), detail: mode_detail(path), source }
             }
-            KeyfileError::InvalidMode(_) => Self::IdentityNotPrivate { path: dir, source },
+            KeyfileError::WrongOwner(path) => Self::IdentityNotPrivate {
+                path: path.clone(),
+                detail: owner_detail(path),
+                source,
+            },
+            KeyfileError::NotAFile(path) => Self::IdentityNotPrivate {
+                path: path.clone(),
+                detail: "not a regular file".to_owned(),
+                source,
+            },
+            KeyfileError::TooLarge { path, cap } => Self::IdentityNotPrivate {
+                path: path.clone(),
+                detail: format!("larger than {cap} bytes"),
+                source,
+            },
+            KeyfileError::InvalidMode(mode) => Self::IdentityNotPrivate {
+                path: dir,
+                detail: format!("mode {:04o}", mode & 0o7777),
+                source,
+            },
             KeyfileError::OrphanRoot(root) => Self::OrphanRoot { root: root.clone(), source },
             KeyfileError::Missing(path) if path != &dir => Self::MissingKeyfile { dir, source },
             KeyfileError::Io { path, .. } if path != &dir => {
@@ -69,6 +86,24 @@ impl IdentityError {
             | KeyfileError::AlreadyInitialised(_)
             | _ => Self::AgentDirUnloadable { dir, source },
         }
+    }
+}
+
+/// `mode 0755`, read from the path now (mode bits only, via stat).
+pub fn mode_detail(path: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => format!("mode {:04o}", meta.permissions().mode() & 0o7777),
+        Err(_) => "mode unknown".to_owned(),
+    }
+}
+
+/// `owned by uid 0, not the user running gait` (via stat).
+pub fn owner_detail(path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => format!("owned by uid {}, not the user running gait", meta.uid()),
+        Err(_) => "owned by another user".to_owned(),
     }
 }
 
@@ -177,6 +212,15 @@ impl IdentityContext {
     /// The unset-`GAIT_AGENT_DIR` half of [`Self::from_env_or_mint`].
     pub fn mint_or_load(gait_dir: &Path) -> Result<Self> {
         let layout = minted_layout(gait_dir)?;
+        // The library only reports a loose device dir as DeviceOnly, which
+        // hides the mode, so check each existing dir here first (stat only).
+        for dir in [layout.device_dir(), layout.root_dir()] {
+            if std::fs::symlink_metadata(dir).is_ok() {
+                if let Err(source) = identity_keyfile::private_fs::check_private_dir(dir) {
+                    return Err(coded_error::into_anyhow(IdentityError::from_keyfile(dir, source)));
+                }
+            }
+        }
         identity_keyfile::IdentityKeys::create_or_load_at(
             &layout,
             identity_crypto::now_unix(),

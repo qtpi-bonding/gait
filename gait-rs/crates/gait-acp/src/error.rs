@@ -1,4 +1,5 @@
 use anyhow::Error as AnyhowError;
+use gait_identity::{mode_detail, owner_detail, MIGRATION_HINT};
 
 pub const NEW_SESSION: &str = "session/new";
 pub const LOAD_SESSION: &str = "session/load";
@@ -98,8 +99,6 @@ pub enum PromptError {
     Internal(String),
 }
 
-const MIGRATION_HINT: &str = "run the Wave D permissions-and-replay migration script";
-
 /// The attestation replay state could not be opened, so the process refuses
 /// to start (or to confirm a batch) rather than run against state that may
 /// let a replayed delivery through. Nothing is changed on disk: the Wave D
@@ -143,40 +142,29 @@ impl AttestationStateError {
 
     /// From a replay-store failure. `fallback` is the state path to name when
     /// the cause carries none.
+    /// The library gives the old-layout failure only as an untyped message (no
+    /// typed source), so classification is by exclusion of the typed sources:
+    /// keyfile failures are classified from their own types, io and serde_json
+    /// failures are Unavailable, and any remaining untyped source is the
+    /// old-layout failure.
     pub fn from_store(fallback: &std::path::Path, error: &message_attestation::AttestationError) -> Self {
         use std::error::Error as _;
         let source = error.source();
         if let Some(keyfile) = source.and_then(|s| s.downcast_ref::<identity_keyfile::KeyfileError>()) {
             return Self::from_keyfile(fallback, keyfile);
         }
-        let reason = source.map(|s| s.to_string()).unwrap_or_else(|| error.to_string());
-        if reason.contains("attested_at") || reason.contains("is not an object") {
-            Self::OldLayout { path: fallback.to_owned(), reason }
-        } else {
-            Self::Unavailable { path: fallback.to_owned(), reason }
+        let path = fallback.to_owned();
+        match source {
+            Some(s) if s.is::<std::io::Error>() || s.is::<serde_json::Error>() => {
+                Self::Unavailable { path, reason: s.to_string() }
+            }
+            Some(s) => Self::OldLayout { path, reason: s.to_string() },
+            None => Self::Unavailable { path, reason: error.to_string() },
         }
     }
 
     fn insecure(path: &std::path::Path, detail: String) -> Self {
         Self::Insecure { path: path.to_owned(), detail }
-    }
-}
-
-/// `mode 0755`, read from the path now (mode bits only).
-fn mode_detail(path: &std::path::Path) -> String {
-    use std::os::unix::fs::PermissionsExt as _;
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => format!("mode {:04o}", meta.permissions().mode() & 0o7777),
-        Err(_) => "mode unknown".to_owned(),
-    }
-}
-
-/// `owned by uid 0, not the user running gait`.
-fn owner_detail(path: &std::path::Path) -> String {
-    use std::os::unix::fs::MetadataExt as _;
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => format!("owned by uid {}, not the user running gait", meta.uid()),
-        Err(_) => "owned by another user".to_owned(),
     }
 }
 
@@ -254,6 +242,28 @@ mod tests {
             .fields
             .values()
             .any(|value| format!("{value:?}").contains("not-for-record")));
+    }
+
+    #[test]
+    fn from_store_classifies_by_source_type_not_message_text() {
+        use message_attestation::AttestationError as A;
+        let path = std::path::Path::new("/state/replay.json");
+        // A typed io failure whose text mentions the old-layout words is not the old layout.
+        let io = std::io::Error::other("replay entry has no attested_at");
+        let err = AttestationStateError::from_store(path, &A::Store(Box::new(io)));
+        assert!(matches!(err, AttestationStateError::Unavailable { .. }), "{err}");
+        // A typed parse failure likewise.
+        let parse = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let err = AttestationStateError::from_store(path, &A::Store(Box::new(parse)));
+        assert!(matches!(err, AttestationStateError::Unavailable { .. }), "{err}");
+        // The library's untyped layout failure (a plain message) is the old layout,
+        // whatever its wording.
+        let err = AttestationStateError::from_store(path, &A::Store("reworded".to_owned().into()));
+        assert!(matches!(err, AttestationStateError::OldLayout { .. }), "{err}");
+        // A keyfile failure is never the old layout.
+        let key = identity_keyfile::KeyfileError::InsecureDir(path.to_owned());
+        let err = AttestationStateError::from_store(path, &A::Store(Box::new(key)));
+        assert!(matches!(err, AttestationStateError::Insecure { .. }), "{err}");
     }
 
     #[test]
