@@ -24,13 +24,45 @@ pub(crate) fn probe_abi() -> Result<i32, i32> {
 /// pathname unix sockets) stay unhandled, so they are not restricted.
 const MAX_ABI: i32 = 4;
 
-fn errno_name(errno: i32) -> String {
-    match errno {
-        libc::ENOSYS => "ENOSYS".into(),
-        libc::EOPNOTSUPP => "EOPNOTSUPP".into(),
-        libc::EPERM => "EPERM".into(),
-        other => format!("errno {other}"),
+/// An errno shown by name when it is one of the expected ones.
+#[derive(Debug, Clone, Copy)]
+struct Errno(i32);
+
+impl std::fmt::Display for Errno {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            libc::ENOSYS => f.write_str("ENOSYS"),
+            libc::EOPNOTSUPP => f.write_str("EOPNOTSUPP"),
+            libc::EPERM => f.write_str("EPERM"),
+            other => write!(f, "errno {other}"),
+        }
     }
+}
+
+/// Why the seal could not be applied. Its `Display` is the `Unavailable` reason.
+#[derive(Debug, thiserror::Error)]
+enum SealError {
+    #[error(
+        "Landlock unavailable: landlock_create_ruleset failed with {0} (kernel without Landlock, \
+         or the syscall is blocked)"
+    )]
+    Probe(Errno),
+    #[error(
+        "Landlock ABI {0} is too old (need 3 or newer, else truncate and refer rights would be silently dropped)"
+    )]
+    AbiTooOld(i32),
+    #[error("Landlock ruleset creation failed (ABI {abi}): {source}")]
+    Create { abi: i32, source: landlock::RulesetError },
+    #[error("Landlock rule for {} failed: {source}", path.display())]
+    PathRule { path: std::path::PathBuf, source: landlock::RulesetError },
+    #[error("Landlock network rule for port {port} failed: {source}")]
+    NetRule { port: u16, source: landlock::RulesetError },
+    #[error("Landlock not applied: no_new_privs failed with {0}")]
+    NoNewPrivs(Errno),
+    #[error("Landlock not enforced by the kernel (ABI {0})")]
+    NotEnforced(i32),
+    #[error("Landlock restrict_self failed (ABI {abi}): {source}")]
+    Restrict { abi: i32, source: landlock::RulesetError },
 }
 
 /// Limits of the applied enforcement, for the status reason. Pure.
@@ -66,8 +98,8 @@ pub(crate) fn status_notes(
     notes
 }
 
-fn unavailable(reason: String) -> anyhow::Result<SandboxStatus> {
-    Ok(SandboxStatus::Unavailable { reason })
+fn unavailable(why: SealError) -> anyhow::Result<SandboxStatus> {
+    Ok(SandboxStatus::Unavailable { reason: why.to_string() })
 }
 
 /// Apply `scope` to the calling thread using `probe` for the ABI.
@@ -88,17 +120,11 @@ pub(crate) fn apply_with_probe(
     let found = match probe() {
         Ok(v) => v,
         Err(errno) => {
-            return unavailable(format!(
-                "Landlock unavailable: landlock_create_ruleset failed with {} (kernel without Landlock, \
-                 or the syscall is blocked)",
-                errno_name(errno)
-            ))
+            return unavailable(SealError::Probe(Errno(errno)))
         }
     };
     if found < 3 {
-        return unavailable(format!(
-            "Landlock ABI {found} is too old (need 3 or newer, else truncate and refer rights would be silently dropped)"
-        ));
+        return unavailable(SealError::AbiTooOld(found));
     }
 
     let abi = ABI::from(found.min(MAX_ABI));
@@ -130,7 +156,7 @@ pub(crate) fn apply_with_probe(
         .and_then(|r| r.create());
     let mut ruleset = match created {
         Ok(r) => r,
-        Err(e) => return unavailable(format!("Landlock ruleset creation failed (ABI {found}): {e}")),
+        Err(source) => return unavailable(SealError::Create { abi: found, source }),
     };
     for rule in plan.read.iter().chain(plan.write.iter()) {
         let mut access = match rule.rights {
@@ -144,11 +170,8 @@ pub(crate) fn apply_with_probe(
         let Ok(fd) = PathFd::new(&rule.path) else { continue };
         ruleset = match ruleset.add_rule(PathBeneath::new(fd, access)) {
             Ok(r) => r,
-            Err(e) => {
-                return unavailable(format!(
-                    "Landlock rule for {} failed: {e}",
-                    rule.path.display()
-                ))
+            Err(source) => {
+                return unavailable(SealError::PathRule { path: rule.path.clone(), source })
             }
         };
     }
@@ -157,7 +180,7 @@ pub(crate) fn apply_with_probe(
         for port in &plan.net.connect_ports {
             ruleset = match ruleset.add_rule(NetPort::new(*port, AccessNet::ConnectTcp)) {
                 Ok(r) => r,
-                Err(e) => return unavailable(format!("Landlock network rule for port {port} failed: {e}")),
+                Err(source) => return unavailable(SealError::NetRule { port: *port, source }),
             };
         }
     }
@@ -165,17 +188,19 @@ pub(crate) fn apply_with_probe(
     // SAFETY: plain prctl with constant arguments.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        return unavailable(format!("Landlock not applied: no_new_privs failed with {}", errno_name(errno)));
+        return unavailable(SealError::NoNewPrivs(Errno(errno)));
     }
+    // From here no_new_privs stays set even if restrict_self fails: harmless (it
+    // only stops later privilege gain) and the status is still `Unavailable`.
     match ruleset.restrict_self() {
         Ok(status) if status.ruleset == landlock::RulesetStatus::NotEnforced => {
-            unavailable(format!("Landlock not enforced by the kernel (ABI {found})"))
+            unavailable(SealError::NotEnforced(found))
         }
         Ok(_) => {
             let notes = status_notes(&scope.network, &plan.net, found);
             Ok(if notes.is_empty() { SandboxStatus::Active } else { SandboxStatus::ActiveWithNotes { notes } })
         }
-        Err(e) => unavailable(format!("Landlock restrict_self failed (ABI {found}): {e}")),
+        Err(source) => unavailable(SealError::Restrict { abi: found, source }),
     }
 }
 

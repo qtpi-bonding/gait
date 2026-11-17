@@ -529,6 +529,8 @@ mod tests {
         assert!(denied.stdout.is_empty());
     }
 
+    // The SBPL defaults asserted here are the macOS system paths.
+    #[cfg(target_os = "macos")]
     #[test]
     fn confined_reads_include_platform_defaults_and_scope() {
         let scope = SandboxScope {
