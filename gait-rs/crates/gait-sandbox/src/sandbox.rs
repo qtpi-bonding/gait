@@ -31,8 +31,11 @@ pub enum NetworkPolicy {
 }
 
 /// Exact subpaths and glob patterns denied within an otherwise-granted scope.
-/// Applies to reads, metadata/stat, and unlink — a denied path is indistinguishable
-/// from a missing one. Does not affect execute (see spec Non-goals). A hard floor:
+/// Applies to reads, metadata/stat, and unlink on macOS, where a denied path is
+/// indistinguishable from a missing one. On Linux (Landlock) reads and writes are
+/// denied, but `stat` is not controlled and the ancestors of a denied path can
+/// only be listed, not otherwise restricted; globs are app-level only. Does not
+/// affect execute (see spec Non-goals). A hard floor:
 /// nothing in the unlock-grant flow can lift these — the hand always sources this
 /// from its own local SandboxConfig, never from the wire (see build_scope_from_impulse).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -295,7 +298,7 @@ mod tests {
     // it in a unit test poisons all subsequent tests in the same binary. The
     // enforcement is exercised by the ignored integration test in
     // tests/seatbelt_seal.rs. Only run the in-process call on non-macOS
-    // where the Landlock stub safely returns Unavailable without side effects.
+    // where an unavailable Landlock kernel returns Unavailable without side effects.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn seatbelt_returns_unavailable_on_non_macos() {

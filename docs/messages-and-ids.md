@@ -42,8 +42,8 @@ Not written yet (covered only by the concordium batch stack run):
 
 **Linux: the key is exposed to the model.** Accepted for the MVP (single user, private tailnet); fix before anything untrusted reaches an agent.
 
-- The Landlock sandbox is a stub (`LandlockSandbox::apply` returns `Unavailable`); the hand and brain log that and run unsealed.
-- The only guard is the hand's pre-check, which covers the read, write and apply_patch tools only. `shell` is not pre-checked, so `cat <GAIT_AGENT_DIR>/device.jwk.json` succeeds. The pre-check also matches path prefixes without resolving symlinks or `..`.
+- On a kernel with Landlock ABI 3 or newer the hand seals itself and denied paths are refused by the kernel, including for `shell`. Where Landlock is unavailable the hand logs that and runs unsealed, unless `sandbox.require` is set (then the tool call fails).
+- Without a seal, the only guard is the hand's pre-check, which covers the read, write and apply_patch tools only. `shell` is not pre-checked, so `cat <GAIT_AGENT_DIR>/device.jwk.json` succeeds. The pre-check also matches path prefixes without resolving symlinks or `..`.
 - An unsealed shell running as the same uid can read `/proc/<spine pid>/environ`, which holds `GAIT_AGENT_DIR` and the provider API keys.
 
 Follow-up options (tracked in concordium's PLAN.md): run the hands as a different uid, or move signing into a separate process under another uid.

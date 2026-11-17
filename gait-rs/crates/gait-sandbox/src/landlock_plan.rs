@@ -10,7 +10,7 @@
 //! - Ancestors of a denied path cannot be listed (their other children stay
 //!   reachable by path).
 //! - `stat` and traversal are not controlled by Landlock, so a denied path is
-//!   not indistinguishable from a missing one.
+//!   indistinguishable from a missing one (unlike macOS).
 //! - Files created in an ancestor after apply are not readable.
 //! - Write denies inside the writable tree remove create/remove rights from
 //!   the ancestors of the denied path.

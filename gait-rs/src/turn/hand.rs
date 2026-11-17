@@ -195,7 +195,7 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     // App-level deny-policy gate -- check-before-serve, not react-after-fail.
     // It covers only the read, write and apply_patch tools (never `shell`), and
     // it matches path prefixes without resolving symlinks or `..`. It is the
-    // ONLY deny enforcement on Linux, where the kernel sandbox is a stub.
+    // app-level layer; on Linux the Landlock seal adds kernel-level path denies.
     // On macOS the Seatbelt profile also emits `deny` rules for deny subpaths
     // (sandbox.rs `build_sbpl`). An earlier kernel deny attempt was reverted
     // after a macOS sandbox-compiler quirk silently dropped trailing `deny`

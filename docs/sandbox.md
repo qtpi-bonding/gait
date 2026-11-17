@@ -77,6 +77,17 @@ gait --no-sandbox "<task>"     # force off
 
 `--sandbox-locked` is set by parent processes (subagent spawns) and forces the sandbox on in a way the child cannot override — even a child's own `--no-sandbox` is a no-op when the parent set `--sandbox-locked`.
 
+## Linux (Landlock) limits
+
+The Linux seal uses Landlock and has these limits:
+
+- **Kernel.** Landlock ABI 3 or newer is required; otherwise the seal is `Unavailable` and the hand runs unsealed. Set `sandbox.require` (local config only, never taken from the brain) to fail the tool call instead.
+- **Denied paths.** Ancestors of a denied path can be listed but nothing else; their other children stay reachable by path. `stat` is not controlled, so a denied path is distinguishable from a missing one (only macOS hides it). Files created in an ancestor after the seal are not readable.
+- **Globs.** Deny globs are enforced by the app-level pre-check only, never by the kernel.
+- **Network.** TCP only, by port (ABI 4+). `Hosts` allows ports 80 and 443 with no host filtering. UDP is not covered.
+- **`no_new_privs`.** Sealing sets it, so setuid helpers (such as `sudo`) stop working inside the sandbox.
+- **Ordering.** The hand seals before starting telemetry, so exporter threads are confined too; the seal must happen before any other thread exists.
+
 ## Permissions
 
 Permissions are orthogonal to the sandbox — they gate tool calls before the kernel ever sees them, based on the `<tool>:<cmd>` pattern. Three tiers:
