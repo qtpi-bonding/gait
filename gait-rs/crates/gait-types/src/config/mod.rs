@@ -206,6 +206,12 @@ pub struct SandboxConfig {
     /// serde default above.
     #[serde(default)]
     pub deny: DenyConfig,
+    /// Fail a tool call instead of running it unsandboxed when the kernel seal
+    /// cannot be applied (Landlock missing or disabled, or the apply fails).
+    /// Default: false. Read from the hand's local config only, never from the
+    /// brain's request.
+    #[serde(default)]
+    pub require: bool,
 }
 
 /// Enforcement: read via `gait_core::turn::hand::classify_proactive_denial` —
@@ -281,6 +287,7 @@ impl Default for SandboxConfig {
             shell_whitelist: vec![],
             tools: std::collections::HashMap::new(),
             deny: DenyConfig::default(),
+            require: false,
         }
     }
 }

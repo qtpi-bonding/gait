@@ -62,6 +62,7 @@ pub fn default_sandbox() -> SandboxConfig {
         shell_whitelist: Vec::new(),
         tools: std::collections::HashMap::new(),
         deny: DenyConfig::default(),
+        require: false,
     }
 }
 

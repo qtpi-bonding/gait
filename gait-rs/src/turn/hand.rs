@@ -213,11 +213,11 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     // Apply the seal BEFORE any tool I/O. The hand enforces the kernel sandbox
     // itself — this is irreversible.
     let seal_status = if config.seal {
-        crate::sandbox::platform_sandbox()
-            .apply(&seal_scope)
-            .unwrap_or(crate::sandbox::SandboxStatus::Unavailable {
-                reason: "sandbox apply error".into(),
-            })
+        let applied = crate::sandbox::platform_sandbox().apply(&seal_scope);
+        match settle_seal(local_sandbox_require(&config.gait_dir), applied) {
+            Ok(status) => status,
+            Err(msg) => return err_outcome(msg),
+        }
     } else {
         crate::sandbox::SandboxStatus::Noop
     };
@@ -473,6 +473,31 @@ fn local_deny_policy_with(
     (read, write)
 }
 
+/// Whether the hand's own local config demands a working kernel seal. Like the
+/// deny policy this is never taken from the Impulse.
+fn local_sandbox_require(gait_dir: &Path) -> bool {
+    gait_types::config::load_config(gait_dir).sandbox.require
+}
+
+/// Settle the seal outcome against `require`: a seal that is `Unavailable`, or
+/// whose apply returned `Err`, is fatal for the tool call when `require` is set.
+fn settle_seal(
+    require: bool,
+    applied: anyhow::Result<crate::sandbox::SandboxStatus>,
+) -> Result<crate::sandbox::SandboxStatus, String> {
+    let status = applied.unwrap_or(crate::sandbox::SandboxStatus::Unavailable {
+        reason: "sandbox apply error".into(),
+    });
+    match (&status, require) {
+        (crate::sandbox::SandboxStatus::Unavailable { reason }, true) => Err(format!(
+            "error[sandbox_required]: the kernel sandbox is unavailable ({reason}) and \
+             sandbox.require is set, so this tool call was not run. Do not retry it; tell \
+             the user the sandbox must be enabled or sandbox.require turned off."
+        )),
+        _ => Ok(status),
+    }
+}
+
 /// One proactive deny-policy match: which dimension (read/write) matched, the
 /// resolved target path, and which configured pattern matched it.
 struct ProactiveDenial {
@@ -652,6 +677,62 @@ fn select_fs(impulse: &Impulse) -> std::sync::Arc<dyn FsBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unavailable() -> anyhow::Result<crate::sandbox::SandboxStatus> {
+        Ok(crate::sandbox::SandboxStatus::Unavailable {
+            reason: "landlock is not enabled".into(),
+        })
+    }
+
+    #[test]
+    fn require_turns_unavailable_into_a_coded_tool_error() {
+        let msg = settle_seal(true, unavailable()).expect_err("Unavailable must be fatal");
+        assert!(msg.contains("sandbox_required"), "{msg}");
+        assert!(msg.contains("landlock is not enabled"), "{msg}");
+        // apply returning Err is Unavailable too.
+        let msg = settle_seal(true, Err(anyhow::anyhow!("ruleset refused")))
+            .expect_err("apply Err must be fatal");
+        assert!(msg.contains("sandbox_required"), "{msg}");
+        // A working seal passes through.
+        for ok in [
+            crate::sandbox::SandboxStatus::Active,
+            crate::sandbox::SandboxStatus::Noop,
+        ] {
+            assert!(settle_seal(true, Ok(ok)).is_ok());
+        }
+    }
+
+    #[test]
+    fn require_false_keeps_unavailable_non_fatal() {
+        assert!(matches!(
+            settle_seal(false, unavailable()),
+            Ok(crate::sandbox::SandboxStatus::Unavailable { .. })
+        ));
+        assert!(matches!(
+            settle_seal(false, Err(anyhow::anyhow!("boom"))),
+            Ok(crate::sandbox::SandboxStatus::Unavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn require_comes_from_local_config_only() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!local_sandbox_require(dir.path()), "default is false");
+        std::fs::write(
+            dir.path().join("gait.jsonc"),
+            "{ \"sandbox\": { \"require\": true } }",
+        )
+        .unwrap();
+        assert!(local_sandbox_require(dir.path()));
+        // The Impulse has no field that can set it: an Impulse whose requested
+        // scope is as permissive as the wire allows does not change the answer.
+        let other = tempfile::tempdir().unwrap();
+        let _ = build_scope_from_impulse(
+            &gait_proto::gait::sandbox::v1::Impulse::default(),
+            other.path(),
+        );
+        assert!(!local_sandbox_require(other.path()));
+    }
 
     #[test]
     fn classify_denial_by_path_matches_glob_and_subpath() {
