@@ -198,6 +198,44 @@ pub fn defer_telemetry(service: &'static str, agent_id: Option<String>) -> Telem
     gait_core::telemetry::FlushGuard
 }
 
+/// Whether this invocation is the hand (`__run-tool`), which seals itself with
+/// Landlock and so must start no thread before the seal.
+pub fn is_hand_argv(raw: &[String]) -> bool {
+    raw.get(1).map(String::as_str) == Some("__run-tool")
+}
+
+/// Process telemetry for this invocation: deferred for the hand (its exporter
+/// threads would predate the seal and stay unconfined), eager otherwise. Shared
+/// by `gait` and `gait-min` so the two entry points cannot drift.
+pub fn start_telemetry(
+    raw: &[String],
+    default_service: &'static str,
+    agent_id: Option<String>,
+) -> TelemetryGuard {
+    let service = gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), default_service);
+    if is_hand_argv(raw) {
+        defer_telemetry(service, agent_id)
+    } else {
+        init_telemetry(service, agent_id)
+    }
+}
+
+/// The tokio runtime for this invocation. The hand seals its own process with
+/// Landlock, which confines only the sealing thread and the children it creates
+/// afterwards, so it runs on the main thread alone (a multi-thread runtime
+/// would start unconfined workers first).
+pub fn build_runtime(raw: &[String]) -> tokio::runtime::Runtime {
+    let mut builder = if is_hand_argv(raw) {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+    };
+    builder
+        .enable_all()
+        .build()
+        .expect("failed to start the tokio runtime")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +286,19 @@ mod tests {
             Some(value) => std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", value),
             None => std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"),
         }
+    }
+
+    #[test]
+    fn the_hand_runs_on_a_current_thread_runtime_and_other_roles_on_multi_thread() {
+        use tokio::runtime::RuntimeFlavor;
+        let flavor = |arg: &str| {
+            let raw = vec!["gait".to_string(), arg.to_string()];
+            build_runtime(&raw).block_on(async { tokio::runtime::Handle::current().runtime_flavor() })
+        };
+        assert!(is_hand_argv(&["gait".into(), "__run-tool".into()]));
+        assert!(!is_hand_argv(&["gait".into(), "__brain".into()]));
+        assert_eq!(flavor("__run-tool"), RuntimeFlavor::CurrentThread);
+        assert_eq!(flavor("__brain"), RuntimeFlavor::MultiThread);
     }
 
     #[test]

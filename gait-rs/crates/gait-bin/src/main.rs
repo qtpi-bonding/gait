@@ -22,27 +22,10 @@ fn main() -> ExitCode {
     // Every process initialises telemetry, the hidden role subprocesses too,
     // each under its own service name. The spine hands the brain and the hand
     // their parent trace through TRACEPARENT/BAGGAGE.
-    // The hand is the exception: its exporter threads would predate its
-    // Landlock seal and stay unconfined, so it starts telemetry after sealing.
-    let service = gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), "gait");
-    let _guard = if raw.get(1).map(String::as_str) == Some("__run-tool") {
-        gait_bin::defer_telemetry(service, agent_id)
-    } else {
-        gait_bin::init_telemetry(service, agent_id)
-    };
-    // The hand seals its own process with Landlock on Linux, which confines only
-    // the sealing thread and the children it creates afterwards. A multi-thread
-    // runtime would start worker threads first and leave them unconfined, so the
-    // hand runs on the main thread alone.
-    let mut builder = if raw.get(1).map(String::as_str) == Some("__run-tool") {
-        tokio::runtime::Builder::new_current_thread()
-    } else {
-        tokio::runtime::Builder::new_multi_thread()
-    };
-    builder
-        .enable_all()
-        .build()
-        .expect("failed to start the tokio runtime")
+    // The hand is the exception: it seals itself with Landlock, so its telemetry
+    // starts after the seal and it runs on the main thread alone.
+    let _guard = gait_bin::start_telemetry(&raw, "gait", agent_id);
+    gait_bin::build_runtime(&raw)
         .block_on(run(raw))
 }
 

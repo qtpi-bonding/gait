@@ -18,14 +18,10 @@ fn main() -> ExitCode {
     // Every process initialises telemetry, the hidden role subprocesses too,
     // each under its own service name. The spine hands the brain and the hand
     // their parent trace through TRACEPARENT/BAGGAGE.
-    let _guard = gait_bin::init_telemetry(
-        gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), "gait-min"),
-        agent_id,
-    );
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("failed to start the tokio runtime")
+    // The hand is the exception: it seals itself with Landlock, so its telemetry
+    // starts after the seal and it runs on the main thread alone.
+    let _guard = gait_bin::start_telemetry(&raw, "gait-min", agent_id);
+    gait_bin::build_runtime(&raw)
         .block_on(run(raw))
 }
 
