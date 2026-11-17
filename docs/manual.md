@@ -572,6 +572,7 @@ List, load, or unload skills/mcp/plugins
 - `sandbox.network` — Network policy applied to sandboxed processes: `false`/`off` disables, `*` allows all, or an array of hostnames.
 - `sandbox.on` — Whether the sandbox is engaged. Default: true (strict).
 - `sandbox.readable` — Paths the sandbox allows reading from.
+- `sandbox.require` — Fail a tool call instead of running it unsandboxed when the kernel seal cannot be applied (Landlock missing or disabled, or the apply fails). Default: false. Read from the hand's local config only, never from the brain's request.
 - `sandbox.shell_whitelist` — Shell-only command patterns pre-authorized for extra sandbox scope. Grants may also include `unsandbox` to run the matching hand without its kernel seal; the brain remains sandboxed. Only `shell` tool calls are ever checked against this list — see `whitelist_match` in gait-state::permissions::matching.
 - `sandbox.shell_whitelist[].grants` — Extra scope granted by a match, e.g. `network`; `unsandbox` runs the matching hand without its kernel seal.
 - `sandbox.shell_whitelist[].pattern` — Shell command pattern to match.
