@@ -98,6 +98,18 @@ mod confined_read_tests {
     /// Spawn `gait __run-tool` with the given Impulse and return both Feedback
     /// and complete output, regardless of whether the tool returns or spools it.
     fn run_hand(codebase: &str, tool: &str, impulse: Impulse) -> (Feedback, String) {
+        run_hand_with_env(codebase, codebase, tool, impulse, &[])
+    }
+
+    /// [`run_hand`] with its own gait dir (where `gait.jsonc` is read) and extra
+    /// environment variables set on the hand process.
+    fn run_hand_with_env(
+        codebase: &str,
+        gait_dir: &str,
+        tool: &str,
+        impulse: Impulse,
+        envs: &[(&str, &std::path::Path)],
+    ) -> (Feedback, String) {
         let exe = gait_bin();
         let impulse_bytes = impulse.encode_to_vec();
         let spool = (impulse.output_capture_mode == OutputCaptureMode::Spool as i32)
@@ -107,7 +119,7 @@ mod confined_read_tests {
         command.args([
             "__run-tool",
             "--gait-dir",
-            codebase,
+            gait_dir,
             "--codebase",
             codebase,
             "--session",
@@ -117,6 +129,9 @@ mod confined_read_tests {
         ]);
         if let Some(spool) = spool.as_ref() {
             command.arg("--output-spool").arg(spool.path());
+        }
+        for (key, value) in envs {
+            command.env(key, value);
         }
         let mut child = command
             .stdin(Stdio::piped())
@@ -321,6 +336,125 @@ mod confined_read_tests {
         assert!(
             !result.contains("SERVFAIL") && !result.contains("connection timed out"),
             "DNS must not fail — got: {result}"
+        );
+    }
+
+    // ── (e) the machine identity dir is denied by the real hand seal ──────────
+    //
+    // The other deny test (`sealed_process_cannot_read_a_denied_folder` in the
+    // sandbox crate) goes through `sandbox-exec`; gait itself seals in-process
+    // via `sandbox_apply`, which once dropped trailing `deny` rules. This test
+    // runs the real `gait __run-tool` hand with a blanket-read scope (the case
+    // where only the deny rule stands between the shell and the folder), a
+    // scratch machine dir named by MACHINE_IDENTITY_DIR, and a `cat` through
+    // the shell tool. The folder lives under HOME, not /tmp, so no symlink
+    // resolution is involved. The control run, with the variable unset, must
+    // read the same file, so a pass means the machine-dir rule itself denied.
+    // Needs a `gait` built from this tree: an older binary has no machine-dir
+    // rule and fails the denial assertion, so point GAIT_BIN at a fresh build
+    // (cargo-slot builds worktrees into their own target dir).
+    #[test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires gait binary and macOS Seatbelt"]
+    fn machine_dir_denied_under_real_seal() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let machine = tempfile::Builder::new()
+            .prefix(".gait-machine-dir-test-")
+            .tempdir_in(&home)
+            .expect("scratch machine dir under HOME");
+        let marker = "m4ch1ne-dir-marker";
+        let file = machine.path().join("scratch.txt");
+        std::fs::write(&file, marker).unwrap();
+
+        let cb = codebase();
+        let blanket_read = |cmd: &str| {
+            let mut impulse = shell_impulse(&cb, cmd, Mode::Deny);
+            impulse.requested.as_mut().unwrap().read_all = true;
+            impulse
+        };
+        let cat = format!("cat {}", file.display());
+
+        let (_fb, control) = run_hand(&cb, "shell", blanket_read(&cat));
+        assert!(
+            control.contains(marker),
+            "control: without MACHINE_IDENTITY_DIR the blanket-read hand must read the file — got: {control}"
+        );
+
+        let (fb, denied) = run_hand_with_env(
+            &cb,
+            &cb,
+            "shell",
+            blanket_read(&cat),
+            &[("MACHINE_IDENTITY_DIR", machine.path())],
+        );
+        assert!(
+            !denied.contains(marker),
+            "the machine dir must not be readable through the shell — got: {denied}"
+        );
+        assert!(
+            denied.contains("Operation not permitted")
+                || denied.contains("Permission denied")
+                || fb.denied.is_some(),
+            "the denial must show up in the output — got: {denied}, denied={:?}",
+            fb.denied
+        );
+    }
+
+    // ── (f) a configured deny path is denied by the real hand seal ────────────
+    //
+    // Keys kept in a folder the hand has no built-in rule for are protected by
+    // listing the folder under `sandbox.deny.read` in the gait dir's
+    // `gait.jsonc`: an absolute path without glob characters becomes a kernel
+    // deny subpath. The list is authoritative once present, so a real config
+    // repeats the defaults it still wants. Same shape as (e): a blanket-read
+    // scope, a `cat` through the shell tool, and a control run without the
+    // config that must read the file.
+    #[test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires gait binary and macOS Seatbelt"]
+    fn configured_deny_path_denied_under_real_seal() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let keys = tempfile::Builder::new()
+            .prefix(".gait-keys-dir-test-")
+            .tempdir_in(&home)
+            .expect("scratch keys dir under HOME");
+        let marker = "k3ys-dir-marker";
+        let file = keys.path().join("scratch.txt");
+        std::fs::write(&file, marker).unwrap();
+
+        let plain_gait_dir = tempfile::tempdir().expect("gait dir without config");
+        let configured_gait_dir = tempfile::tempdir().expect("gait dir with deny config");
+        std::fs::write(
+            configured_gait_dir.path().join("gait.jsonc"),
+            serde_json::json!({ "sandbox": { "deny": { "read": [keys.path()] } } }).to_string(),
+        )
+        .unwrap();
+
+        let cb = codebase();
+        let cat = format!("cat {}", file.display());
+        let run = |gait_dir: &std::path::Path| {
+            let mut impulse = shell_impulse(&cb, &cat, Mode::Deny);
+            impulse.requested.as_mut().unwrap().read_all = true;
+            run_hand_with_env(&cb, gait_dir.to_str().unwrap(), "shell", impulse, &[])
+        };
+
+        let (_fb, control) = run(plain_gait_dir.path());
+        assert!(
+            control.contains(marker),
+            "control: without the config the blanket-read hand must read the file — got: {control}"
+        );
+
+        let (fb, denied) = run(configured_gait_dir.path());
+        assert!(
+            !denied.contains(marker),
+            "a configured deny path must not be readable through the shell — got: {denied}"
+        );
+        assert!(
+            denied.contains("Operation not permitted")
+                || denied.contains("Permission denied")
+                || fb.denied.is_some(),
+            "the denial must show up in the output — got: {denied}, denied={:?}",
+            fb.denied
         );
     }
 }
