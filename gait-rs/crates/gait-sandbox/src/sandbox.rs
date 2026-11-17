@@ -8,6 +8,9 @@ pub enum SandboxStatus {
     /// Kernel enforcement active — writes outside `scope.writable` will be rejected at the
     /// syscall level (Landlock on Linux, Seatbelt on macOS).
     Active,
+    /// Enforcement is active, but with limits worth reporting (network not
+    /// enforced, host filtering absent, rights dropped on a newer ABI).
+    ActiveWithNotes { notes: Vec<String> },
     /// Kernel enforcement unavailable on this platform / kernel version. Tier-0 scope gate
     /// in turn.rs still applies; a `SandboxApplied` transcript event is emitted with the reason.
     Unavailable { reason: String },
@@ -85,7 +88,8 @@ impl Sandbox for NoopSandbox {
 /// Governs reads and writes per the scope (see `landlock_plan`); execute stays
 /// unhandled. Confines the calling thread and the children it creates
 /// afterwards, so callers must seal before any other thread exists. Sets
-/// `no_new_privs`. Network rules are not applied yet.
+/// `no_new_privs`. TCP network rules apply on ABI 4+ (port-only, no host
+/// filtering, no UDP); below that the status notes say network is not enforced.
 pub struct LandlockSandbox;
 
 impl Sandbox for LandlockSandbox {

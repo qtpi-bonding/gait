@@ -134,7 +134,8 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             reason: "apply() returned Err".to_string(),
         });
     let _seal_enforcement = match &seal_status {
-        crate::sandbox::SandboxStatus::Active => "active",
+        crate::sandbox::SandboxStatus::Active
+        | crate::sandbox::SandboxStatus::ActiveWithNotes { .. } => "active",
         crate::sandbox::SandboxStatus::Noop => "noop",
         crate::sandbox::SandboxStatus::Unavailable { .. } => "unavailable",
     };
@@ -180,6 +181,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     {
         let reason = match &seal_status {
             crate::sandbox::SandboxStatus::Unavailable { reason } => Some(reason.clone()),
+            crate::sandbox::SandboxStatus::ActiveWithNotes { notes } => Some(notes.join("; ")),
             _ => None,
         };
         let evt_body = crate::proto::events::sandbox_applied(_seal_enforcement, vec![], reason);

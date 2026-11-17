@@ -230,6 +230,9 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
         .collect();
     let (enforcement_str, reason) = match &seal_status {
         crate::sandbox::SandboxStatus::Active => ("active", None),
+        crate::sandbox::SandboxStatus::ActiveWithNotes { notes } => {
+            ("active", Some(notes.join("; ")))
+        }
         crate::sandbox::SandboxStatus::Unavailable { reason } => {
             ("unavailable", Some(reason.clone()))
         }

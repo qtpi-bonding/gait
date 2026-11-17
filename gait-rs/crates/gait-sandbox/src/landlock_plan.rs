@@ -338,19 +338,33 @@ mod tests {
         assert!(paths(&p.read).contains(&r.join("d/other")));
     }
 
+    fn net_of(network: NetworkPolicy, local_bind: bool) -> NetPlan {
+        plan(&SandboxScope { network, local_bind, ..Default::default() }).net
+    }
+
+    fn netp(c: bool, b: bool, ports: &[u16]) -> NetPlan {
+        NetPlan { handle_connect: c, handle_bind: b, connect_ports: ports.to_vec() }
+    }
+
     #[test]
-    fn net_follows_the_network_policy_and_local_bind() {
-        let n = |network, local_bind| {
-            plan(&SandboxScope { network, local_bind, ..Default::default() }).net
-        };
-        let net = |c, b, ports: &[u16]| NetPlan {
-            handle_connect: c,
-            handle_bind: b,
-            connect_ports: ports.to_vec(),
-        };
-        assert_eq!(n(NetworkPolicy::Deny, false), net(true, true, &[]));
-        assert_eq!(n(NetworkPolicy::All, false), net(false, true, &[]));
-        assert_eq!(n(NetworkPolicy::Hosts(vec!["example.com".into()]), false), net(true, true, &[80, 443]));
-        assert_eq!(n(NetworkPolicy::Deny, true), net(true, false, &[]));
+    fn deny_handles_connect_and_bind_with_no_allow_rules() {
+        assert_eq!(net_of(NetworkPolicy::Deny, false), netp(true, true, &[]));
+    }
+
+    #[test]
+    fn all_leaves_connect_unhandled_but_still_handles_bind_without_local_bind() {
+        assert_eq!(net_of(NetworkPolicy::All, false), netp(false, true, &[]));
+        assert_eq!(net_of(NetworkPolicy::All, true), netp(false, false, &[]));
+    }
+
+    #[test]
+    fn hosts_allows_80_and_443_only() {
+        let hosts = NetworkPolicy::Hosts(vec!["example.com".into()]);
+        assert_eq!(net_of(hosts, false), netp(true, true, &[80, 443]));
+    }
+
+    #[test]
+    fn local_bind_leaves_bind_unhandled() {
+        assert_eq!(net_of(NetworkPolicy::Deny, true), netp(true, false, &[]));
     }
 }
