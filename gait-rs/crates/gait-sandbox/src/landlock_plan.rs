@@ -88,10 +88,13 @@ fn carve(path: &Path, denies: &[PathBuf], rights: Rights, out: &mut Vec<PathRule
     let mut children: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     children.sort();
     for child in children {
-        // Resolve links so a link into a denied tree is not granted back.
-        if let Some(c) = resolve(&child) {
-            carve(&c, denies, rights, out);
+        // Links are skipped: the kernel resolves real paths, so a link's target
+        // is covered (or denied) through its own real path, and following one
+        // could grant outside the declared scope or recurse forever on a cycle.
+        if std::fs::symlink_metadata(&child).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
         }
+        carve(&child, denies, rights, out);
     }
 }
 
@@ -336,6 +339,43 @@ mod tests {
         // The link itself resolves into the denied target, so it is not granted either.
         assert!(!p.read.iter().any(|x| x.path.starts_with(r.join("d/target"))));
         assert!(paths(&p.read).contains(&r.join("d/other")));
+    }
+
+    #[test]
+    fn symlink_child_to_an_outside_dir_gets_no_rule() {
+        let (_d, r) = tmp();
+        mk(&r.join("work/.secret/k"), true);
+        mk(&r.join("work/keep/f"), true);
+        mk(&r.join("outside/f"), true);
+        std::os::unix::fs::symlink(r.join("outside"), r.join("work/link")).unwrap();
+        let scope = SandboxScope {
+            readable: vec![r.join("work")],
+            writable: vec![r.join("work")],
+            read_deny: deny(&r.join("work/.secret")),
+            ..Default::default()
+        };
+        let p = plan(&scope);
+        for rules in [&p.read, &p.write] {
+            assert!(!covered(rules, &r.join("outside")), "link target granted: {:?}", paths(rules));
+            assert!(!paths(rules).contains(&r.join("work/link")), "{:?}", paths(rules));
+        }
+        assert!(paths(&p.write).contains(&r.join("work/keep")));
+    }
+
+    #[test]
+    fn symlink_cycle_terminates() {
+        let (_d, r) = tmp();
+        mk(&r.join("home/me/.secret/k"), true);
+        mk(&r.join("home/me/docs/f"), true);
+        std::os::unix::fs::symlink(r.join("home"), r.join("home/me/loop")).unwrap();
+        let scope = SandboxScope {
+            readable: vec![r.join("home")],
+            read_deny: deny(&r.join("home/me/.secret")),
+            ..Default::default()
+        };
+        let p = plan(&scope);
+        assert!(paths(&p.read).contains(&r.join("home/me/docs")));
+        assert!(!covered(&p.read, &r.join("home/me/.secret")));
     }
 
     fn net_of(network: NetworkPolicy, local_bind: bool) -> NetPlan {
