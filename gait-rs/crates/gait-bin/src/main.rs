@@ -26,7 +26,16 @@ fn main() -> ExitCode {
         gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), "gait"),
         agent_id,
     );
-    tokio::runtime::Builder::new_multi_thread()
+    // The hand seals its own process with Landlock on Linux, which confines only
+    // the sealing thread and the children it creates afterwards. A multi-thread
+    // runtime would start worker threads first and leave them unconfined, so the
+    // hand runs on the main thread alone.
+    let mut builder = if raw.get(1).map(String::as_str) == Some("__run-tool") {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+    };
+    builder
         .enable_all()
         .build()
         .expect("failed to start the tokio runtime")

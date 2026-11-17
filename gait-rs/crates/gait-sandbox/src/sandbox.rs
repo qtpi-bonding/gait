@@ -81,16 +81,24 @@ impl Sandbox for NoopSandbox {
 
 // ── LandlockSandbox ──────────────────────────────────────────────────────────
 
-/// Linux Landlock sandbox (kernel 5.13+, ABI 2+ recommended for cross-directory moves).
-/// Write-only governed: reads are ungoverned so read tools are never blocked.
-/// Stub — not yet implemented; returns [`SandboxStatus::Unavailable`].
+/// Linux Landlock sandbox (kernel 5.13+; ABI 3+ required, else `Unavailable`).
+/// Governs reads and writes per the scope (see `landlock_plan`); execute stays
+/// unhandled. Confines the calling thread and the children it creates
+/// afterwards, so callers must seal before any other thread exists. Sets
+/// `no_new_privs`. Network rules are not applied yet.
 pub struct LandlockSandbox;
 
 impl Sandbox for LandlockSandbox {
-    fn apply(&self, _scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
-        Ok(SandboxStatus::Unavailable {
-            reason: "Landlock not yet implemented".to_string(),
-        })
+    fn apply(&self, scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::landlock_apply::apply_with_probe(scope, &crate::landlock_apply::probe_abi)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = scope;
+            Ok(SandboxStatus::Unavailable { reason: "Landlock is Linux-only".into() })
+        }
     }
 }
 
@@ -165,7 +173,11 @@ pub fn platform_system_reads() -> &'static [&'static str] {
             "/", "/usr", "/System", "/Library", "/bin", "/sbin", "/private", "/var", "/etc", "/dev",
         ]
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev"]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         &[]
     }
@@ -273,16 +285,6 @@ mod tests {
         };
         let s = NoopSandbox.apply(&scope).unwrap();
         assert!(matches!(s, SandboxStatus::Noop));
-    }
-
-    #[test]
-    fn landlock_stub_returns_unavailable() {
-        let scope = SandboxScope {
-            writable: vec![PathBuf::from("src/")],
-            ..Default::default()
-        };
-        let s = LandlockSandbox.apply(&scope).unwrap();
-        assert!(matches!(s, SandboxStatus::Unavailable { .. }));
     }
 
     // Seatbelt.apply() irreversibly seals the calling process on macOS; calling

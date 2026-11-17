@@ -5,3 +5,6 @@ pub mod sandbox;
 // it is only exercised by its tests.
 #[allow(dead_code)]
 mod landlock_plan;
+
+#[cfg(target_os = "linux")]
+mod landlock_apply;
