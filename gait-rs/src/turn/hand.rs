@@ -97,14 +97,10 @@ pub struct HandConfig {
 pub async fn run_hand(config: HandConfig) {
     #[cfg(unix)]
     install_sigterm_guard();
-    // The body runs under the hand's span and finishes (closing the span)
-    // before `respond` exits the process, so the span is exported.
-    let span = crate::trace::hand_span(&config.tool, &config.session);
-    let outcome = crate::trace::within(span.clone(), hand_body(config)).await;
-    if let hand_response::Outcome::Error(error) = &outcome {
-        crate::trace::record_error_code(&span, &anyhow::anyhow!(error.message.clone()));
-    }
-    drop(span);
+    // The body finishes (closing the hand's span) before `respond` exits the
+    // process, so the span is exported.
+    // The hand's span and exporter start inside `hand_body`, after the seal.
+    let outcome = hand_body(config).await;
     respond(outcome)
 }
 
@@ -222,6 +218,12 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
         crate::sandbox::SandboxStatus::Noop
     };
 
+    // Start telemetry only now: its exporter threads begin life under the seal
+    // (a thread created before it would stay unconfined), so spans reach the
+    // collector only if the seal's network policy allows it.
+    crate::telemetry::init_deferred();
+    let span = crate::trace::hand_span(&config.tool, &config.session);
+
     // Emit the SandboxApplied event so the brain can log it.
     let scope_paths: Vec<String> = seal_scope
         .writable
@@ -254,7 +256,7 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
                 .to_string(),
         )
     } else {
-        match tool.execute(args_json, &rec).await {
+        match crate::trace::within(span.clone(), tool.execute(args_json, &rec)).await {
             Ok(v) => v,
             Err(e) => serde_json::Value::String(e.model_text(tool.name())),
         }

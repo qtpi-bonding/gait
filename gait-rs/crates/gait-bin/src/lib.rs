@@ -190,6 +190,14 @@ pub fn init_telemetry(service: &'static str, agent_id: Option<String>) -> Teleme
     gait_core::telemetry::FlushGuard
 }
 
+/// Like [`init_telemetry`] but only records the setup: the sealed hand starts
+/// its exporter (and its threads) after the seal, via
+/// `gait_core::telemetry::init_deferred`.
+pub fn defer_telemetry(service: &'static str, agent_id: Option<String>) -> TelemetryGuard {
+    gait_core::telemetry::defer_init(service, agent_id);
+    gait_core::telemetry::FlushGuard
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

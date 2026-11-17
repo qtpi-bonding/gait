@@ -55,6 +55,28 @@ pub fn init(service: &'static str, agent_id: Option<String>, local_json: bool) {
     let _ = (service, agent_id, local_json);
 }
 
+/// The service and agent id of a process whose telemetry starts later.
+static DEFERRED: std::sync::Mutex<Option<(&'static str, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
+/// Remembers the telemetry setup without starting it. The hand uses this: its
+/// exporter starts threads, and threads that exist before the Landlock seal
+/// stay unconfined, so the hand starts telemetry with [`init_deferred`] only
+/// after it has sealed itself.
+pub fn defer_init(service: &'static str, agent_id: Option<String>) {
+    if let Ok(mut slot) = DEFERRED.lock() {
+        *slot = Some((service, agent_id));
+    }
+}
+
+/// Starts the telemetry remembered by [`defer_init`]; a no-op without one.
+pub fn init_deferred() {
+    let pending = DEFERRED.lock().ok().and_then(|mut slot| slot.take());
+    if let Some((service, agent_id)) = pending {
+        init(service, agent_id, false);
+    }
+}
+
 /// Exports whatever is buffered and shuts the exporters down. The guard bounds
 /// its own wait, so an unreachable collector cannot stall the caller. Call it
 /// before sending the brain's `Terminated` signal and before every

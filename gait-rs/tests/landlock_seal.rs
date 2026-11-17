@@ -44,6 +44,11 @@ mod tests {
             .arg(codebase)
             .args(["--session", "landlock-enforce-test", "--tool", "shell", "--output-spool"])
             .arg(spool.path());
+        // Telemetry threads change the hand's thread layout, so a test gets
+        // them only by asking for them, whatever the outer environment is.
+        for key in ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_RESOURCE_ATTRIBUTES"] {
+            command.env_remove(key);
+        }
         for (key, value) in envs {
             command.env(key, value);
         }
@@ -294,6 +299,38 @@ mod tests {
         let (_fb, sealed) = run_hand(code.path(), code.path(), narrow, &[]);
         assert!(!sealed.contains("THREAD-SCOPE-MARKER"), "denied file was read: {sealed}");
         assert!(sealed.contains("preseal=0"), "the hand must seal before any other thread exists: {sealed}");
+    }
+
+    // With telemetry configured, an exporter thread started before the seal
+    // would stay unconfined. The collector here is a live local listener: the
+    // control run (network All) must reach it, which proves the hand exports,
+    // and the sealed run (network Deny) must not, which proves the exporter
+    // threads are confined.
+    #[test]
+    #[ignore = "needs a Landlock kernel and a fresh gait binary (GAIT_BIN)"]
+    fn hand_has_no_unsealed_thread_with_otel_configured() {
+        let collector = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        collector.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://127.0.0.1:{}", collector.local_addr().unwrap().port());
+        let otel: [(&str, &Path); 2] = [
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", Path::new(&endpoint)),
+            ("OTEL_RESOURCE_ATTRIBUTES", Path::new("service.name=x")),
+        ];
+        let code = tempfile::tempdir().unwrap();
+        let connections = || {
+            let mut n = 0;
+            while collector.accept().is_ok() {
+                n += 1;
+            }
+            n
+        };
+        let impulse = |mode| shell_impulse("echo hi", false, &[code.path()], &[code.path()], mode);
+
+        run_hand(code.path(), code.path(), impulse(Mode::All), &otel);
+        assert!(connections() > 0, "control: with network All the hand's exporter must reach the collector");
+
+        run_hand(code.path(), code.path(), impulse(Mode::Deny), &otel);
+        assert_eq!(connections(), 0, "a sealed hand must not export from a thread that predates the seal");
     }
 
     // Why the order matters, demonstrated on the kernel itself: a thread that
