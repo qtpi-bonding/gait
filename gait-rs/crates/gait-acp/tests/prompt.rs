@@ -509,8 +509,7 @@ async fn cancel_after_rejected_concurrent_prompt_reaches_the_first_turns_real_st
     let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::<SessionUpdate>::new()));
     let updates_h = updates.clone();
     let map_for_cancel = map.clone();
-    let started = std::time::Instant::now();
-    let (sid, resp) = Client
+    let (sid, resp, cancel_to_response) = Client
         .builder()
         .on_receive_notification(
             move |notif: SessionNotification, _cx| {
@@ -558,13 +557,17 @@ async fn cancel_after_rejected_concurrent_prompt_reaches_the_first_turns_real_st
             );
             // Simulate the `session/cancel` notification handler, which calls
             // exactly this method on the session_map.
+            // Time only the cancellation itself: setup (session open, brain
+            // spawn, first streamed update) is scheduler-bound and unbounded
+            // under host load, so it must not count against the budget.
+            let cancelled_at = std::time::Instant::now();
             map_for_cancel.cancel(sid.0.as_ref(), None);
             let resp = first.block_task().await?;
-            Ok((sid.0.to_string(), resp))
+            Ok((sid.0.to_string(), resp, cancelled_at.elapsed()))
         })
         .await
         .expect("session opens, second prompt is rejected, first prompt responds");
-    let elapsed = started.elapsed();
+    let elapsed = cancel_to_response;
 
     assert_eq!(
         resp.stop_reason,
@@ -579,7 +582,7 @@ async fn cancel_after_rejected_concurrent_prompt_reaches_the_first_turns_real_st
     );
     assert!(
         elapsed < std::time::Duration::from_millis(HANG_MS / 2),
-        "cancel() must terminate the real turn promptly (took {elapsed:?}, \
+        "cancel() must terminate the real turn promptly (took {elapsed:?} from cancel() to the response, \
          hang delay was {HANG_MS}ms) -- a response that only arrives once the \
          mock brain's own delay elapses means cascade.kill() was a no-op \
          against an orphaned/clobbered handle, not a real cancellation"
