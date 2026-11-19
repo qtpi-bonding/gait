@@ -105,6 +105,14 @@ pub(super) struct RawExecOutcome {
     pub sandbox_denied: Option<pb::SandboxDenied>,
 }
 
+/// Tools the brain cannot run itself: under a spine they are fired through it
+/// (the spine holds the agent identity, the send command and the child-session
+/// machinery), even though they touch no world path.
+fn runs_in_spine(tool_name: &str) -> bool {
+    matches!(tool_name, "spawn_agent" | "run_workflow")
+        || tool_name == message_attestation::SEND_MESSAGE_TOOL
+}
+
 /// Run one tool's actual work: argument coercion, routing, event replay, and timing.
 pub(super) async fn execute_capability_raw(
     tool: &dyn Tool,
@@ -115,7 +123,7 @@ pub(super) async fn execute_capability_raw(
 ) -> anyhow::Result<RawExecOutcome> {
     let coerced_args = crate::tools::coerce_scalar_params(args, tool.parameters());
     let started = std::time::Instant::now();
-    let is_relay_spawn = matches!(tool.name(), "spawn_agent" | "run_workflow") && relay.is_some();
+    let is_relay_spawn = runs_in_spine(tool.name()) && relay.is_some();
     let via_hand = tool.access().touches_world() || is_relay_spawn;
     let (res, denied, sandbox_denied): (
         Result<serde_json::Value, crate::tools::ToolError>,
@@ -1379,5 +1387,20 @@ mod unarchived_text_tests {
     #[test]
     fn a_non_text_value_is_shown_as_json() {
         assert_eq!(unarchived_result_text(&json!({"a": 1})), r#"{"a":1}"#);
+    }
+}
+
+#[cfg(test)]
+mod spine_routing_tests {
+    use super::runs_in_spine;
+
+    #[test]
+    fn spine_run_tools_are_routed_through_the_spine() {
+        for name in ["spawn_agent", "run_workflow", message_attestation::SEND_MESSAGE_TOOL] {
+            assert!(runs_in_spine(name), "{name} must be fired through the spine, not run in the brain");
+        }
+        for name in ["read", "shell", "structured_done", "clarify"] {
+            assert!(!runs_in_spine(name), "{name} is not a spine-run tool");
+        }
     }
 }
