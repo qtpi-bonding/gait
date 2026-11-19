@@ -1486,7 +1486,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2712,7 +2712,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "identity-crypto"
 version = "0.11.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=e3ea32e0b4be2b81330b2019fc7a586a48d57bd5#e3ea32e0b4be2b81330b2019fc7a586a48d57bd5"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=d031b5e7c1d493fd3f7a06070ce10f9922238e47#d031b5e7c1d493fd3f7a06070ce10f9922238e47"
 dependencies = [
  "chrono",
  "hex",
@@ -2730,7 +2730,7 @@ dependencies = [
 [[package]]
 name = "identity-keyfile"
 version = "0.11.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=e3ea32e0b4be2b81330b2019fc7a586a48d57bd5#e3ea32e0b4be2b81330b2019fc7a586a48d57bd5"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=d031b5e7c1d493fd3f7a06070ce10f9922238e47#d031b5e7c1d493fd3f7a06070ce10f9922238e47"
 dependencies = [
  "identity-crypto",
  "libc",
@@ -3250,7 +3250,7 @@ dependencies = [
 [[package]]
 name = "message-attestation"
 version = "0.5.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=4fc4233566f5e29a927bf608e6c9c3fadb252e95#4fc4233566f5e29a927bf608e6c9c3fadb252e95"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=3d404439f1bd0a355265a8d0803a2ac5d860de1e#3d404439f1bd0a355265a8d0803a2ac5d860de1e"
 dependencies = [
  "coded-error",
  "getrandom 0.4.2",
@@ -3388,7 +3388,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4546,7 +4546,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

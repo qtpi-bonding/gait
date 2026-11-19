@@ -16,9 +16,9 @@ repository = "https://github.com/qtpi-bonding/gait"
 coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d", default-features = false }
 concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "469bfd014535912ef8e4210b6e2f84ce7c895adf" }
 concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telemetry-proto.git", rev = "4892badae333cfa7ebfdb4f17c76d65bb63612e4" }
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "e3ea32e0b4be2b81330b2019fc7a586a48d57bd5" }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "e3ea32e0b4be2b81330b2019fc7a586a48d57bd5" }
-message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "4fc4233566f5e29a927bf608e6c9c3fadb252e95" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "d031b5e7c1d493fd3f7a06070ce10f9922238e47" }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "d031b5e7c1d493fd3f7a06070ce10f9922238e47" }
+message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "3d404439f1bd0a355265a8d0803a2ac5d860de1e" }
 
 # Full debug info + macOS's split-debuginfo=unpacked means every one of this
 # workspace's ~57 test binaries pays a real dSYM-generation cost at link time.
