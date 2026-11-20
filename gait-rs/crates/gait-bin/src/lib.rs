@@ -23,6 +23,7 @@ use gait_cli::cli::session::{
 use gait_cli::cli::workflow::WorkflowArgs;
 
 pub mod manual;
+pub mod ops;
 #[cfg(feature = "min")]
 pub mod min_cli;
 
