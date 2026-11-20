@@ -1,7 +1,6 @@
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::Path;
-use std::process::ExitCode;
 
 use crate::cli::error::CliError;
 
@@ -214,7 +213,7 @@ pub async fn cmd_exec(
     args: ExecArgs,
     gait_dir: &Path,
     codebase: &Path,
-) -> anyhow::Result<ExitCode> {
+) -> anyhow::Result<u8> {
     let custom_schema = resolve_custom_schema(&args)
         .map_err(|e| CliError::invalid_input(format!("gait -e: {e}")))?;
     let inference = args.inference;
@@ -234,7 +233,7 @@ pub async fn cmd_exec(
         Ok(one) => {
             let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
             let code = render_and_maybe_run(one, is_tty).unwrap_or(1);
-            Ok(ExitCode::from(code as u8))
+            Ok(code as u8)
         }
         Err(e) => Err(CliError::failed_with("gait -e", e)),
     }

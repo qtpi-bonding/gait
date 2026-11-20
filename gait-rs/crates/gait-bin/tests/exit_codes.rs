@@ -19,9 +19,10 @@ fn broken_config_exits_65() {
 }
 
 #[test]
-fn unknown_flag_exits_65() {
+fn unknown_flag_exits_2() {
+    // A usage error: the turn's flags are parsed by the registry's fallback.
     let status = gait().arg("--no-such-flag").status().unwrap();
-    assert_eq!(status.code(), Some(65));
+    assert_eq!(status.code(), Some(2));
 }
 
 #[test]

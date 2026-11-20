@@ -52,7 +52,9 @@ fn help_never_prints_the_env_value_of_gait_dir() {
 
 #[test]
 fn exit_code_is_2_for_a_usage_error() {
-    let (code, _, stderr) = run(&["gait", "--no-such-flag-xyz"]);
+    // `--no-such-flag-xyz` is the turn's now (see turn_fallback.rs); two
+    // contradicting globals are the runner's own usage error.
+    let (code, _, stderr) = run(&["gait", "--pretty", "--compact"]);
     assert_eq!(code, 2, "stderr: {stderr}");
     let last = stderr.lines().last().unwrap_or("");
     let value: serde_json::Value = serde_json::from_str(last).expect("the error is a JSON line");

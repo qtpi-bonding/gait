@@ -22,6 +22,7 @@ use gait_cli::cli::session::{
 #[cfg(feature = "workflow")]
 use gait_cli::cli::workflow::WorkflowArgs;
 
+pub mod interim;
 pub mod manual;
 pub mod ops;
 #[cfg(feature = "min")]
@@ -140,11 +141,26 @@ pub fn cli() -> clap::Command {
 /// Record the error (code, class, fingerprint, never the text) unless the turn that
 /// failed already did, print it, and return its exit code.
 pub fn report(error: &anyhow::Error) -> ExitCode {
+    ExitCode::from(report_code(error))
+}
+
+/// [`report`] for callers that hand back a plain `u8` exit code (the registry's
+/// fallbacks do).
+pub fn report_code(error: &anyhow::Error) -> u8 {
     #[cfg(feature = "telemetry")]
     if !gait_cli::cli::error::is_recorded(error) {
         concord_telemetry::error_anyhow!(error, source = "gait.cli");
     }
-    gait_cli::cli::error::report(error)
+    eprintln!("{}", gait_cli::cli::error::text(error));
+    coded_error::cli::exit_code_anyhow(error)
+}
+
+/// Like [`finish`], for a command that returns its exit code as a `u8`.
+pub fn finish_code(result: anyhow::Result<u8>) -> ExitCode {
+    match result {
+        Ok(code) => ExitCode::from(code),
+        Err(error) => report(&error),
+    }
 }
 
 pub fn finish(result: anyhow::Result<ExitCode>) -> ExitCode {

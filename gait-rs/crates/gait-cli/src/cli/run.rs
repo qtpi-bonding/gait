@@ -3,7 +3,6 @@
 //! The `gait run` turn consumer.
 use clap::Parser;
 use std::path::PathBuf;
-use std::process::ExitCode;
 
 use crate::cli::error::CliError;
 use gait_core::embed::{CliSink, TurnSink, TurnSource, TurnStart};
@@ -157,7 +156,7 @@ pub async fn cmd_run(
     argv: &[String],
     gait_dir: PathBuf,
     codebase_path: PathBuf,
-) -> anyhow::Result<ExitCode> {
+) -> anyhow::Result<u8> {
     use clap::Parser;
 
     // ── Linux: self-assign to parent's cascade group (race-free enrollment) ──
@@ -443,7 +442,7 @@ pub async fn cmd_run(
     // Grace window expired (or a second signal): the turn is abandoned and the
     // run counts as a clean signal exit, as it always has.
     let Some(outcome) = turn_or_grace(turn, grace_rx).await else {
-        return Ok(ExitCode::SUCCESS);
+        return Ok(0);
     };
     let outcome = outcome.map_err(|e| CliError::failed_with("[gait] run error", e))?;
 
@@ -469,7 +468,7 @@ pub async fn cmd_run(
     if !outcome.completed && !outcome.opened {
         return Err(CliError::failed("[gait] run did not complete"));
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(0)
 }
 
 /// The coded error of a failed final turn, so the exit code follows its class.

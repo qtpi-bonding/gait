@@ -50,7 +50,7 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
 // run_turn_source} directly (Task 3) -- no `gait-workflow`/`run_workflow`
 // involved for an ordinary turn.
 
-pub async fn cmd_run(argv: &[String]) -> anyhow::Result<std::process::ExitCode> {
+pub async fn cmd_run(argv: &[String]) -> anyhow::Result<u8> {
     let gait_dir = resolve_gait_dir(argv)
         .map_err(|e| crate::cli::error::CliError::not_found(format!("[gait] {e}")))?;
     let codebase = resolve_codebase(argv);

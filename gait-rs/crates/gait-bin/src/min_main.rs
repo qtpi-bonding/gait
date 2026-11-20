@@ -1,11 +1,6 @@
 use clap::{CommandFactory, Parser};
 use gait_bin::min_cli::{MinCli, MinCommands};
-use std::path::PathBuf;
 use std::process::ExitCode;
-
-fn cwd_or_dot() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().collect();
@@ -40,9 +35,31 @@ async fn run(raw: Vec<String>) -> ExitCode {
     // Pre-check for the `run` role token before clap parsing — see full
     // `gait`'s main.rs for the full rationale (`launch::RunLaunch`).
     if raw.len() >= 2 && gait_core::is_run_argv(&raw[1..]) {
-        return gait_bin::finish(gait_cli::cli::args::cmd_run(&raw[2..]).await);
+        return gait_bin::finish_code(gait_cli::cli::args::cmd_run(&raw[2..]).await);
     }
 
+    // Interim (Task 9 removes it): the old enum keeps the verbs, `--help`
+    // and the bare command; the turn is the registry's fallback.
+    let verbs = gait_bin::interim::verbs(&MinCli::command());
+    match gait_bin::interim::route(&raw, &verbs) {
+        gait_bin::interim::Route::Registry => {
+            let argv = raw.iter().map(std::ffi::OsString::from).collect();
+            return op_registry::cli::run(
+                &gait_bin::ops::min_registry(),
+                argv,
+                &gait_bin::ops::GaitHooks,
+            )
+            .await;
+        }
+        gait_bin::interim::Route::NearMiss(detail) => {
+            return ExitCode::from(gait_bin::interim::near_miss_exit(detail));
+        }
+        gait_bin::interim::Route::Old => {}
+    }
+    run_cli(raw).await
+}
+
+async fn run_cli(raw: Vec<String>) -> ExitCode {
     let cli = match MinCli::try_parse_from(&raw) {
         Ok(cli) => cli,
         Err(e) if e.use_stderr() => {
@@ -55,69 +72,6 @@ async fn run(raw: Vec<String>) -> ExitCode {
             return ExitCode::SUCCESS;
         }
     };
-
-    let cwd = cwd_or_dot();
-    let gait_dir_arg = cli.gait_dir.clone();
-    let resolve_gait_dir = || -> anyhow::Result<PathBuf> {
-        gait_core::gait_dir::resolve(gait_dir_arg.clone(), &cwd)
-    };
-
-    // Mode dispatch: -e (exec), -i (interactive, plain REPL only), bare
-    // positional (task)
-    if let Some(exec_prompt) = cli.exec {
-        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_bin::report(&e) };
-        let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
-        let args = gait_cli::cli::exec::ExecArgs {
-            inference: cli.inference,
-            result_schema: cli.result_schema,
-            result_schema_json: cli.result_schema_json,
-            prompt: vec![exec_prompt],
-        };
-        return gait_bin::finish(gait_cli::cli::exec::cmd_exec(args, &gait_dir, &codebase).await);
-    }
-
-    if cli.interactive {
-        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_bin::report(&e) };
-        let codebase = cli.codebase.unwrap_or_else(cwd_or_dot);
-        let args = gait_repl::plain::PlainReplArgs {
-            gait_dir,
-            codebase,
-            agent_name: cli.agent,
-            session_id: cli.session,
-            model_override: cli.inference,
-            verified_goal: cli.verified_goal,
-        };
-        return gait_bin::finish_unit(gait_repl::plain::run_plain_repl(args).await);
-    }
-
-    if cli.task.is_some() {
-        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_bin::report(&e) };
-        let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
-
-        let run_argv = gait_core::launch::RunLaunch {
-            task: cli.task.clone(),
-            session: cli.session.clone(),
-            auto: cli.auto_approve,
-            inference: cli.inference.clone(),
-            agent_name: cli.agent.clone(),
-            allow: cli.allow.clone(),
-            deny: cli.deny.clone(),
-            unlock: cli.unlock.clone(),
-            max_iter: cli.max_iter,
-            result_schema_path: cli
-                .result_schema
-                .as_ref()
-                .map(|rs| rs.to_string_lossy().to_string()),
-            result_schema_json: cli.result_schema_json.clone(),
-            gait_dir: Some(gait_dir.clone()),
-            codebase: Some(codebase.clone()),
-            allow_intree: cli.allow_intree,
-            ..Default::default()
-        }
-        .to_argv();
-
-        return gait_bin::finish(gait_cli::cli::run::cmd_run(&run_argv, gait_dir, codebase).await);
-    }
 
     // Subcommand dispatch
     let command = match cli.command {
