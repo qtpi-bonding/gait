@@ -14,15 +14,23 @@ use gait_auth::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Provider → masked-display-string map. Each key is a provider name
-/// (`"anthropic"`, `"openai"`, …); each value is the rendering shown by
-/// `gait auth list` (an 8-char prefix + `...` for api keys, or the literal
-/// `"oauth"` / `"wellknown"` / `"unknown"` tag).
-pub type AuthListOutcome = HashMap<String, String>;
+/// One configured provider as `gait auth list` reports it: the provider name,
+/// the credential `kind` (`"api"`, `"oauth"`, `"wellknown"`, `"subscription"`,
+/// `"external"`, `"unknown"`) and, for subscriptions and external links, a
+/// status word. Never any character of a key.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AuthListEntry {
+    pub provider: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
 
-/// Outcome of [`add`] — reports the provider whose key was stored and the
-/// masked-display value rendered back so the CLI can echo it consistently
-/// with `list()`.
+/// Every configured provider, sorted by provider name.
+pub type AuthListOutcome = Vec<AuthListEntry>;
+
+/// Outcome of [`add`] — the provider whose key was stored and a non-secret
+/// `display` word (`"api key"` for keys, the subscription label otherwise).
 #[derive(Debug, Clone)]
 pub struct AuthWriteOutcome {
     pub provider: String,
@@ -265,10 +273,9 @@ pub fn add(provider: &str, api_key: String) -> anyhow::Result<AuthWriteOutcome> 
         )));
     }
     gait_state::auth::write_api_key(provider, &api_key)?;
-    let prefix: String = api_key.chars().take(8).collect();
     Ok(AuthWriteOutcome {
         provider: provider.to_string(),
-        display: format!("{}...", prefix),
+        display: "api key".to_string(),
     })
 }
 
@@ -341,18 +348,41 @@ where
 }
 
 /// List every provider configured in the credential store, sorted by
-/// provider name with masked-display values (`"abcd1234..."` for `api`
-/// entries, literal `"oauth"`/`"wellknown"`/`"unknown"` for the rest).
+/// provider name, as `{provider, kind, status}` entries. No key text.
 pub fn list() -> anyhow::Result<AuthListOutcome> {
-    let mut creds = gait_state::auth::list_credentials()?;
-    let mut sorted: Vec<(String, String)> = creds.drain().collect();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(sorted.into_iter().collect())
+    Ok(entries_from(gait_state::auth::list_credentials()?))
 }
 
-/// Non-secret status display for one configured provider.
+/// Turn the credential store's provider -> display-word map into sorted entries.
+fn entries_from(creds: HashMap<String, String>) -> AuthListOutcome {
+    let mut entries: Vec<AuthListEntry> = creds
+        .into_iter()
+        .map(|(provider, word)| {
+            let head = word.split(" (").next().unwrap_or(&word);
+            let (kind, status) = match head {
+                "api" | "oauth" | "wellknown" => (head, None),
+                "subscription" | "external" => (head, Some(word.clone())),
+                "registered" => ("subscription", Some(word.clone())),
+                _ => ("unknown", None),
+            };
+            AuthListEntry {
+                provider,
+                kind: kind.to_string(),
+                status,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.provider.cmp(&b.provider));
+    entries
+}
+
+/// Non-secret status word for one configured provider (its kind, or the
+/// subscription/external status), `None` if not configured.
 pub fn status(provider: &str) -> anyhow::Result<Option<String>> {
-    Ok(list()?.remove(provider))
+    Ok(list()?
+        .into_iter()
+        .find(|e| e.provider == provider)
+        .map(|e| e.status.unwrap_or(e.kind)))
 }
 
 /// Revoke the Codex refresh token when possible, then remove its local
@@ -731,15 +761,54 @@ mod tests {
         assert!(op_err_conflict(err), "empty key must error");
     }
 
+    /// Runs `body` with `$GAIT_HOME` pointing at a private throwaway dir.
+    fn with_gait_home(body: impl FnOnce()) {
+        let home = private_tempdir();
+        let previous = std::env::var_os("GAIT_HOME");
+        // SAFETY: tests using this are `#[serial]`.
+        unsafe { std::env::set_var("GAIT_HOME", home.path()) };
+        body();
+        match previous {
+            Some(v) => unsafe { std::env::set_var("GAIT_HOME", v) },
+            None => unsafe { std::env::remove_var("GAIT_HOME") },
+        }
+    }
+
+    fn assert_no_key_text(rendered: &str, key: &str) {
+        assert!(!rendered.contains(&key[..8]), "8-char prefix leaked: {rendered}");
+        let chars: Vec<char> = key.chars().collect();
+        for window in chars.windows(4) {
+            let w: String = window.iter().collect();
+            assert!(!rendered.contains(&w), "4-char window {w:?} of the key leaked: {rendered}");
+        }
+    }
+
     #[test]
-    fn add_returns_outcome_with_eight_char_prefix_display() {
-        // We can't end-to-end round-trip `add` (no path override at the
-        // no-arg `write_api_key` layer), so we directly exercise the
-        // masking shape by reconstructing what the op returns. The
-        // equivalent round-trip is covered in gait-core's auth.rs tests.
-        let prefix: String = "sk-abcdefg".chars().take(8).collect();
-        let display = format!("{}...", prefix);
-        assert_eq!(display, "sk-abcde...");
+    #[serial_test::serial]
+    fn list_and_add_never_carry_key_material() {
+        const KEY: &str = "sk-SENTINEL1234567890";
+        with_gait_home(|| {
+            let added = add("openai", KEY.to_string()).unwrap();
+            assert_no_key_text(&format!("{added:?}"), KEY);
+            let listed = list().unwrap();
+            let rendered = format!("{listed:?} {}", serde_json::to_string(&listed).unwrap());
+            assert_no_key_text(&rendered, KEY);
+            assert_no_key_text(&format!("{:?}", status("openai").unwrap()), KEY);
+            let entry = listed.iter().find(|e| e.provider == "openai").unwrap();
+            assert_eq!(entry.kind, "api");
+        });
+    }
+
+    #[test]
+    fn list_entries_carry_a_status_word_for_subscriptions() {
+        let entries = entries_from(
+            [("openai-signin".to_string(), "subscription (ada@example.test)".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(entries[0].provider, "openai-signin");
+        assert_eq!(entries[0].kind, "subscription");
+        assert_eq!(entries[0].status.as_deref(), Some("subscription (ada@example.test)"));
     }
 
     // -- remove --
@@ -778,8 +847,8 @@ mod tests {
         };
         // Insertion-order check is too strict (depends on the host's real
         // auth.json), so just assert the value is a well-formed map.
-        for v in out.values() {
-            assert!(!v.is_empty(), "list value must be non-empty: {v:?}");
+        for e in &out {
+            assert!(!e.kind.is_empty(), "list entry kind must be non-empty: {e:?}");
         }
     }
 

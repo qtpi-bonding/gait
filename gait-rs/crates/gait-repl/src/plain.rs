@@ -845,8 +845,9 @@ impl PlainSource {
                     self.eprintln("No credentials configured.")
                 }
                 Ok(credentials) => {
-                    for (provider, display) in credentials {
-                        self.eprintln(&format!("  {provider}: {display}"));
+                    for entry in credentials {
+                        let word = entry.status.unwrap_or(entry.kind);
+                        self.eprintln(&format!("  {}: {word}", entry.provider));
                     }
                 }
                 Err(e) => self.eprintln(&format!("[gait] /auth: {e}")),

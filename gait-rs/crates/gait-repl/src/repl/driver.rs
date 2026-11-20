@@ -503,11 +503,12 @@ impl TurnSource for ReplSource {
                             .builder
                             .write_raw("No credentials configured.\r\n"),
                         Ok(credentials) => {
-                            for (provider, display) in credentials {
+                            for entry in credentials {
+                                let word = entry.status.unwrap_or(entry.kind);
                                 self.shared
                                     .borrow_mut()
                                     .builder
-                                    .write_raw(&format!("  {provider}: {display}\r\n"));
+                                    .write_raw(&format!("  {}: {word}\r\n", entry.provider));
                             }
                         }
                         Err(error) => {

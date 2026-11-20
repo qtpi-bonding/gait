@@ -538,13 +538,8 @@ pub fn list_credentials_from(
         .into_iter()
         .map(|(k, v)| {
             let display = match v.get("type").and_then(|t| t.as_str()) {
-                Some("api") => {
-                    let key = v.get("key").and_then(|k| k.as_str()).unwrap_or("");
-                    // chars().take(8) avoids panics on non-ASCII (API keys are ASCII in practice,
-                    // but this is safer than &key[..n] byte-slicing)
-                    let prefix: String = key.chars().take(8).collect();
-                    format!("{}...", prefix)
-                }
+                // The kind only: no character of the key is ever shown.
+                Some("api") => "api".to_string(),
                 Some("oauth") => "oauth".to_string(),
                 Some("wellknown") => "wellknown".to_string(),
                 Some("subscription")
@@ -663,10 +658,7 @@ mod tests {
         let auth_path = dir.path().join("auth.json");
         write_api_key_to(&auth_path, "anthropic", "sk-test-123").unwrap();
         let list = list_credentials_from(&auth_path).unwrap();
-        assert_eq!(
-            list.get("anthropic").map(|s| s.as_str()),
-            Some("sk-test-...")
-        );
+        assert_eq!(list.get("anthropic").map(|s| s.as_str()), Some("api"));
     }
 
     #[test]
@@ -688,7 +680,7 @@ mod tests {
                 .unwrap()
                 .get("anthropic")
                 .map(String::as_str),
-            Some("sk-test-...")
+            Some("api")
         );
     }
 
@@ -876,17 +868,14 @@ mod tests {
     }
 
     #[test]
-    fn list_credentials_masks_keys() {
+    fn list_credentials_shows_kind_only() {
         let dir = crate::auth_test_support::private_tempdir();
         let auth_path = dir.path().join("auth.json");
         write_api_key_to(&auth_path, "minimax", "sk-abcdefghijklmnop").unwrap();
         let list = list_credentials_from(&auth_path).unwrap();
-        let masked = list.get("minimax").unwrap();
-        assert!(masked.ends_with("..."), "should be masked: {masked}");
-        assert!(
-            !masked.contains("abcdefghijklmnop"),
-            "full key should not appear"
-        );
+        let shown = list.get("minimax").unwrap();
+        assert_eq!(shown, "api");
+        assert!(!shown.contains("sk-"), "no key text: {shown}");
     }
 
     #[test]
@@ -950,7 +939,7 @@ mod tests {
         ));
         assert_eq!(
             list_credentials_from(&path).unwrap().get("openai"),
-            Some(&"sk-test...".to_string())
+            Some(&"api".to_string())
         );
     }
 
