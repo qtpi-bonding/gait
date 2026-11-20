@@ -1,6 +1,7 @@
 //! Named inference operations shared by CLI and REPL. Selection resolution is
 //! pure: frontends submit the returned event through core's session-update
 //! port. These functions deliberately perform no terminal I/O.
+use crate::OpError;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -24,6 +25,15 @@ pub fn list(gait_dir: &Path) -> Vec<String> {
 }
 
 pub fn show(gait_dir: &Path, name: &str) -> anyhow::Result<InferenceInfo> {
+    let dir = gait_dir.join("inferences").join(name);
+    if name != "default"
+        && !dir.join("inference.textproto").exists()
+        && !dir.join("INFERENCE.yaml").exists()
+    {
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!(
+            "inference '{name}' not found"
+        ))));
+    }
     let i = gait_state::inferences::load_inference(gait_dir, name)?;
     Ok(InferenceInfo {
         name: i.name,

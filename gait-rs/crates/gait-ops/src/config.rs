@@ -36,12 +36,30 @@ pub fn set(gait_dir: &Path, key: &str, value: serde_json::Value) -> anyhow::Resu
     write_config_object(&path, val)
 }
 
-/// Read `<gait_dir>/gait.jsonc`'s `key` field, or `None` if the key (or the
-/// whole file) is absent. Comment-safe.
+/// Read `<gait_dir>/gait.jsonc`'s `key` field. `None` if it is a known config
+/// key that is not set (or the file is absent); `OpError::NotFound` if the key
+/// is neither in the file nor a known config field. Comment-safe.
 pub fn get(gait_dir: &Path, key: &str) -> anyhow::Result<Option<serde_json::Value>> {
     let path = gait_dir.join("gait.jsonc");
     let val = read_config_object(&path)?;
-    Ok(val.get(key).cloned())
+    if let Some(v) = val.get(key) {
+        return Ok(Some(v.clone()));
+    }
+    if !is_known_key(key) {
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!(
+            "config key '{key}' not found"
+        ))));
+    }
+    Ok(None)
+}
+
+/// Whether `key` is a top-level field of the config schema (set or not).
+/// `get` of an unset known key is `None`; of an unknown key, not found.
+fn is_known_key(key: &str) -> bool {
+    let defaults = serde_json::to_value(gait_state::config::GaitConfig::default()).unwrap_or_default();
+    // Fields serialized only when set are not in the default's JSON.
+    const OPTIONAL: &[&str] = &["inference", "result_schema"];
+    OPTIONAL.contains(&key) || defaults.get(key).is_some()
 }
 
 /// Resolve the effective `GaitConfig` for `gait_dir` (Defaults < gait.jsonc,
@@ -282,13 +300,16 @@ mod tests {
     fn get_returns_none_for_a_missing_key() {
         let dir = ws();
         std::fs::write(dir.path().join("gait.jsonc"), "{}\n").unwrap();
-        assert_eq!(get(dir.path(), "nope").unwrap(), None);
+        let err = get(dir.path(), "nope").unwrap_err();
+        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "{err:?}");
+        assert_eq!(get(dir.path(), "max_iter").unwrap(), None);
+        assert_eq!(get(dir.path(), "inference").unwrap(), None);
     }
 
     #[test]
     fn get_returns_none_when_config_is_missing_entirely() {
         let dir = ws();
-        assert_eq!(get(dir.path(), "model").unwrap(), None);
+        assert_eq!(get(dir.path(), "inference").unwrap(), None);
     }
 
     #[test]

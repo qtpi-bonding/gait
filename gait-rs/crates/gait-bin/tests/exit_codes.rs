@@ -57,3 +57,81 @@ fn missing_session_exits_65() {
         .unwrap();
     assert_eq!(status.code(), Some(65));
 }
+
+/// Every get/act/delete on an object that does not exist is a logical
+/// not-found (exit 65, "not found" on stderr), never success.
+fn assert_not_found(args: &[&str]) {
+    let workspace = tempfile::TempDir::new().unwrap();
+    let init = gait().arg("init").arg(workspace.path()).status().unwrap();
+    assert!(init.success());
+    let output = gait()
+        .arg(args[0])
+        .arg("--gait-dir")
+        .arg(workspace.path())
+        .args(&args[1..])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(65), "{args:?}: stderr: {stderr}");
+    assert!(stderr.contains("not found"), "{args:?}: stderr: {stderr}");
+}
+
+#[test]
+fn stats_unknown_session_is_not_found() {
+    assert_not_found(&["stats", "nosuch"]);
+}
+
+#[test]
+fn log_unknown_session_is_not_found() {
+    assert_not_found(&["log", "nosuch"]);
+}
+
+#[test]
+fn undo_list_unknown_session_is_not_found() {
+    assert_not_found(&["undo", "nosuch", "--list"]);
+}
+
+#[test]
+fn discard_unknown_session_is_not_found() {
+    assert_not_found(&["discard", "nosuch", "--yes"]);
+}
+
+#[test]
+fn persist_unknown_session_is_not_found() {
+    assert_not_found(&["persist", "nosuch", "--yes"]);
+}
+
+#[test]
+fn unregister_unknown_mcp_is_not_found() {
+    assert_not_found(&["unregister", "mcp", "nosuch"]);
+}
+
+#[test]
+fn config_get_unknown_key_is_not_found() {
+    assert_not_found(&["config", "get", "nosuch"]);
+}
+
+#[test]
+fn inference_show_unknown_is_not_found() {
+    assert_not_found(&["inference", "show", "nosuch"]);
+}
+
+#[test]
+fn mode_show_unknown_is_not_found() {
+    assert_not_found(&["mode", "show", "nosuch"]);
+}
+
+#[test]
+fn daemons_stop_unknown_is_not_found() {
+    assert_not_found(&["daemons", "stop", "nosuch"]);
+}
+
+#[test]
+fn reply_unknown_session_is_not_found() {
+    assert_not_found(&["reply", "nosuch", "hi"]);
+}
+
+#[test]
+fn load_skill_into_unknown_session_is_not_found() {
+    assert_not_found(&["load", "skill", "x", "nosuch"]);
+}

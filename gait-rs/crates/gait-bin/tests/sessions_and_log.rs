@@ -36,7 +36,7 @@ fn sessions_last_flag_is_accepted_and_empty_workspace_returns_no_active_sessions
 }
 
 #[test]
-fn log_on_a_session_with_no_completed_run_returns_an_empty_summary() {
+fn log_on_an_unknown_session_is_not_found() {
     let ws = tempfile::TempDir::new().unwrap();
     init_workspace(ws.path());
     let exe = env!("CARGO_BIN_EXE_gait");
@@ -48,23 +48,6 @@ fn log_on_a_session_with_no_completed_run_returns_an_empty_summary() {
         .arg(ws.path())
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let value: serde_json::Value =
-        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
-    assert_eq!(
-        value,
-        serde_json::json!({
-            "turn": null,
-            "message": "",
-            "checkpoint_short": null,
-            "file_count": 0,
-            "added_lines": null,
-            "removed_lines": null,
-            "tools": []
-        })
-    );
+    assert_eq!(out.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not found"));
 }

@@ -168,10 +168,28 @@ impl StatsOutcome {
     }
 }
 
+/// Fail with `OpError::NotFound` unless `session_id` names a session this gait
+/// dir knows: a live worktree, a live log, or a `session/<id>` branch. Every
+/// get/act/delete on a session id goes through this, so an unknown id is never
+/// reported as success.
+pub fn require_session(gait_dir: &Path, session_id: &str) -> anyhow::Result<()> {
+    let known = gait_state::session::live::worktree_dir(gait_dir, session_id).exists()
+        || gait_state::session::live::log_path(gait_dir, session_id).exists()
+        || session_branch_exists(gait_dir, session_id);
+    if known {
+        Ok(())
+    } else {
+        Err(coded_error::into_anyhow(OpError::NotFound(format!(
+            "session {session_id} not found"
+        ))))
+    }
+}
+
 /// Cumulative token usage for a session, folded from the log.
 pub fn stats(gait_dir: &Path, session_id: &str) -> anyhow::Result<StatsOutcome> {
     use gait_state::session::log::read_events;
     use gait_state::session::retrace::total_usage;
+    require_session(gait_dir, session_id)?;
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let events = read_events(&tx_path).coded()?;
     let u = total_usage(&events);
@@ -328,6 +346,7 @@ fn undo_with(
         )));
     }
 
+    require_session(&params.gait_dir, &params.session_id)?;
     let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
     let events = read_events(&tx_path).coded()?;
 
@@ -540,6 +559,7 @@ pub fn summary(gait_dir: &Path, session_id: &str) -> anyhow::Result<SessionSumma
     use gait_state::proto::gait::log::v1::{event, payload};
     use gait_state::session::log::read_events;
 
+    require_session(gait_dir, session_id)?;
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let events = read_events(&tx_path).coded()?;
 
@@ -735,6 +755,10 @@ pub fn bulk_act(
         ))));
     }
 
+    for id in &plan.eligible {
+        require_session(gait_dir, id)?;
+    }
+
     let mut acted: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     let mut warnings: Vec<(String, String)> = Vec::new();
@@ -826,7 +850,6 @@ fn discard_one(gait_dir: &Path, id: &str) -> anyhow::Result<Option<String>> {
     Ok(None)
 }
 
-#[cfg(feature = "telemetry")]
 fn session_branch_exists(gait_dir: &Path, id: &str) -> bool {
     git2::Repository::open(gait_dir)
         .map(|repo| {

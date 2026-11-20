@@ -502,6 +502,7 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
         let session_id = params.session.clone().ok_or_else(|| {
             coded_error::into_anyhow(OpError::Conflict("--scope session requires --session <id>".to_string()))
         })?;
+        crate::session::require_session(&params.gait_dir, &session_id)?;
         let tx_path = gait_state::session::live::log_path(&params.gait_dir, &session_id);
         let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &session_id);
         gait_state::session::log::write_registry(&tx_path, &session_dir, kind, name, false)
@@ -560,8 +561,18 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
     let config_path = params.gait_dir.join("gait.jsonc");
     let mut val =
         read_config_as_value(&config_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
-    if let Some(arr) = val[array_key].as_array_mut() {
-        arr.retain(|v| v.get("name").and_then(|n| n.as_str()) != Some(name));
+    let removed = match val[array_key].as_array_mut() {
+        Some(arr) => {
+            let before = arr.len();
+            arr.retain(|v| v.get("name").and_then(|n| n.as_str()) != Some(name));
+            arr.len() != before
+        }
+        None => false,
+    };
+    if !removed {
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!(
+            "{kind} '{name}' not found"
+        ))));
     }
     std::fs::write(
         &config_path,
@@ -698,7 +709,12 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> anyhow::Result
         read_config_as_value(&config_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     let arr = val[array_key]
         .as_array_mut()
-        .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict(format!("{} is not an array", array_key))))?;
+        .ok_or_else(|| {
+            coded_error::into_anyhow(OpError::NotFound(format!(
+                "{} '{}' not found; run `gait register {} {}` first",
+                params.kind, params.name, params.kind, params.name
+            )))
+        })?;
     let entry = arr
         .iter_mut()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(params.name.as_str()))

@@ -110,6 +110,9 @@ pub fn cmd_persist(args: PersistArgs) -> CliResult {
     let Some(id) = args.session_id.as_deref() else {
         return Err(CliError::usage("[gait] error: specify a session id or --all"));
     };
+    if let Err(e) = gait_ops::session::require_session(&args.gait_dir, id) {
+        return Err(CliError::failed_with("[gait] error", e));
+    }
     // One-element plan: render it, then call act(plan, confirmed).
     let plan = match gait_ops::session::classify_bulk(
         &args.gait_dir,
