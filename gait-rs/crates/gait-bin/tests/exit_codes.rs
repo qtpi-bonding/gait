@@ -66,10 +66,9 @@ fn assert_not_found(args: &[&str]) {
     let init = gait().arg("init").arg(workspace.path()).status().unwrap();
     assert!(init.success());
     let output = gait()
-        .arg(args[0])
+        .args(args)
         .arg("--gait-dir")
         .arg(workspace.path())
-        .args(&args[1..])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -104,27 +103,27 @@ fn persist_unknown_session_is_not_found() {
 
 #[test]
 fn unregister_unknown_mcp_is_not_found() {
-    assert_not_found(&["unregister", "mcp", "nosuch"]);
+    assert_not_found(&["unregister", "--kind", "mcp", "--id", "nosuch"]);
 }
 
 #[test]
 fn config_get_unknown_key_is_not_found() {
-    assert_not_found(&["config", "get", "nosuch"]);
+    assert_not_found(&["config", "get", "--id", "nosuch"]);
 }
 
 #[test]
 fn inference_show_unknown_is_not_found() {
-    assert_not_found(&["inference", "show", "nosuch"]);
+    assert_not_found(&["inference", "show", "--id", "nosuch"]);
 }
 
 #[test]
 fn mode_show_unknown_is_not_found() {
-    assert_not_found(&["mode", "show", "nosuch"]);
+    assert_not_found(&["mode", "show", "--id", "nosuch"]);
 }
 
 #[test]
 fn daemons_stop_unknown_is_not_found() {
-    assert_not_found(&["daemons", "stop", "nosuch"]);
+    assert_not_found(&["daemons", "stop", "--id", "nosuch"]);
 }
 
 #[test]
@@ -134,7 +133,7 @@ fn reply_unknown_session_is_not_found() {
 
 #[test]
 fn load_skill_into_unknown_session_is_not_found() {
-    assert_not_found(&["load", "skill", "x", "nosuch"]);
+    assert_not_found(&["load", "--kind", "skill", "--id", "x", "--session", "nosuch"]);
 }
 
 fn assert_usage(args: &[&str]) {
@@ -142,10 +141,9 @@ fn assert_usage(args: &[&str]) {
     let init = gait().arg("init").arg(workspace.path()).status().unwrap();
     assert!(init.success());
     let output = gait()
-        .arg(args[0])
+        .args(args)
         .arg("--gait-dir")
         .arg(workspace.path())
-        .args(&args[1..])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -16,14 +16,43 @@ macro_rules! output {
 }
 
 pub mod auth;
+pub mod config;
 mod context;
+pub mod daemon;
+pub mod extension;
 mod hooks;
+pub mod inference;
+#[cfg(feature = "local")]
+pub mod local;
+pub mod mode;
 pub mod session;
 pub mod turn;
 
 pub use context::{GaitContext, Globals};
 pub use hooks::{GaitCallHook, GaitHooks};
 pub use turn::Repl;
+
+/// An admin failure that is not the caller's mistake: keeps a code it already
+/// has (not found, usage), else is infrastructure (exit 69).
+pub(crate) fn infra(error: impl Into<anyhow::Error>) -> anyhow::Error {
+    let error = error.into();
+    if coded_error::from_anyhow(&error).is_some() {
+        error
+    } else {
+        gait_cli::cli::error::CliError::failed(format!("{error:#}"))
+    }
+}
+
+/// Fails with `gait.op.not_found` unless `session` has a mounted worktree.
+pub(crate) fn require_active(gait_dir: &std::path::Path, session: &str) -> anyhow::Result<()> {
+    if gait_core::session::live::worktree_dir(gait_dir, session).exists() {
+        Ok(())
+    } else {
+        Err(coded_error::into_anyhow(gait_ops::OpError::NotFound(format!(
+            "session '{session}' is not active"
+        ))))
+    }
+}
 
 /// The `ops!` block. It sits in its own module so `registry()` below can add
 /// the call hook to the registry it generates.
@@ -40,6 +69,20 @@ pub mod decl {
         AuthEntry, AuthLinkParams, AuthListParams, AuthLogin, AuthLoginParams, AuthLogout,
         AuthLogoutParams, AuthRemoved, AuthSaved, AuthStatus, ModelItem, ModelsParams, ProviderId,
     };
+    use super::config::{ConfigEntry, ConfigKey, ConfigSetParams, ConfigShowParams};
+    use super::daemon::{DaemonItem, DaemonListParams, DaemonStopParams, DaemonStopped};
+    use super::extension::{
+        ExtensionLoadParams, ExtensionLoaded, ExtensionRegisterParams, ExtensionRegistered,
+        ExtensionToggleParams, ExtensionToggled, ExtensionUnregisterParams, ExtensionUnregistered,
+    };
+    use super::inference::{
+        InferenceAddParams, InferenceAdded, InferenceClearParams, InferenceItem,
+        InferenceListParams, InferenceRef, InferenceSelectParams, InferenceSelected,
+    };
+    use super::mode::{
+        ModeAddParams, ModeAdded, ModeClearParams, ModeItem, ModeListParams, ModeRef,
+        ModeSelectParams, ModeSelected,
+    };
     use super::{GaitContext, Globals};
     use gait_cli::cli::error::CliError;
     use gait_ops::OpError;
@@ -51,6 +94,10 @@ pub mod decl {
         bin = "gait"; version = env!("CARGO_PKG_VERSION"); about = "AI coding agent";
         groups = {
             "auth" => "Provider credentials: API keys, subscription logins and links to other tools' credentials.",
+            "inference" => "Named model profiles, and which one a session uses.",
+            "mode" => "Named permission modes, and which one a session uses.",
+            "config" => "Keys of the gait directory's gait.jsonc.",
+            "daemons" => "Background processes that sessions started.",
         };
         /// List the active sessions, most recently updated first.
         "sessions" => { params: SessionsParams, output: Vec<SessionItem>,
@@ -132,6 +179,90 @@ pub mod decl {
         "models" => { params: ModelsParams, output: Vec<ModelItem>,
                       access: [reads, network], audience: owner, op: super::auth::models,
                       errors: [CliError] },
+        /// List the named inference profiles with their models.
+        "inference list" => { params: InferenceListParams, output: Vec<InferenceItem>,
+                              access: reads, audience: owner, op: super::inference::list,
+                              errors: [OpError, CliError], default: true },
+        /// Show one inference profile.
+        "inference show" => { params: InferenceRef, output: InferenceItem,
+                              access: reads, audience: owner, op: super::inference::show,
+                              errors: [OpError, CliError] },
+        /// Write a new inference profile: a model and the token count at which compaction begins.
+        "inference add" => { params: InferenceAddParams, output: InferenceAdded,
+                             access: writes, audience: owner, op: super::inference::add,
+                             errors: [OpError, CliError] },
+        /// Use an inference profile for a session from its next turn.
+        "inference select" => { params: InferenceSelectParams, output: InferenceSelected,
+                                access: writes, audience: owner, op: super::inference::select,
+                                errors: [OpError, CliError] },
+        /// Put a session back on the default inference.
+        "inference clear" => { params: InferenceClearParams, output: InferenceSelected,
+                               access: writes, audience: owner, op: super::inference::clear,
+                               errors: [OpError, CliError] },
+        /// List the named modes with their patterns.
+        "mode list" => { params: ModeListParams, output: Vec<ModeItem>,
+                         access: reads, audience: owner, op: super::mode::list,
+                         errors: [OpError, CliError], default: true },
+        /// Show one mode.
+        "mode show" => { params: ModeRef, output: ModeItem,
+                         access: reads, audience: owner, op: super::mode::show,
+                         errors: [OpError, CliError] },
+        /// Write a new mode from allow and deny patterns, steering text and a description.
+        "mode add" => { params: ModeAddParams, output: ModeAdded,
+                        access: writes, audience: owner, op: super::mode::add,
+                        errors: [OpError, CliError] },
+        /// Use a mode for a session from its next turn.
+        "mode select" => { params: ModeSelectParams, output: ModeSelected,
+                           access: writes, audience: owner, op: super::mode::select,
+                           errors: [OpError, CliError] },
+        /// Put a session back on the default mode.
+        "mode clear" => { params: ModeClearParams, output: ModeSelected,
+                          access: writes, audience: owner, op: super::mode::clear,
+                          errors: [OpError, CliError] },
+        /// Read one config key; a known key that is not set is null, an unknown key is not found.
+        "config get" => { params: ConfigKey, output: ConfigEntry,
+                          access: reads, audience: owner, op: super::config::get,
+                          errors: [OpError, CliError] },
+        /// Set one config key, keeping the file's comments and every other key.
+        "config set" => { params: ConfigSetParams, output: ConfigEntry,
+                          access: writes, audience: owner, op: super::config::set,
+                          errors: [OpError, CliError] },
+        /// Show the effective config: defaults and gait.jsonc, with the skills and MCP servers found on disk.
+        "config show" => { params: ConfigShowParams, output: serde_json::Value,
+                           access: reads, audience: owner, op: super::config::show,
+                           errors: [OpError, CliError] },
+        /// List the running background daemons, or all of them with `--all`.
+        "daemons list" => { params: DaemonListParams, output: Vec<DaemonItem>,
+                            access: reads, audience: owner, op: super::daemon::list,
+                            errors: [OpError, CliError], default: true },
+        /// Stop a running daemon by name and record the stop.
+        "daemons stop" => { params: DaemonStopParams, output: DaemonStopped,
+                            access: [writes, destructive], audience: owner, op: super::daemon::stop,
+                            errors: [OpError, CliError] },
+        /// Register an MCP server, a skill or a plugin. An MCP server and a skill start disabled.
+        "register" => { params: ExtensionRegisterParams, output: ExtensionRegistered,
+                        access: writes, audience: owner, op: super::extension::register,
+                        errors: [OpError, CliError] },
+        /// Remove a registered extension.
+        "unregister" => { params: ExtensionUnregisterParams, output: ExtensionUnregistered,
+                          access: [writes, destructive], audience: owner, op: super::extension::unregister,
+                          errors: [OpError, CliError] },
+        /// Switch an extension on in the gait directory's config, for sessions that start later.
+        "enable" => { params: ExtensionToggleParams, output: ExtensionToggled,
+                      access: writes, audience: owner, op: super::extension::enable,
+                      errors: [OpError, CliError] },
+        /// Switch an extension off in the gait directory's config.
+        "disable" => { params: ExtensionToggleParams, output: ExtensionToggled,
+                       access: writes, audience: owner, op: super::extension::disable,
+                       errors: [OpError, CliError] },
+        /// Load an extension into one session from its next turn.
+        "load" => { params: ExtensionLoadParams, output: ExtensionLoaded,
+                    access: writes, audience: owner, op: super::extension::load,
+                    errors: [OpError, CliError] },
+        /// Unload an extension from one session.
+        "unload" => { params: ExtensionLoadParams, output: ExtensionLoaded,
+                      access: writes, audience: owner, op: super::extension::unload,
+                      errors: [OpError, CliError] },
     }
 }
 
@@ -164,6 +295,10 @@ pub fn min_registry() -> op_registry::Registry<GaitContext> {
 pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     let mut registry = decl::registry();
     registry.set_call_hook(std::sync::Arc::new(GaitCallHook));
+    #[cfg(feature = "local")]
+    registry.merge(local::decl::registry());
+    #[cfg(feature = "workflow")]
+    registry.push_extra(workflow_command(), run_workflow);
     match repl {
         #[cfg(feature = "rich-tui")]
         Repl::Rich => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, turn::run_rich),
@@ -183,4 +318,41 @@ pub fn usage_error_exit(error: anyhow::Error) -> u8 {
     let tty = stderr.is_terminal();
     let _ = op_registry::write_error(&mut stderr, &error, &op_registry::Redactor::default(), tty);
     op_registry::exit::exit_code(&error)
+}
+
+/// `workflow` stays a clap command: its positional run/continue/log/abort
+/// grammar is not an op. `--gait-dir` and `--pretty` are the registry's globals.
+#[cfg(feature = "workflow")]
+fn workflow_command() -> clap::Command {
+    clap::Command::new("workflow")
+        .about("Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)")
+        .arg(clap::Arg::new("action").value_name("ACTION"))
+        .arg(
+            clap::Arg::new("rest")
+                .value_name("ARGS")
+                .num_args(0..)
+                .trailing_var_arg(true)
+                .allow_hyphen_values(true),
+        )
+}
+
+#[cfg(feature = "workflow")]
+fn run_workflow<'a>(
+    globals: &'a Globals,
+    matches: &'a clap::ArgMatches,
+) -> futures_util::future::BoxFuture<'a, u8> {
+    Box::pin(async move {
+        let args = gait_cli::cli::workflow::WorkflowArgs {
+            gait_dir: globals.gait_dir.clone(),
+            action: matches.get_one::<String>("action").cloned(),
+            rest: matches.get_many::<String>("rest").map(|v| v.cloned().collect()).unwrap_or_default(),
+            pretty: matches.try_get_one::<bool>("pretty").ok().flatten().copied().unwrap_or(false),
+        };
+        // The workflow runner holds non-`Send` state across awaits, as the turn does.
+        let result = turn::on_turn_thread(move || gait_cli::cli::workflow::cmd_workflow(args)).await;
+        match result {
+            Ok(code) => code,
+            Err(error) => crate::report_code(&error),
+        }
+    })
 }

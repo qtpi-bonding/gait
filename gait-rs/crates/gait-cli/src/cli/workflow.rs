@@ -3,7 +3,6 @@
 
 use clap::Parser;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use crate::cli::error::{CliError, CliResult};
 use gait_workflow::observer::CliObserver;
@@ -99,7 +98,7 @@ fn resolve_workflow_gait_dir(
     from_rest.or(cli_field)
 }
 
-pub async fn cmd_workflow(args: WorkflowArgs) -> anyhow::Result<ExitCode> {
+pub async fn cmd_workflow(args: WorkflowArgs) -> anyhow::Result<u8> {
     let (gait_dir_from_rest, rest) = extract_gait_dir_from_rest(&args.rest);
     let (pretty_from_rest, rest) = extract_pretty_from_rest(&rest);
     let pretty = args.pretty || pretty_from_rest;
@@ -111,18 +110,18 @@ pub async fn cmd_workflow(args: WorkflowArgs) -> anyhow::Result<ExitCode> {
     let sub = args.action.as_deref().unwrap_or("");
     match sub {
         "run" => cmd_workflow_run(&rest, gait_dir).await,
-        "list" => cmd_workflow_list(&rest, gait_dir, pretty).map(|()| ExitCode::SUCCESS),
+        "list" => cmd_workflow_list(&rest, gait_dir, pretty).map(|()| 0u8),
         "continue" => cmd_workflow_continue(&rest, gait_dir).await,
-        "abort" => cmd_workflow_abort(&rest, gait_dir, pretty).map(|()| ExitCode::SUCCESS),
-        "log" => cmd_workflow_log(&rest, gait_dir).map(|()| ExitCode::SUCCESS),
-        "validate" => cmd_workflow_validate(&rest, gait_dir, pretty).map(|()| ExitCode::SUCCESS),
+        "abort" => cmd_workflow_abort(&rest, gait_dir, pretty).map(|()| 0u8),
+        "log" => cmd_workflow_log(&rest, gait_dir).map(|()| 0u8),
+        "validate" => cmd_workflow_validate(&rest, gait_dir, pretty).map(|()| 0u8),
         _ => Err(CliError::usage(
             "[gait] usage: gait workflow <run|list|continue|abort|log|validate>",
         )),
     }
 }
 
-pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Result<ExitCode> {
+pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Result<u8> {
     let name = match argv.first() {
         Some(n) => n.clone(),
         None => {
@@ -166,14 +165,14 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Res
     )
     .await
     {
-        Ok(WorkflowOutcome::Completed) => Ok(ExitCode::SUCCESS),
+        Ok(WorkflowOutcome::Completed) => Ok(0u8),
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
-            Ok(ExitCode::from(2))
+            Ok(2u8)
         }
         Ok(WorkflowOutcome::NodeOpen) => {
             eprintln!("[gait workflow] paused at open node");
-            Ok(ExitCode::SUCCESS)
+            Ok(0u8)
         }
         Err(e) => Err(CliError::failed_with("[gait workflow] error", e)),
     }
@@ -322,7 +321,7 @@ struct ContinueArgs {
     force_rerun: Vec<String>,
 }
 
-pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow::Result<ExitCode> {
+pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow::Result<u8> {
     let parsed = match ContinueArgs::try_parse_from(argv) {
         Ok(a) => a,
         // clap's message already ends in a newline; main adds its own, so trim
@@ -413,14 +412,14 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow
     )
     .await
     {
-        Ok(WorkflowOutcome::Completed) => Ok(ExitCode::SUCCESS),
+        Ok(WorkflowOutcome::Completed) => Ok(0u8),
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
-            Ok(ExitCode::from(2))
+            Ok(2u8)
         }
         Ok(WorkflowOutcome::NodeOpen) => {
             eprintln!("[gait workflow] paused at open node");
-            Ok(ExitCode::SUCCESS)
+            Ok(0u8)
         }
         Err(e) => Err(CliError::failed_with("[gait workflow] error", e)),
     }

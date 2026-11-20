@@ -139,19 +139,5 @@ async fn run_cli(raw: Vec<String>) -> ExitCode {
         }
         Commands::Init(args) => gait_bin::finish_unit(gait_cli::cli::init::cmd_init(args)),
         Commands::Link(args) => gait_bin::finish_unit(gait_cli::cli::link::cmd_link(args)),
-        Commands::Config(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_config(args)),
-        Commands::Register(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_register(*args)),
-        Commands::Unregister(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_unregister(*args)),
-        Commands::Load(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_load(args)),
-        Commands::Unload(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_unload(args)),
-        Commands::Enable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_enable(args)),
-        Commands::Disable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_disable(args)),
-        #[cfg(feature = "local")]
-        Commands::Local(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_local(args).await),
-        Commands::Inference(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_inference(args)),
-        Commands::Mode(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_mode(args)),
-        #[cfg(feature = "workflow")]
-        Commands::Workflow(args) => gait_bin::finish(gait_cli::cli::workflow::cmd_workflow(args).await),
-        Commands::Daemons(args) => gait_bin::finish_unit(gait_cli::cli::daemons::cmd_daemons(args)),
     }
 }

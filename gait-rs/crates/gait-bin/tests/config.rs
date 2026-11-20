@@ -7,7 +7,7 @@ fn config_set_then_get_round_trips_via_binary() {
         .arg("config")
         .arg("--gait-dir")
         .arg(ws.path())
-        .args(["set", "model", "anthropic/claude-opus-4"])
+        .args(["set", "--id", "model", "--value", "anthropic/claude-opus-4"])
         .output()
         .unwrap();
     assert!(
@@ -20,7 +20,7 @@ fn config_set_then_get_round_trips_via_binary() {
         .arg("config")
         .arg("--gait-dir")
         .arg(ws.path())
-        .args(["get", "model"])
+        .args(["get", "--id", "model"])
         .output()
         .unwrap();
     assert!(get_out.status.success());
@@ -40,7 +40,7 @@ fn config_set_max_iter_stores_a_number_not_a_string() {
         .arg("config")
         .arg("--gait-dir")
         .arg(ws.path())
-        .args(["set", "max_iter", "50"])
+        .args(["set", "--id", "max_iter", "--value", "50"])
         .output()
         .unwrap();
     let raw = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();

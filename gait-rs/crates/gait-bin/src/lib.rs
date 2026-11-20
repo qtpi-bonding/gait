@@ -6,20 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::process::ExitCode;
 
-#[cfg(feature = "local")]
-use gait_cli::cli::admin::LocalArgs;
-use gait_cli::cli::admin::{
-    ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModeArgs,
-    RegisterArgs, UnregisterArgs,
-};
-use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
 use gait_cli::cli::link::LinkArgs;
-use gait_cli::cli::session::{
-    LoadArgs, UnloadArgs,
-};
-#[cfg(feature = "workflow")]
-use gait_cli::cli::workflow::WorkflowArgs;
 
 pub mod interim;
 pub mod manual;
@@ -102,21 +90,6 @@ pub enum Commands {
     Manual(manual::ManualArgs),
     Init(InitArgs),
     Link(LinkArgs),
-    Config(ConfigArgs),
-
-    Register(Box<RegisterArgs>),
-    Unregister(Box<UnregisterArgs>),
-    Load(LoadArgs),
-    Unload(UnloadArgs),
-    Enable(EnableArgs),
-    Disable(DisableArgs),
-    #[cfg(feature = "local")]
-    Local(LocalArgs),
-    Inference(InferenceArgs),
-    Mode(ModeArgs),
-    #[cfg(feature = "workflow")]
-    Workflow(WorkflowArgs),
-    Daemons(DaemonsArgs),
 }
 
 pub fn cli() -> clap::Command {

@@ -91,7 +91,7 @@ fn resolve_load_targets(
     };
     if !in_global_registry {
         return Err(coded_error::into_anyhow(OpError::NotFound(format!(
-            "{} '{}' is not registered; run `gait register {} {}` first",
+            "{} '{}' is not registered; run `gait register --kind {} --id {}` first",
             kind.as_str(),
             name,
             kind.as_str(),
@@ -169,10 +169,8 @@ pub struct RegisterParams {
     pub command: Option<String>,
     /// MCP args string (mcp kind).
     pub args: Option<String>,
-    /// MCP compat spawn string (mcp kind).
-    pub spawn: Option<String>,
-    /// MCP compat URL flag (mcp kind).
-    pub connect: Option<String>,
+    /// Environment for the MCP server (mcp kind), written as an `env` object.
+    pub env: std::collections::BTreeMap<String, String>,
     /// Skill description (skill kind).
     pub description: Option<String>,
     /// Skill content (skill kind).
@@ -199,7 +197,7 @@ pub struct RegisterOutcome {
     /// Path of the on-disk entry (for `global` scope), the agent file (for
     /// `agent` scope), or the session log file (for `session` scope).
     pub written_to: PathBuf,
-    /// Free-form hint for the adapter (e.g. "→ Run `gait enable mcp X` to
+    /// Free-form hint for the adapter (e.g. "→ Run `gait enable --kind mcp --id X` to
     /// activate it."). Empty when not applicable.
     pub hint: String,
 }
@@ -297,7 +295,7 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             let disk_path = mcp_dir.join(format!("{}.json", name));
             if disk_path.exists() {
                 return Err(coded_error::into_anyhow(OpError::Conflict(format!(
-                    "mcp '{}' already registered at {}. Use 'gait unregister mcp {}' first.",
+                    "mcp '{}' already registered at {}. Use 'gait unregister --kind mcp --id {}' first.",
                     name,
                     disk_path.display(),
                     name
@@ -314,30 +312,26 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
                     })
                     .unwrap_or_default();
                 serde_json::json!({ "command": cmd, "args": cmd_args, "enabled": false })
-            } else if let Some(spawn) = &params.spawn {
-                let mut parts = spawn.split_whitespace();
-                let prog = parts.next().unwrap_or("").to_string();
-                let rest: Vec<serde_json::Value> = parts
-                    .map(|s| serde_json::Value::String(s.to_string()))
-                    .collect();
-                serde_json::json!({ "command": prog, "args": rest, "enabled": false })
-            } else if let Some(url) = params.url.as_ref().or(params.connect.as_ref()) {
+            } else if let Some(url) = params.url.as_ref() {
                 serde_json::json!({ "url": url, "enabled": false })
             } else {
                 return Err(coded_error::into_anyhow(OpError::Conflict(
-                    "gait register mcp: requires --command <prog> [--args \"<args>\"], --spawn <cmd>, or --url <url>"
+                    "gait register mcp: requires --command <prog> [--args <args>] or --url <url>"
                         .to_string(),
                 )));
             };
-            let final_entry = if let Some(desc) = &params.description {
+            let final_entry = {
                 let mut obj = entry.as_object().unwrap().clone();
-                obj.insert(
-                    "description".into(),
-                    serde_json::Value::String(desc.clone()),
-                );
+                if !params.env.is_empty() {
+                    obj.insert("env".into(), serde_json::json!(params.env));
+                }
+                if let Some(desc) = &params.description {
+                    obj.insert(
+                        "description".into(),
+                        serde_json::Value::String(desc.clone()),
+                    );
+                }
                 serde_json::Value::Object(obj)
-            } else {
-                entry
             };
             std::fs::write(
                 &disk_path,
@@ -348,7 +342,7 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: disk_path,
-                hint: format!("Run `gait enable mcp {}` to activate it.", name),
+                hint: format!("Run `gait enable --kind mcp --id {}` to activate it.", name),
             })
         }
         "skill" => {
@@ -358,7 +352,7 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             let skill_dir = skills_root.join(name);
             if skill_dir.exists() {
                 return Err(coded_error::into_anyhow(OpError::Conflict(format!(
-                    "skill '{}' already registered at {}. Use 'gait unregister skill {}' first.",
+                    "skill '{}' already registered at {}. Use 'gait unregister --kind skill --id {}' first.",
                     name,
                     skill_dir.display(),
                     name
@@ -393,7 +387,7 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: skill_md,
-                hint: format!("Run `gait enable skill {}` to activate it.", name),
+                hint: format!("Run `gait enable --kind skill --id {}` to activate it.", name),
             })
         }
         "plugin" => {
@@ -410,7 +404,7 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             let plugin_dir = params.gait_dir.join("plugins").join(name);
             if plugin_dir.exists() {
                 return Err(coded_error::into_anyhow(OpError::Conflict(format!(
-                    "plugin '{}' already registered at {}. Use 'gait unregister plugin {}' first.",
+                    "plugin '{}' already registered at {}. Use 'gait unregister --kind plugin --id {}' first.",
                     name,
                     plugin_dir.display(),
                     name
@@ -439,7 +433,7 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: plugin_md,
-                hint: format!("Run `gait enable plugin {}` to activate it.", name),
+                hint: format!("Run `gait enable --kind plugin --id {}` to activate it.", name),
             })
         }
         other => Err(coded_error::into_anyhow(OpError::Conflict(format!(
@@ -711,7 +705,7 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> anyhow::Result
         .as_array_mut()
         .ok_or_else(|| {
             coded_error::into_anyhow(OpError::NotFound(format!(
-                "{} '{}' not found; run `gait register {} {}` first",
+                "{} '{}' not found; run `gait register --kind {} --id {}` first",
                 params.kind, params.name, params.kind, params.name
             )))
         })?;
@@ -720,7 +714,7 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> anyhow::Result
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(params.name.as_str()))
         .ok_or_else(|| {
             coded_error::into_anyhow(OpError::NotFound(format!(
-                "{} '{}' not found; run `gait register {} {}` first",
+                "{} '{}' not found; run `gait register --kind {} --id {}` first",
                 params.kind, params.name, params.kind, params.name
             )))
         })?;
@@ -1000,7 +994,8 @@ mod tests {
     fn register_mcp_writes_entry_disabled() {
         let dir = TempDir::new().unwrap();
         let mut p = reg("mcp", "slack", dir.path());
-        p.spawn = Some("node mcp-slack.js".into());
+        p.command = Some("node".into());
+        p.args = Some("mcp-slack.js".into());
         register(p).unwrap();
         let val: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("mcp").join("slack.json")).unwrap(),
@@ -1345,7 +1340,8 @@ mod tests {
 
         // register mcp — writes mcp/<name>.json, disabled by default.
         let mut p = reg("mcp", "slack", dir.path());
-        p.spawn = Some("node mcp-slack.js".into());
+        p.command = Some("node".into());
+        p.args = Some("mcp-slack.js".into());
         let outcome = register(p).unwrap();
         assert_eq!(outcome.scope, "global");
         let disk_path = dir.path().join("mcp").join("slack.json");
@@ -1392,7 +1388,7 @@ mod tests {
         // skill/mcp/plugin set for the system prompt (gait_state::session::
         // retrace::ActiveAgent, driven by run_projection). Proving `load`'s
         // Toggle event round-trips through THIS fold — the same fold every
-        // turn (REPL or CLI) runs at start — proves `gait load ext --session
+        // turn (REPL or CLI) runs at start — proves `gait load --kind ext --session
         // <id>` followed by a NEW `gait "task" --session <id>` invocation sees
         // the loaded extension exactly like the REPL's `/skill load` does
         // inline. Two commands instead of one REPL line, same eventual state.

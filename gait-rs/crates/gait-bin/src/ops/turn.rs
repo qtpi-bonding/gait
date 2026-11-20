@@ -310,7 +310,7 @@ fn root_help(repl: Repl) -> String {
 /// Runs the turn to completion on a blocking thread. The turn and the REPLs
 /// hold non-`Send` state across awaits, and the registry's fallback future must
 /// be `Send`: the turn future is built and driven on that one thread.
-async fn on_turn_thread<F, Fut>(make: F) -> anyhow::Result<u8>
+pub(super) async fn on_turn_thread<F, Fut>(make: F) -> anyhow::Result<u8>
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = anyhow::Result<u8>>,

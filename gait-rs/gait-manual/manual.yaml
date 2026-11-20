@@ -77,10 +77,10 @@ guides:
       A **mode** (`<gait_dir>/modes/<name>/MODE.md`) is a named, switchable
       overlay of `allow`/`deny`/`steer`/`description` on top of that baseline —
       `--mode <name>` on `run` activates one for a session; `gait mode
-      select/clear <name> --session <id>` switches it mid-session. `gait mode
-      add <name> --allow <pattern> --deny <pattern> --steer <text>
+      select --id <name> --session <id>` (or `gait mode clear --session <id>`) switches it mid-session. `gait mode
+      add --id <name> --allow <pattern> --deny <pattern> --steer <text>
       --description <text>` authors a new one; `gait mode list`/`gait mode
-      show <name>` inspect what's authored. A mode's `deny` unions with the
+      show --id <name>` inspect what's authored. A mode's `deny` unions with the
       baseline deny (deny is always monotonic — nothing ever un-denies);
       its `allow` unions with the baseline allow. `steer` is a freeform
       instruction folded into the model's context while the mode is active.
@@ -136,7 +136,7 @@ guides:
       `$CODEX_HOME/auth.json`. `gait models` caches the models.dev catalog in
       `$GAIT_HOME/cache/models.json`.
 
-      `gait config set <key> <value>` edits one key of `gait.jsonc` and keeps its comments.
+      `gait config set --id <key> --value <value>` edits one key of `gait.jsonc` and keeps its comments.
       The value is parsed as JSON (`50` is a number, `true` a bool, `[...]` an array) and
       falls back to a plain string. Registering and enabling extensions rewrite the file as
       plain JSON and drop comments, so prefer `config set` for single keys.
@@ -153,7 +153,7 @@ guides:
       Workflows run repeatable sequences of prompts and operations. MCP tools and plugins can
       be enabled for a session when they are available in the configured Gait directory.
 
-      `gait register` always adds an entry disabled; run `gait enable` to activate it. WASM
+      `gait register` always adds an entry disabled; run `gait enable --kind <kind> --id <name>` to activate it. WASM
       plugins are registered and toggled but not executed today: the manifest loads and
       there is no execution path, so treat plugins as scaffolding.
 

@@ -12,16 +12,8 @@
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
-use gait_cli::cli::admin::{
-    ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModeArgs,
-    RegisterArgs, UnregisterArgs,
-};
-use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
 use gait_cli::cli::link::LinkArgs;
-use gait_cli::cli::session::{
-    LoadArgs, UnloadArgs,
-};
 
 use crate::manual;
 
@@ -97,17 +89,6 @@ pub enum MinCommands {
     Manual(manual::MinManualArgs),
     Init(InitArgs),
     Link(LinkArgs),
-    Config(ConfigArgs),
-
-    Register(Box<RegisterArgs>),
-    Unregister(Box<UnregisterArgs>),
-    Load(LoadArgs),
-    Unload(UnloadArgs),
-    Enable(EnableArgs),
-    Disable(DisableArgs),
-    Inference(InferenceArgs),
-    Mode(ModeArgs),
-    Daemons(DaemonsArgs),
 }
 
 pub fn cli() -> clap::Command {

@@ -56,6 +56,7 @@ rich-tui = ["gait-repl/rich-tui"]
 local = [
     "gait-core/local",
     "gait-cli/local",
+    "dep:gait-local",
     "dep:gait-llama-cpp",
     "gait-llama-cpp/native",
 ]
@@ -64,6 +65,7 @@ local = [
 gait-core = { path = "../.." }
 gait-types = { path = "../gait-types" }
 gait-llama-cpp = { path = "../gait-llama-cpp", optional = true }
+gait-local = { path = "../gait-local", optional = true }
 gait-workflow = { path = "../gait-workflow", optional = true }
 gait-repl = { path = "../gait-repl", default-features = false }
 gait-cli = { path = "../gait-cli", default-features = false }

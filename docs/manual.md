@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: ae38b82c77736d896ca115772d6b3e946d39dc4b8888d6e4cea7769eac47c643
+manual-source-hash: da830e71d3fd983174c26863ea6564f360003b4ddb3313ece05b7bbf9a8df1bb
 ---
 
 # Gait Manual
@@ -87,19 +87,19 @@ Commands:
   auth        Provider credentials: API keys, subscription logins and links to other tools' credentials.
   manual
   models      List the models of the models.dev catalog, optionally filtered by `--filter`.
+  inference   Named model profiles, and which one a session uses.
   init
   link        Point the current directory at an existing gait workspace
-  config      `gait config <set|get|show> ...` — the general external-CLI equivalent of any REPL slash command that reads or mutates `gait.jsonc`. `set`/`get` call the generic `gait_ops::config::set`/`get` (the comment-safe jsonc mutators); `show` calls the shared `gait_ops::config::resolve` op. gait-dir-wide, not session-scoped. Mirrors `WorkflowArgs`/`cmd_workflow`'s action+rest shape exactly
-  register    `gait register mcp|skill|plugin <name> [flags]`
-  unregister  `gait unregister mcp|skill|plugin <name>`
-  load        `gait load <kind> <name> --session <id>` — append a Toggle(enabled=true) event to a session's log outside a running turn
-  unload      `gait unload <kind> <name> --session <id>` — append a Toggle(enabled=false) event to a session's log outside a running turn
-  enable      `gait enable mcp|skill|plugin <name>`
-  disable     `gait disable mcp|skill|plugin <name>`
-  inference   `gait inference list|show|select|clear [name] --session <id>`
-  mode        `gait mode list|show|add|select|clear [name] --session <id>`
-  workflow    `gait workflow <run|list|continue|abort|log>` subcommand
-  daemons
+  mode        Named permission modes, and which one a session uses.
+  config      Keys of the gait directory's gait.jsonc.
+  daemons     Background processes that sessions started.
+  register    Register an MCP server, a skill or a plugin. An MCP server and a skill start disabled.
+  unregister  Remove a registered extension.
+  enable      Switch an extension on in the gait directory's config, for sessions that start later.
+  disable     Switch an extension off in the gait directory's config.
+  load        Load an extension into one session from its next turn.
+  unload      Unload an extension from one session.
+  workflow    Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
   help        Print this message or the help of the given subcommand(s)
 
 Arguments:
@@ -214,10 +214,10 @@ persistent global baseline.
 A **mode** (`<gait_dir>/modes/<name>/MODE.md`) is a named, switchable
 overlay of `allow`/`deny`/`steer`/`description` on top of that baseline —
 `--mode <name>` on `run` activates one for a session; `gait mode
-select/clear <name> --session <id>` switches it mid-session. `gait mode
-add <name> --allow <pattern> --deny <pattern> --steer <text>
+select --id <name> --session <id>` (or `gait mode clear --session <id>`) switches it mid-session. `gait mode
+add --id <name> --allow <pattern> --deny <pattern> --steer <text>
 --description <text>` authors a new one; `gait mode list`/`gait mode
-show <name>` inspect what's authored. A mode's `deny` unions with the
+show --id <name>` inspect what's authored. A mode's `deny` unions with the
 baseline deny (deny is always monotonic — nothing ever un-denies);
 its `allow` unions with the baseline allow. `steer` is a freeform
 instruction folded into the model's context while the mode is active.
@@ -279,26 +279,24 @@ Options:
 
 #### `gait mode`
 
-`gait mode list|show|add|select|clear [name] --session <id>`
+Named permission modes, and which one a session uses.
 
 ```text
-`gait mode list|show|add|select|clear [name] --session <id>`
+Named permission modes, and which one a session uses.
 
-Usage: mode [OPTIONS] --gait-dir <GAIT_DIR> [ACTION] [NAME]
+Usage: mode
+       mode <COMMAND>
 
-Arguments:
-  [ACTION]
-  [NAME]
+Commands:
+  list    List the named modes with their patterns.
+  show    Show one mode.
+  add     Write a new mode from allow and deny patterns, steering text and a description.
+  select  Use a mode for a session from its next turn.
+  clear   Put a session back on the default mode.
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
-      --gait-dir <GAIT_DIR>        [env: GAIT_DIR]
-      --allow <ALLOW>              Repeatable allow pattern for the `add` action. Ignored by other actions
-      --deny <DENY>                Repeatable deny pattern for the `add` action. Ignored by other actions
-      --steer <STEER>              Freeform steering text for the `add` action. Ignored by other actions [default: ""]
-      --description <DESCRIPTION>  Human-readable description for the `add` action. Ignored by other actions [default: ""]
-      --session <SESSION>
-      --pretty
-  -h, --help                       Print help
+  -h, --help  Print help
 ```
 
 ## Inferences and providers
@@ -324,7 +322,7 @@ linking it to `codex` stores only a pointer, and the credentials stay in Codex's
 `$CODEX_HOME/auth.json`. `gait models` caches the models.dev catalog in
 `$GAIT_HOME/cache/models.json`.
 
-`gait config set <key> <value>` edits one key of `gait.jsonc` and keeps its comments.
+`gait config set --id <key> --value <value>` edits one key of `gait.jsonc` and keeps its comments.
 The value is parsed as JSON (`50` is a number, `true` a bool, `[...]` an array) and
 falls back to a plain string. Registering and enabling extensions rewrite the file as
 plain JSON and drop comments, so prefer `config set` for single keys.
@@ -333,30 +331,24 @@ plain JSON and drop comments, so prefer `config set` for single keys.
 
 #### `gait inference`
 
-`gait inference list|show|select|clear [name] --session <id>`
+Named model profiles, and which one a session uses.
 
 ```text
-`gait inference list|show|select|clear [name] --session <id>`
+Named model profiles, and which one a session uses.
 
-Usage: inference [OPTIONS] --gait-dir <GAIT_DIR> [ACTION] [NAME]
+Usage: inference
+       inference <COMMAND>
 
-Arguments:
-  [ACTION]
-  [NAME]
+Commands:
+  list    List the named inference profiles with their models.
+  show    Show one inference profile.
+  add     Write a new inference profile: a model and the token count at which compaction begins.
+  select  Use an inference profile for a session from its next turn.
+  clear   Put a session back on the default inference.
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
-      --gait-dir <GAIT_DIR>
-          [env: GAIT_DIR]
-      --model <MODEL>
-          Model for the `add` action, in `provider/id` form (e.g. `opencode/kimi-k2.6`). Ignored by other actions
-      --compaction-threshold-tokens <COMPACTION_THRESHOLD_TOKENS>
-          Required compaction threshold for the `add` action
-      --session <SESSION>
-
-      --pretty
-
-  -h, --help
-          Print help
+  -h, --help  Print help
 ```
 
 #### `gait auth`
@@ -415,7 +407,7 @@ List, inspect, link, or unlink credentials
 Workflows run repeatable sequences of prompts and operations. MCP tools and plugins can
 be enabled for a session when they are available in the configured Gait directory.
 
-`gait register` always adds an entry disabled; run `gait enable` to activate it. WASM
+`gait register` always adds an entry disabled; run `gait enable --kind <kind> --id <name>` to activate it. WASM
 plugins are registered and toggled but not executed today: the manifest loads and
 there is no execution path, so treat plugins as scaffolding.
 
@@ -435,59 +427,49 @@ this extensions capability.
 
 #### `gait workflow`
 
-`gait workflow <run|list|continue|abort|log>` subcommand
+Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
 
 ```text
-`gait workflow <run|list|continue|abort|log>` subcommand
+Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
 
-Usage: workflow [OPTIONS] [ACTION] [REST]...
+Usage: workflow [ACTION] [ARGS]...
 
 Arguments:
-  [ACTION]   Action: run | list | continue | abort | log
-  [REST]...  Remaining args (workflow name, id, …)
+  [ACTION]
+  [ARGS]...
 
 Options:
-      --gait-dir <GAIT_DIR>  Gait dir (falls back to $GAIT_DIR) [env: GAIT_DIR]
-      --pretty               Applies to `list`/`abort`/`validate` only — `run`/`continue` stream turn output through `CliSink` (always compact, no pretty option) and `log` streams one compact JSON object per event (NDJSON; pretty would break line-per-event streaming)
-  -h, --help                 Print help
+  -h, --help  Print help
 ```
 
 #### `gait enable`
 
-`gait enable mcp|skill|plugin <name>`
+Switch an extension on in the gait directory's config, for sessions that start later.
 
 ```text
-`gait enable mcp|skill|plugin <name>`
+Switch an extension on in the gait directory's config, for sessions that start later.
 
-Usage: enable [OPTIONS] <KIND> <NAME>
-
-Arguments:
-  <KIND>  Kind: mcp | skill | plugin
-  <NAME>  Extension name
+Usage: enable --id <id> --kind <kind>
 
 Options:
-      --gait-dir <GAIT_DIR>  Gait dir (falls back to $GAIT_DIR) [env: GAIT_DIR]
-      --pretty
-  -h, --help                 Print help
+      --id <id>      The extension name.
+      --kind <kind>  The kind of extension. [possible values: mcp, skill, plugin]
+  -h, --help         Print help (see more with '--help')
 ```
 
 #### `gait disable`
 
-`gait disable mcp|skill|plugin <name>`
+Switch an extension off in the gait directory's config.
 
 ```text
-`gait disable mcp|skill|plugin <name>`
+Switch an extension off in the gait directory's config.
 
-Usage: disable [OPTIONS] <KIND> <NAME>
-
-Arguments:
-  <KIND>  Kind: mcp | skill | plugin
-  <NAME>  Extension name
+Usage: disable --id <id> --kind <kind>
 
 Options:
-      --gait-dir <GAIT_DIR>  Gait dir (falls back to $GAIT_DIR) [env: GAIT_DIR]
-      --pretty
-  -h, --help                 Print help
+      --id <id>      The extension name.
+      --kind <kind>  The kind of extension. [possible values: mcp, skill, plugin]
+  -h, --help         Print help (see more with '--help')
 ```
 
 ### REPL commands

@@ -105,26 +105,5 @@ async fn run_cli(raw: Vec<String>) -> ExitCode {
         }
         MinCommands::Init(args) => gait_bin::finish_unit(gait_cli::cli::init::cmd_init(args)),
         MinCommands::Link(args) => gait_bin::finish_unit(gait_cli::cli::link::cmd_link(args)),
-        MinCommands::Config(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_config(args)),
-
-        MinCommands::Register(args) => {
-            if let Err(e) = gait_cli::cli::admin::cmd_register(*args) {
-                return gait_bin::report(&anyhow::anyhow!(e));
-            }
-            ExitCode::SUCCESS
-        }
-        MinCommands::Unregister(args) => {
-            if let Err(e) = gait_cli::cli::admin::cmd_unregister(*args) {
-                return gait_bin::report(&anyhow::anyhow!(e));
-            }
-            ExitCode::SUCCESS
-        }
-        MinCommands::Load(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_load(args)),
-        MinCommands::Unload(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_unload(args)),
-        MinCommands::Enable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_enable(args)),
-        MinCommands::Disable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_disable(args)),
-        MinCommands::Inference(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_inference(args)),
-        MinCommands::Mode(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_mode(args)),
-        MinCommands::Daemons(args) => gait_bin::finish_unit(gait_cli::cli::daemons::cmd_daemons(args)),
     }
 }

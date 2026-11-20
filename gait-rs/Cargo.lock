@@ -1789,6 +1789,7 @@ dependencies = [
  "gait-events",
  "gait-identity",
  "gait-llama-cpp",
+ "gait-local",
  "gait-ops",
  "gait-proto",
  "gait-repl",
