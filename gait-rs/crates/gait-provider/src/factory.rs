@@ -26,7 +26,7 @@ pub enum FactoryError {
     #[error("missing API key for provider '{0}': set {1} env var")]
     #[coded(code = "missing_api_key", class = Logical)]
     MissingApiKey(String, String),
-    #[error("missing credential for provider '{0}': run `gait auth login {0}`")]
+    #[error("missing credential for provider '{0}': run `gait auth login --id {0}`")]
     #[coded(code = "missing_subscription", class = Logical)]
     MissingSubscription(String),
     #[error("invalid credential: {0}")]

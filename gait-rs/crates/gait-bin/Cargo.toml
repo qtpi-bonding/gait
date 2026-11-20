@@ -70,6 +70,7 @@ gait-cli = { path = "../gait-cli", default-features = false }
 op-registry = { workspace = true }
 coded-error = { workspace = true, features = ["anyhow"] }
 gait-ops = { path = "../gait-ops" }
+gait-auth = { path = "../gait-auth" }
 schemars_v1 = { package = "schemars", version = "1", optional = true }
 futures-util = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
@@ -90,6 +91,7 @@ concord-telemetry = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
+op-registry = { workspace = true, features = ["testing"] }
 gait-events = { path = "../gait-events" }
 tracing = "0.1"
 tempfile = "3"

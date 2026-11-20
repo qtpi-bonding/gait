@@ -74,7 +74,7 @@ fn map_auth_error(error: gait_auth::AuthError) -> anyhow::Error {
             let message = if message.contains("gait auth login") {
                 message
             } else {
-                format!("run: gait auth login openai-signin ({message})")
+                format!("run: gait auth login --id openai-signin ({message})")
             };
             coded_error::into_anyhow(OpError::Conflict(message))
         }
@@ -299,7 +299,7 @@ fn remove_using(
     }
     remove_entry(provider).map_err(|error| match error {
         gait_state::auth::AuthError::ManagedElsewhere(_) => coded_error::into_anyhow(OpError::Conflict(
-            "openai-signin is managed by ChatGPT sign-in; run `gait auth logout openai-signin --forget`"
+            "openai-signin is managed by ChatGPT sign-in; run `gait auth logout --id openai-signin --forget`"
                 .to_string(),
         )),
         error => anyhow::Error::from(error),
@@ -391,7 +391,7 @@ pub fn status(provider: &str) -> anyhow::Result<Option<String>> {
 pub async fn logout_codex() -> anyhow::Result<AuthRemoveOutcome> {
     if gait_state::auth::external_binding(gait_auth::codex::CODEX_PROVIDER_ID)?.is_some() {
         return Err(coded_error::into_anyhow(OpError::Conflict(
-            "openai-codex is linked to externally owned credentials; run `gait auth unlink openai-codex` instead"
+            "openai-codex is linked to externally owned credentials; run `gait auth unlink --id openai-codex` instead"
                 .into(),
         )));
     }
@@ -726,7 +726,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             coded_error::downcast_ref::<OpError>(&error),
-            Some(OpError::Conflict(message)) if message.contains("logout openai-signin --forget")
+            Some(OpError::Conflict(message)) if message.contains("logout --id openai-signin --forget")
         ));
         assert!(gait_state::auth::list_credentials_from(&path).unwrap().contains_key(SIGNIN_PROVIDER_ID));
     }

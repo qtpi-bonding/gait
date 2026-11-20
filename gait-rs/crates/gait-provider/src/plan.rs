@@ -39,12 +39,12 @@ impl PlanResponsesProvider {
         let secret: BrainSecret = serde_json::from_value(credential.secret)
             .map_err(|_| "invalid credential: expected BrainSecret".to_string())?;
         let tokens = secret.tokens.ok_or_else(|| {
-            "invalid credential: tokens are missing; run `gait auth login openai-signin`"
+            "invalid credential: tokens are missing; run `gait auth login --id openai-signin`"
                 .to_string()
         })?;
         if tokens.access_token.is_empty() {
             return Err(
-                "invalid credential: access token is missing; run `gait auth login openai-signin`"
+                "invalid credential: access token is missing; run `gait auth login --id openai-signin`"
                     .into(),
             );
         }
@@ -526,7 +526,7 @@ mod tests {
         );
         assert!(result
             .unwrap_err()
-            .contains("gait auth login openai-signin"));
+            .contains("gait auth login --id openai-signin"));
     }
 
     #[test]

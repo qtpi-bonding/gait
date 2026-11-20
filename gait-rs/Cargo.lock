@@ -1783,6 +1783,7 @@ dependencies = [
  "coded-error",
  "concord-telemetry",
  "futures-util",
+ "gait-auth",
  "gait-cli",
  "gait-core",
  "gait-events",

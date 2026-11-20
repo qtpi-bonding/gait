@@ -13,7 +13,7 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
 use gait_cli::cli::admin::{
-    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModeArgs, ModelsArgs,
+    ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModeArgs,
     RegisterArgs, UnregisterArgs,
 };
 use gait_cli::cli::daemons::DaemonsArgs;
@@ -105,8 +105,6 @@ pub enum MinCommands {
     Unload(UnloadArgs),
     Enable(EnableArgs),
     Disable(DisableArgs),
-    Auth(AuthArgs),
-    Models(ModelsArgs),
     Inference(InferenceArgs),
     Mode(ModeArgs),
     Daemons(DaemonsArgs),

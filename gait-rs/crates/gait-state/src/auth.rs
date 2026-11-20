@@ -182,7 +182,7 @@ pub fn resolve_credential_lease_with(
         let auth_path = auth_path_for(platform)?;
         if !auth_path.exists() {
             return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
-                "openai-signin uses ChatGPT sign-in; run `gait auth login openai-signin`".into(),
+                "openai-signin uses ChatGPT sign-in; run `gait auth login --id openai-signin`".into(),
             )));
         }
     }
@@ -216,7 +216,7 @@ pub fn resolve_credential_lease_with(
     let map = crate::auth_file::load_auth_map(&auth_path)?;
     if provider == "openai-signin" && !map.contains_key(provider) {
         return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
-            "openai-signin uses ChatGPT sign-in; run `gait auth login openai-signin`".into(),
+            "openai-signin uses ChatGPT sign-in; run `gait auth login --id openai-signin`".into(),
         )));
     }
     let entry = match map.get(provider) {
@@ -342,7 +342,7 @@ fn reject_signin_writer(data: &Map<String, Value>, provider: &str) -> Result<(),
         == Some("chatgpt-signin")
     {
         return Err(AuthError::ManagedElsewhere(
-            "use `gait auth login openai-signin`".into(),
+            "use `gait auth login --id openai-signin`".into(),
         ));
     }
     Ok(())
@@ -514,7 +514,7 @@ pub fn remove_api_key_from(path: &std::path::Path, provider: &str) -> Result<(),
                 == Some("chatgpt-signin")
         {
             return Err(AuthError::ManagedElsewhere(
-                "use `gait auth logout openai-signin --forget`".into(),
+                "use `gait auth logout --id openai-signin --forget`".into(),
             ));
         }
         data.remove(provider);
@@ -699,7 +699,7 @@ mod tests {
         let error = resolve_credential_lease_with(&platform, "openai-signin")
             .expect_err("environment credentials must not satisfy sign-in");
         let text = error.to_string();
-        assert!(text.contains("gait auth login openai-signin"), "{text}");
+        assert!(text.contains("gait auth login --id openai-signin"), "{text}");
         assert!(!text.contains("must-not-be-used"));
     }
 
@@ -859,7 +859,7 @@ mod tests {
         );
         assert!(matches!(
             remove_api_key_from(&path, "openai-signin"),
-            Err(AuthError::ManagedElsewhere(message)) if message.contains("logout openai-signin --forget")
+            Err(AuthError::ManagedElsewhere(message)) if message.contains("logout --id openai-signin --forget")
         ));
         remove_api_key_from(&path, "openai").unwrap();
         let map = crate::auth_file::load_auth_map(&path).unwrap();

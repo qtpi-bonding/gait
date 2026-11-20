@@ -126,10 +126,10 @@ guides:
       the gait-dir, which is the Git-backed workspace holding configuration and sessions.
       Keys can also come from environment variables such as `ANTHROPIC_API_KEY` and
       `OPENAI_API_KEY`. Official ChatGPT plan sign-in uses `openai-signin`:
-      run `gait auth login openai-signin`, open the authorization URL, and paste the
+      run `gait auth login --id openai-signin`, open the authorization URL, and paste the
       resulting callback URL when prompted. For a later process, use
-      `gait auth login openai-signin --complete <url>` (or `--complete -` to read one
-      trimmed line from stdin). Sign out with `gait auth logout openai-signin`, adding
+      `gait auth login --id openai-signin --complete <url>` (or `--complete -` to read one
+      trimmed line from stdin). Sign out with `gait auth logout --id openai-signin`, adding
       `--forget` when switching accounts. If the provider cannot revoke a session, disconnect
       the app in ChatGPT Settings. The legacy `openai-codex` device-code path is unofficial;
       linking it to `codex` stores only a pointer, and the credentials stay in Codex's own

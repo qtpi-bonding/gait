@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: 89047ad0870fbe87b8165f0475417b4d0ab037de338bbbf0c34369a42fd84f82
+manual-source-hash: ae38b82c77736d896ca115772d6b3e946d39dc4b8888d6e4cea7769eac47c643
 ---
 
 # Gait Manual
@@ -84,7 +84,9 @@ Commands:
   deny        Refuse the permission requests a session is waiting on.
   unlock      Approve the sandbox unlock requests a session is waiting on.
   reply       Answer the single clarify or inform question a session is waiting on.
+  auth        Provider credentials: API keys, subscription logins and links to other tools' credentials.
   manual
+  models      List the models of the models.dev catalog, optionally filtered by `--filter`.
   init
   link        Point the current directory at an existing gait workspace
   config      `gait config <set|get|show> ...` — the general external-CLI equivalent of any REPL slash command that reads or mutates `gait.jsonc`. `set`/`get` call the generic `gait_ops::config::set`/`get` (the comment-safe jsonc mutators); `show` calls the shared `gait_ops::config::resolve` op. gait-dir-wide, not session-scoped. Mirrors `WorkflowArgs`/`cmd_workflow`'s action+rest shape exactly
@@ -94,8 +96,6 @@ Commands:
   unload      `gait unload <kind> <name> --session <id>` — append a Toggle(enabled=false) event to a session's log outside a running turn
   enable      `gait enable mcp|skill|plugin <name>`
   disable     `gait disable mcp|skill|plugin <name>`
-  auth        `gait auth list|add|remove|login|status|logout|link|unlink [provider] [source]`
-  models      `gait models [filter]`
   inference   `gait inference list|show|select|clear [name] --session <id>`
   mode        `gait mode list|show|add|select|clear [name] --session <id>`
   workflow    `gait workflow <run|list|continue|abort|log>` subcommand
@@ -314,10 +314,10 @@ API keys and non-secret external-source bindings live in `$GAIT_HOME/auth.json`
 the gait-dir, which is the Git-backed workspace holding configuration and sessions.
 Keys can also come from environment variables such as `ANTHROPIC_API_KEY` and
 `OPENAI_API_KEY`. Official ChatGPT plan sign-in uses `openai-signin`:
-run `gait auth login openai-signin`, open the authorization URL, and paste the
+run `gait auth login --id openai-signin`, open the authorization URL, and paste the
 resulting callback URL when prompted. For a later process, use
-`gait auth login openai-signin --complete <url>` (or `--complete -` to read one
-trimmed line from stdin). Sign out with `gait auth logout openai-signin`, adding
+`gait auth login --id openai-signin --complete <url>` (or `--complete -` to read one
+trimmed line from stdin). Sign out with `gait auth logout --id openai-signin`, adding
 `--forget` when switching accounts. If the provider cannot revoke a session, disconnect
 the app in ChatGPT Settings. The legacy `openai-codex` device-code path is unofficial;
 linking it to `codex` stores only a pointer, and the credentials stay in Codex's own
@@ -361,41 +361,41 @@ Options:
 
 #### `gait auth`
 
-`gait auth list|add|remove|login|status|logout|link|unlink [provider] [source]`
+Provider credentials: API keys, subscription logins and links to other tools' credentials.
 
 ```text
-`gait auth list|add|remove|login|status|logout|link|unlink [provider] [source]`
+Provider credentials: API keys, subscription logins and links to other tools' credentials.
 
-Usage: auth [OPTIONS] [ACTION] [PROVIDER] [SOURCE]
+Usage: auth
+       auth <COMMAND>
 
-Arguments:
-  [ACTION]    Action: list (default), add, remove, login, status, logout, link, unlink
-  [PROVIDER]  Provider name
-  [SOURCE]    External source name (used with link)
+Commands:
+  list    List the configured providers and what kind of credential each has; never any key text.
+  status  Show whether a provider has a credential and of what kind, without revealing it.
+  add     Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
+  link    Use another tool's credentials for a provider without copying them.
+  login   Sign in to a subscription provider: a device code for `openai-codex`, a browser step for `openai-signin`.
+  logout  Sign out of a subscription provider. API keys are removed with `auth remove`.
+  remove  Remove a stored API key. Removing a provider with no key still succeeds.
+  unlink  Drop the link to another tool's credentials; that tool's own credentials are not touched.
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
-      --home <HOME>          Override the external CLI's home directory
-      --pretty
-      --complete <COMPLETE>  Complete a pending openai-signin login with a callback URL (or `-` for stdin)
-      --forget               Forget the openai-signin registration when logging out
-  -h, --help                 Print help
+  -h, --help  Print help
 ```
 
 #### `gait models`
 
-`gait models [filter]`
+List the models of the models.dev catalog, optionally filtered by `--filter`.
 
 ```text
-`gait models [filter]`
+List the models of the models.dev catalog, optionally filtered by `--filter`.
 
-Usage: models [OPTIONS] [FILTER]
-
-Arguments:
-  [FILTER]  Optional substring filter for model ids
+Usage: models [OPTIONS]
 
 Options:
-      --pretty
-  -h, --help    Print help
+      --filter <filter>  Keep only models whose provider, id or name contains this text (case-insensitive).
+  -h, --help             Print help
 ```
 
 ### REPL commands

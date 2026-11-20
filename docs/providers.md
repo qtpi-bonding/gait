@@ -37,16 +37,16 @@ This is the actual list shipped in the binary. Adding a new OpenAI-compatible pr
 | `ollama` | OpenAI | `http://localhost:11434/v1` | `OLLAMA_API_KEY` | **no** |
 | `lmstudio` | OpenAI | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` | **no** |
 
-`openai-codex` is a distinct namespace from `openai`: it talks to the ChatGPT subscription backend, not the public API-key endpoint, so users with a ChatGPT Plus/Pro subscription can use it without an OpenAI API key. The CLI form is `gait auth login openai-codex` (device code) rather than `gait auth add openai-codex`.
+`openai-codex` is a distinct namespace from `openai`: it talks to the ChatGPT subscription backend, not the public API-key endpoint, so users with a ChatGPT Plus/Pro subscription can use it without an OpenAI API key. The CLI form is `gait auth login --id openai-codex` (device code) rather than `gait auth add --id openai-codex`.
 
 To reuse an existing file-backed Codex CLI login without copying its tokens into gait:
 
 ```bash
-gait auth link openai-codex codex
+gait auth link --id openai-codex --source codex
 gait --model openai-codex/<model> "your task"
 ```
 
-The Codex source follows Codex's own home precedence: an explicit `--home`, then `CODEX_HOME`, then `~/.codex`. `gait auth unlink openai-codex` removes only gait's non-secret binding. Codex keyring-backed auth is not supported yet; configure Codex's `cli_auth_credentials_store` as `file` for this integration.
+The Codex source follows Codex's own home precedence: an explicit `--home`, then `CODEX_HOME`, then `~/.codex`. `gait auth unlink --id openai-codex` removes only gait's non-secret binding. Codex keyring-backed auth is not supported yet; configure Codex's `cli_auth_credentials_store` as `file` for this integration.
 
 Gait's own credential map and external-source pointers live at
 `$GAIT_HOME/auth.json`, where `GAIT_HOME` defaults to `~/.gait-home`.
@@ -62,7 +62,7 @@ Gait's own credential map and external-source pointers live at
 A single turn longer than the access token's remaining life (about an hour) can fail with an expired-credential error; the next turn refreshes it. Because this provider's model slugs are missing from the bundled model metadata snapshot, set `compaction_threshold_tokens` explicitly in `gait.jsonc` for long sessions.
 
 ```bash
-gait auth login openai-signin
+gait auth login --id openai-signin
 ```
 
 The interactive login prints a URL. Open it in any browser and sign in. The browser then ends on a connection error page; that is expected. Paste the address the browser ends on back into the prompt.
@@ -70,17 +70,17 @@ The interactive login prints a URL. Open it in any browser and sign in. The brow
 When stdin is not a terminal, the login is two-step:
 
 ```bash
-gait auth login openai-signin                        # prints JSON containing authorization_url
-gait auth login openai-signin --complete '<pasted url>'
-gait auth login openai-signin --complete -           # read the pasted URL from stdin
+gait auth login --id openai-signin                        # prints JSON containing authorizationUrl
+gait auth login --id openai-signin --complete '<pasted url>'
+gait auth login --id openai-signin --complete -           # read the pasted URL from stdin
 ```
 
 A pending login expires after 10 minutes. Tokens refresh automatically before each turn.
 
 ```bash
-gait auth status openai-signin
-gait auth logout openai-signin            # remove the login
-gait auth logout openai-signin --forget   # also remove the saved app registration; needed to switch ChatGPT accounts
+gait auth status --id openai-signin
+gait auth logout --id openai-signin            # remove the login
+gait auth logout --id openai-signin --forget   # also remove the saved app registration; needed to switch ChatGPT accounts
 ```
 
 When the plan's usage limit is reached, the request fails with a message pointing to ChatGPT Settings > Usage. gait never falls back silently to another provider, and it does not retry usage-limit errors.
@@ -97,7 +97,7 @@ When the plan's usage limit is reached, the request fails with a message pointin
 
 ```bash
 gait models                 # all providers with configured credentials
-gait models anthropic       # filter by substring on provider or model id
+gait models --filter anthropic   # filter by substring on provider or model id
 ```
 
 `gait models` is an idempotent network read (provider's own `/v1/models` endpoint). It does *not* mutate any state.

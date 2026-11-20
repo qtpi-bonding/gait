@@ -418,7 +418,7 @@ fn classify_oauth_error(status: u16, body: &str) -> AuthError {
             AuthError::Retryable("temporary token service failure".into())
         }
         Some("invalid_client") => AuthError::Other(
-            "registration rejected; run `gait auth logout openai-signin --forget` and log in again"
+            "registration rejected; run `gait auth logout --id openai-signin --forget` and log in again"
                 .into(),
         ),
         Some(_) | None => AuthError::Other("token exchange failed".into()),
@@ -698,7 +698,7 @@ impl AuthMethod for ChatGptSignIn {
             )
             .await;
             return Err(AuthError::Other(
-                "different ChatGPT account; run `gait auth logout openai-signin --forget` first"
+                "different ChatGPT account; run `gait auth logout --id openai-signin --forget` first"
                     .into(),
             ));
         }
@@ -729,13 +729,13 @@ impl AuthMethod for ChatGptSignIn {
         let mut guard = ctx.store.lock().await?;
         let stored = guard
             .read(provider)?
-            .ok_or_else(|| AuthError::LoginRequired("run: gait auth login openai-signin".into()))?;
+            .ok_or_else(|| AuthError::LoginRequired("run: gait auth login --id openai-signin".into()))?;
         let mut secret: SignInSecret = serde_json::from_value(stored.secret.clone())
             .map_err(|_| AuthError::IncompatibleCredential(SIGNIN_METHOD_ID))?;
         let mut tokens = secret
             .tokens
             .clone()
-            .ok_or_else(|| AuthError::LoginRequired("run: gait auth login openai-signin".into()))?;
+            .ok_or_else(|| AuthError::LoginRequired("run: gait auth login --id openai-signin".into()))?;
         let now = (self.now)();
         // Remaining lifetime alone decides. earliest_refresh_at is advisory and the
         // server does not enforce it (measured), so it is deliberately ignored here.
@@ -1807,7 +1807,7 @@ mod tests {
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("gait auth logout openai-signin --forget"));
+            .contains("gait auth logout --id openai-signin --forget"));
         assert_eq!(
             persisted_secret(&store).await.tokens.unwrap().refresh_token,
             "old-refresh"
@@ -1840,7 +1840,7 @@ mod tests {
         let s = empty_secret("urn:uuid:h".into());
         save(&store, credential(&s, None, None)).await;
         assert!(
-            matches!(auth.ensure_fresh(SIGNIN_PROVIDER_ID,&AuthContext{store:&store}).await,Err(AuthError::LoginRequired(message)) if message.contains("gait auth login openai-signin"))
+            matches!(auth.ensure_fresh(SIGNIN_PROVIDER_ID,&AuthContext{store:&store}).await,Err(AuthError::LoginRequired(message)) if message.contains("gait auth login --id openai-signin"))
         );
         assert!(requests(&server).await.iter().all(|r| r.path != "/token"));
     }
@@ -2201,7 +2201,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, AuthError::Other(message) if message.contains("different ChatGPT account") && message.contains("logout openai-signin --forget"))
+            matches!(error, AuthError::Other(message) if message.contains("different ChatGPT account") && message.contains("logout --id openai-signin --forget"))
         );
         assert!(requests(&server)
             .await
@@ -2293,7 +2293,7 @@ mod tests {
     fn classify_invalid_client_is_other_with_registration_hint() {
         let error = classify_oauth_error(400, r#"{"error":"invalid_client"}"#);
         assert!(
-            matches!(&error, AuthError::Other(message) if message == "registration rejected; run `gait auth logout openai-signin --forget` and log in again")
+            matches!(&error, AuthError::Other(message) if message == "registration rejected; run `gait auth logout --id openai-signin --forget` and log in again")
         );
     }
 

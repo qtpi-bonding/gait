@@ -149,7 +149,7 @@ pub async fn prepare_credential_with(
                 if c.method_id == gait_auth::signin::SIGNIN_METHOD_ID)
     {
         return Err(anyhow::anyhow!(
-            "use `gait auth login openai-signin` for this provider"
+            "use `gait auth login --id openai-signin` for this provider"
         ));
     }
     if !is_signin_credential(provider, &lease.credential) {
@@ -1137,7 +1137,7 @@ mod tests {
             .await
             .expect_err("non-sign-in credentials must not reach the provider");
         let text = error.to_string();
-        assert!(text.contains("gait auth login openai-signin"));
+        assert!(text.contains("gait auth login --id openai-signin"));
         assert!(!text.contains("api-secret"));
     }
 
@@ -1239,7 +1239,7 @@ mod tests {
         let error = prepare_credential_with("openai-signin", Some(lease), &method, &store)
             .await
             .expect_err("logged-out entries must stop the turn before brain spawn");
-        assert!(error.to_string().contains("gait auth login openai-signin"));
+        assert!(error.to_string().contains("gait auth login --id openai-signin"));
     }
 
     #[tokio::test]
@@ -1273,7 +1273,7 @@ mod tests {
             .await
             .expect_err("logged-out credential must require login");
         let text = error.to_string();
-        assert!(text.contains("gait auth login openai-signin"));
+        assert!(text.contains("gait auth login --id openai-signin"));
         for secret in ["private-client-id", "private-host-id", "private-subject"] {
             assert!(!text.contains(secret), "error leaked {secret}");
         }

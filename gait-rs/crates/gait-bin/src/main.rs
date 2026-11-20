@@ -146,8 +146,6 @@ async fn run_cli(raw: Vec<String>) -> ExitCode {
         Commands::Unload(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_unload(args)),
         Commands::Enable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_enable(args)),
         Commands::Disable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_disable(args)),
-        Commands::Auth(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_auth(args).await),
-        Commands::Models(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_models(args).await),
         #[cfg(feature = "local")]
         Commands::Local(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_local(args).await),
         Commands::Inference(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_inference(args)),
