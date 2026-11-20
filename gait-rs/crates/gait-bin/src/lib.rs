@@ -151,8 +151,12 @@ pub fn build_runtime(raw: &[String]) -> tokio::runtime::Runtime {
     } else {
         tokio::runtime::Builder::new_multi_thread()
     };
+    // The turn runs on a blocking thread (see `ops::turn::on_turn_thread`); tokio's
+    // default 2 MiB stack overflows a debug build's deep turn future, which used
+    // to run on the 8 MiB main thread.
     builder
         .enable_all()
+        .thread_stack_size(8 * 1024 * 1024)
         .build()
         .expect("failed to start the tokio runtime")
 }

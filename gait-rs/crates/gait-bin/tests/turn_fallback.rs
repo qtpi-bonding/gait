@@ -289,3 +289,28 @@ fn a_turn_flag_error_is_usage_exit_2_with_a_json_line() {
         assert!(value["error"]["code"].as_str().unwrap().starts_with("op_registry.usage."), "{last}");
     }
 }
+
+/// The turn runs on a blocking thread of the runtime; with tokio's default 2 MiB
+/// stack the debug build overflowed it as soon as the brain was launched. The
+/// default inference has no provider credentials here (empty HOME, cleared
+/// environment), so the brain fails cleanly after launch: exit 69, never a signal.
+#[test]
+fn a_turn_that_launches_the_brain_does_not_overflow_the_stack() {
+    let (dir, cwd) = workspace();
+    let home = tempfile::TempDir::new().unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gait"));
+    cmd.env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home.path());
+    let out = cmd
+        .stdin(Stdio::null())
+        .arg("--gait-dir")
+        .arg(dir.path())
+        .arg("--codebase")
+        .arg(cwd.path())
+        .args(["--auto-approve", "say hi"])
+        .current_dir(cwd.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(69), "no exit code (a signal?): {}", stderr(&out));
+}
