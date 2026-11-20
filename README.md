@@ -69,7 +69,7 @@ Min keeps the CLI, the plain REPL, durable event-sourced sessions, the permissio
 ```bash
 # 1. Initialize a gait-dir
 mkdir my-workspace && cd my-workspace
-gait init
+gait init --gait-dir .gait
 
 # 2. Add an API key
 gait auth add anthropic

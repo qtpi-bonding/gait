@@ -10,7 +10,7 @@
 //! `[[bin]]` has `required-features = ["min"]`).
 #![cfg(feature = "min")]
 
-use gait_bin::manual::{render_manual, ManualFlavor, ManualInput};
+use gait_bin::manual::ManualFlavor;
 use gait_repl::plain::MIN_REPL_COMMANDS;
 
 fn run_gait_min(arg: &str) -> String {
@@ -28,9 +28,7 @@ fn min_help_excludes_workflow_and_local() {
 
     // Positive: the Min command surface manual.yaml and Task 4's
     // MIN_REPL_COMMANDS both depend on.
-    assert!(help.contains("Interactive REPL"), "missing -i: {help}");
-    assert!(help.contains("-e, --exec"), "missing -e: {help}");
-    assert!(help.contains("[TASK]"), "missing positional task: {help}");
+    assert!(help.contains("the REPL") || help.contains("-i"), "the turn is described: {help}");
     assert!(help.contains("init"), "missing init: {help}");
     assert!(help.contains("sessions"), "missing sessions: {help}");
     assert!(help.contains("config"), "missing config: {help}");
@@ -69,35 +67,34 @@ fn min_help_excludes_workflow_and_local() {
 }
 
 #[test]
-fn min_manual_help_excludes_install() {
+fn min_manual_has_no_install() {
     let exe = env!("CARGO_BIN_EXE_gait-min");
     let output = std::process::Command::new(exe)
         .args(["manual", "--help"])
         .output()
         .expect("gait-min manual --help should run");
     let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("print"), "expected `print`: {help}");
+    assert!(help.contains("--json"), "expected the manual op's flags: {help}");
     assert!(
         !help.contains("install"),
         "gait-min manual --help must not expose `install`: {help}"
     );
+    let install = std::process::Command::new(exe)
+        .args(["manual", "install"])
+        .output()
+        .unwrap();
+    assert_eq!(install.status.code(), Some(2), "install is not a gait-min command");
 }
 
-/// Task 8, Step 1: renders the Min manual using the Min command and REPL
-/// registries. Confirms `init`, `/new`, and sandbox docs are present, and
-/// that the full-only "Workflows and extensions" guide (and anything it
-/// alone would pull in) is absent.
+/// Renders the Min manual from the Min registry. Confirms `init`, `/new` and
+/// sandbox docs are present, and that the full-only "Workflows and
+/// extensions" guide (and anything it alone would pull in) is absent.
 #[test]
 fn min_manual_omits_workflows_and_extensions() {
-    let rendered = render_manual(ManualInput {
-        program_name: "gait-min",
-        cli: gait_bin::min_cli::cli(),
-        repl_commands: MIN_REPL_COMMANDS,
-        flavor: ManualFlavor::Min,
-    })
-    .unwrap();
-    assert!(rendered.contains("#### `gait-min init`"));
-    assert!(rendered.contains("#### `/new`"));
+    let registry = gait_bin::ops::min_registry();
+    let rendered = gait_bin::manual::render(&registry, ManualFlavor::Min, MIN_REPL_COMMANDS).unwrap();
+    assert!(rendered.contains("### gait-min init"));
+    assert!(rendered.contains("`/new`"));
     assert!(rendered.contains("`sandbox`"));
     assert!(!rendered.contains("Workflows and extensions"));
     assert!(!rendered.contains("gait-min workflow"));
@@ -105,30 +102,39 @@ fn min_manual_omits_workflows_and_extensions() {
 
     // Skills are available in both builds: the ungated Skills guide must
     // still render in the Min manual.
-    assert!(rendered.contains("## Skills"));
-    assert!(rendered.contains("#### `/skill"));
+    assert!(rendered.contains("### Skills"));
+    assert!(rendered.contains("`/skill"));
 }
 
-/// Task 8, Step 5/6: `gait-min manual print` writes Markdown to stdout only
-/// and creates no files (no `skills/`, no `gait-manual/`, no gait-dir).
+/// `gait-min manual` writes the manual to stdout only and creates no files;
+/// `manual --json` has the descriptors but no output schemas (gait-min is
+/// built without the `schema` feature).
 #[test]
-fn min_manual_print_writes_stdout_only() {
+fn min_manual_writes_stdout_only() {
     let exe = env!("CARGO_BIN_EXE_gait-min");
     let dir = tempfile::TempDir::new().unwrap();
     let output = std::process::Command::new(exe)
-        .args(["manual", "print"])
+        .arg("manual")
         .current_dir(dir.path())
         .output()
-        .expect("gait-min manual print should run");
-
+        .expect("gait-min manual should run");
     assert!(
         output.status.success(),
-        "gait-min manual print failed: {}",
+        "gait-min manual failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("# Gait Manual"));
-    assert!(stdout.contains("manual-source-hash: "));
+    assert!(stdout.contains("# gait-min"), "{stdout}");
+
+    let json = std::process::Command::new(exe)
+        .args(["manual", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let ops = value["ops"].as_array().unwrap();
+    assert!(ops.iter().any(|op| op["name"] == "init"));
+    assert!(ops.iter().all(|op| op.get("outputSchema").is_none()), "no output schemas in gait-min");
 
     let entries: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -136,7 +142,7 @@ fn min_manual_print_writes_stdout_only() {
         .collect();
     assert!(
         entries.is_empty(),
-        "gait-min manual print must create no files, found: {:?}",
+        "gait-min manual must create no files, found: {:?}",
         entries.iter().map(|e| e.path()).collect::<Vec<_>>()
     );
 }

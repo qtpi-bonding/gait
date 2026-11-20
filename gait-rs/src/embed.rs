@@ -296,8 +296,8 @@ pub async fn run_loop(
         {
             anyhow::bail!(
                 "gait-dir {} is inside the codebase {} — the agent could write to its \
-                 own config. Move it out of tree (`gait init ~/gait-home && \
-                 gait link ~/gait-home`), or pass --allow-intree.",
+                 own config. Move it out of tree (`gait init --gait-dir ~/gait-home && \
+                 gait link --gait-dir ~/gait-home`), or pass --allow-intree.",
                 gait_dir.display(),
                 launch.codebase.display()
             );

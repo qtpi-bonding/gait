@@ -1,7 +1,7 @@
 fn init_workspace(ws: &std::path::Path) {
     let exe = env!("CARGO_BIN_EXE_gait");
     let out = std::process::Command::new(exe)
-        .arg("init")
+        .arg("init").arg("--gait-dir")
         .arg(ws)
         .output()
         .unwrap();

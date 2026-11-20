@@ -64,7 +64,7 @@ pub fn discover_with(platform: &dyn Platform, start: &Path) -> anyhow::Result<Pa
     }
     Err(coded_error::into_anyhow(GaitDirError::NotFound(format!(
         "not a gait workspace: no .gait/ or .gaitref found from {} upward — \
-         run `gait init .gait`, `gait link <gait-dir>`, or pass --gait-dir",
+         run `gait init --gait-dir .gait`, `gait link --gait-dir <gait-dir>`, or pass --gait-dir",
         start.display()
     ))))
 }

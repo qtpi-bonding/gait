@@ -49,7 +49,7 @@ fn missing_gait_dir_flag_exits_65() {
 #[test]
 fn missing_session_exits_65() {
     let workspace = tempfile::TempDir::new().unwrap();
-    let init = gait().arg("init").arg(workspace.path()).status().unwrap();
+    let init = gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap();
     assert!(init.success());
     let status = gait()
         .args(["allow", "--id", "nosuch", "--gait-dir"])
@@ -63,7 +63,7 @@ fn missing_session_exits_65() {
 /// not-found (exit 65, "not found" on stderr), never success.
 fn assert_not_found(args: &[&str]) {
     let workspace = tempfile::TempDir::new().unwrap();
-    let init = gait().arg("init").arg(workspace.path()).status().unwrap();
+    let init = gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap();
     assert!(init.success());
     let output = gait()
         .args(args)
@@ -138,7 +138,7 @@ fn load_skill_into_unknown_session_is_not_found() {
 
 fn assert_usage(args: &[&str]) {
     let workspace = tempfile::TempDir::new().unwrap();
-    let init = gait().arg("init").arg(workspace.path()).status().unwrap();
+    let init = gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap();
     assert!(init.success());
     let output = gait()
         .args(args)
@@ -179,7 +179,7 @@ fn bulk_persist_and_discard_need_yes() {
 #[test]
 fn bulk_on_an_empty_workspace_is_an_empty_result() {
     let workspace = tempfile::TempDir::new().unwrap();
-    assert!(gait().arg("init").arg(workspace.path()).status().unwrap().success());
+    assert!(gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap().success());
     for verb in ["persist", "discard"] {
         let output = gait()
             .arg(verb)

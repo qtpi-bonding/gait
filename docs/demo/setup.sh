@@ -46,7 +46,7 @@ git -C "$GAIT_DEMO_DIR/repo" add -A
 git -C "$GAIT_DEMO_DIR/repo" -c user.name=demo -c user.email=demo@example.com commit -q -m initial
 
 export GAIT_DIR="$GAIT_DEMO_DIR/home"
-gait init "$GAIT_DIR" > /dev/null
+gait init --gait-dir "$GAIT_DIR" > /dev/null
 gait inference --gait-dir "$GAIT_DIR" --model "$GAIT_DEMO_MODEL" \
   --compaction-threshold-tokens 200000 add demo > /dev/null
 gait config --gait-dir "$GAIT_DIR" set inference demo > /dev/null

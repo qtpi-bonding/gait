@@ -24,9 +24,12 @@ mod hooks;
 pub mod inference;
 #[cfg(feature = "local")]
 pub mod local;
+#[cfg(feature = "full")]
+pub mod manual;
 pub mod mode;
 pub mod session;
 pub mod turn;
+pub mod workspace;
 
 pub use context::{GaitContext, Globals};
 pub use hooks::{GaitCallHook, GaitHooks};
@@ -288,6 +291,18 @@ pub fn min_registry() -> op_registry::Registry<GaitContext> {
         env!("CARGO_PKG_VERSION"),
         "AI coding agent (minimal build)",
     );
+    // `gait-min` has no `manual install`: the library's `manual` op prints the
+    // manual (and `--json` the descriptors, without output schemas).
+    #[cfg(not(feature = "full"))]
+    {
+        let manual = crate::manual::manual(
+            &registry,
+            crate::manual::ManualFlavor::Min,
+            gait_repl::plain::MIN_REPL_COMMANDS,
+        )
+        .expect("the manual manifest is valid");
+        registry.with_manual(manual, op_registry::Audience::Owner);
+    }
     registry
 }
 
@@ -295,6 +310,9 @@ pub fn min_registry() -> op_registry::Registry<GaitContext> {
 pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     let mut registry = decl::registry();
     registry.set_call_hook(std::sync::Arc::new(GaitCallHook));
+    registry.merge(workspace::decl::registry());
+    #[cfg(feature = "full")]
+    registry.merge(manual::decl::registry());
     #[cfg(feature = "local")]
     registry.merge(local::decl::registry());
     #[cfg(feature = "workflow")]

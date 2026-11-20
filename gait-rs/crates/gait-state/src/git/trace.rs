@@ -386,7 +386,7 @@ mod tests {
     }
 
     /// Like `init_repo`, but also commits a root `.gitignore` matching what
-    /// `gait init` actually produces (`crates/gait-cli/src/cli/init.rs`).
+    /// `gait init` actually produces (`crates/gait-ops/src/workspace.rs`).
     /// The plain `init_repo` commits an empty tree, which can never exercise
     /// the add/add collision this test guards against — a regression test
     /// built on `init_repo` alone would pass even if the fix regressed.

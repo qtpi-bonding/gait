@@ -11,7 +11,7 @@ pub struct LinkOutcome {
 pub fn link(cwd: &Path, target: &Path) -> anyhow::Result<LinkOutcome> {
     if !target.join(".git").exists() {
         return Err(coded_error::into_anyhow(OpError::NotFound(format!(
-            "{} is not a gait workspace (no .git) — run `gait init {}` first",
+            "{} is not a gait workspace (no .git) — run `gait init --gait-dir {}` first",
             target.display(),
             target.display()
         ))));
@@ -265,8 +265,8 @@ pub fn init(params: InitParams) -> anyhow::Result<InitOutcome> {
         Err(repo) => {
             return Err(coded_error::into_anyhow(OpError::Conflict(format!(
                 "{} would live inside git repo {} — an agent could then write \
-                 to its own config there.\n       Prefer out-of-tree: `gait init \
-                 ~/gait-home && gait link ~/gait-home`.\n       Or pass --force to \
+                 to its own config there.\n       Prefer out-of-tree: `gait init --gait-dir \
+                 ~/gait-home && gait link --gait-dir ~/gait-home`.\n       Or pass --force to \
                  create it here anyway (running it will also require --allow-intree).",
                 gait_dir.display(),
                 repo.display()

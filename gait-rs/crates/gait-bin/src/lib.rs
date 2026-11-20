@@ -1,100 +1,11 @@
 use anyhow::Context;
-use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use gait_identity::{DirectVerifier, IdentityContext};
 use gait_state::session::retrace::install_process_verifier;
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use gait_cli::cli::init::InitArgs;
-use gait_cli::cli::link::LinkArgs;
-
-pub mod interim;
 pub mod manual;
 pub mod ops;
-#[cfg(feature = "min")]
-pub mod min_cli;
-
-#[derive(Parser)]
-#[command(
-    name = "gait",
-    about = "AI coding agent",
-    version,
-    args_conflicts_with_subcommands = true
-)]
-pub struct Cli {
-    /// Task to run (bare positional: `gait "fix the login bug"`)
-    #[arg(conflicts_with_all = ["interactive", "exec"])]
-    pub task: Option<String>,
-
-    /// Interactive REPL mode
-    #[arg(short = 'i', long, conflicts_with_all = ["exec", "task"])]
-    pub interactive: bool,
-    /// Ephemeral one-off request
-    #[arg(short = 'e', long, conflicts_with_all = ["interactive", "task"])]
-    pub exec: Option<String>,
-
-    /// Continue an existing session by id
-    #[arg(long, short = 's')]
-    pub session: Option<String>,
-    /// Named inference selection.
-    #[arg(long)]
-    pub inference: Option<String>,
-    /// Verified goal: fixed command run when a turn attempts completion to verify its goal.
-    #[arg(long)]
-    pub verified_goal: Option<String>,
-    /// Agent file to load
-    #[arg(long, short = 'a')]
-    pub agent: Option<String>,
-    /// auto-approve all tool-permission prompts; the sandbox ceiling still applies (kernel-enforced)
-    #[arg(long)]
-    pub auto_approve: bool,
-    /// Pre-approve tool pattern (repeatable)
-    #[arg(long, action = ArgAction::Append)]
-    pub allow: Vec<String>,
-    /// Pre-deny tool pattern (repeatable)
-    #[arg(long, action = ArgAction::Append)]
-    pub deny: Vec<String>,
-    /// Pre-grant sandbox path access (repeatable)
-    #[arg(long, action = ArgAction::Append)]
-    pub unlock: Vec<String>,
-    /// Cap agentic steps
-    #[arg(long, short = 'n')]
-    pub max_iter: Option<usize>,
-    /// Path to structured output schema
-    #[arg(long, short = 'R')]
-    pub result_schema: Option<PathBuf>,
-    /// Inline JSON structured output schema
-    #[arg(long, conflicts_with = "result_schema")]
-    pub result_schema_json: Option<String>,
-    #[arg(long, short = 'd', hide = true)]
-    pub gait_dir: Option<PathBuf>,
-    #[arg(long, short = 'c', hide = true)]
-    pub codebase: Option<PathBuf>,
-    /// Override the in-tree safety guard (design §7): run even though the
-    /// gait-dir is inside the codebase. The agent could then write to its own
-    /// config/permissions/audit log — prefer `gait init ~/gait-home && gait
-    /// link ~/gait-home` instead.
-    #[arg(long)]
-    pub allow_intree: bool,
-    /// Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
-    #[arg(long, global = true, value_name = "PATH")]
-    pub agent_dir: Option<PathBuf>,
-
-    #[command(subcommand)]
-    pub command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-pub enum Commands {
-    Manual(manual::ManualArgs),
-    Init(InitArgs),
-    Link(LinkArgs),
-}
-
-pub fn cli() -> clap::Command {
-    interim::with_registry_commands(Cli::command(), &ops::registry())
-}
 
 /// Record the error (code, class, fingerprint, never the text) unless the turn that
 /// failed already did, print it, and return its exit code.
@@ -128,15 +39,50 @@ pub fn finish(result: anyhow::Result<ExitCode>) -> ExitCode {
     }
 }
 
-pub fn finish_unit(result: gait_cli::cli::error::CliResult) -> ExitCode {
-    finish(result.map(|()| ExitCode::SUCCESS))
+/// Runs the command line `raw` (program name first) on `registry`: the
+/// command it names, or the turn as the registry's fallback. The shared tail
+/// of `gait` and `gait-min`; the hidden role arguments are handled before it.
+pub async fn run_registry(
+    raw: Vec<String>,
+    registry: op_registry::Registry<ops::GaitContext>,
+) -> ExitCode {
+    let mut argv: Vec<std::ffi::OsString> = raw.into_iter().map(std::ffi::OsString::from).collect();
+    // A bare `gait` prints the help and exits 0, as it always has.
+    if argv.len() == 1 {
+        argv.push("--help".into());
+    }
+    op_registry::cli::run(&registry, argv, &ops::GaitHooks).await
+}
+
+/// The value of `--agent-dir` in the raw command line, as `--agent-dir PATH` or
+/// `--agent-dir=PATH`; the last one wins, and nothing after a bare `--` counts.
+pub fn agent_dir_arg(raw: &[String]) -> Option<std::path::PathBuf> {
+    let args = raw.get(1..).unwrap_or_default();
+    let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    let args = &args[..end];
+    let mut found = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--agent-dir" {
+            if let Some(value) = args.get(i + 1) {
+                found = Some(std::path::PathBuf::from(value));
+                i += 1;
+            }
+        } else if let Some(value) = args[i].strip_prefix("--agent-dir=") {
+            found = Some(std::path::PathBuf::from(value));
+        }
+        i += 1;
+    }
+    found
 }
 
 /// Makes `--agent-dir` visible to this process and to every child it spawns by
-/// setting `GAIT_AGENT_DIR`. Call before any thread exists: the environment is
-/// only safe to mutate while the process is single-threaded.
-pub fn apply_agent_dir_flag(cli: &Cli) {
-    if let Some(dir) = &cli.agent_dir {
+/// setting `GAIT_AGENT_DIR`. The registry also declares the flag, so help and
+/// parsing accept it, but the environment is only safe to mutate while the
+/// process is single-threaded: `main` calls this on the raw arguments before
+/// any thread exists.
+pub fn apply_agent_dir_flag(raw: &[String]) {
+    if let Some(dir) = agent_dir_arg(raw) {
         std::env::set_var("GAIT_AGENT_DIR", dir);
     }
 }
@@ -220,8 +166,8 @@ mod tests {
     fn agent_dir_flag_sets_gait_agent_dir_env() {
         let value = format!("/nonexistent/gait-agent-dir-flag-{}", std::process::id());
         let previous = std::env::var_os("GAIT_AGENT_DIR");
-        let cli = Cli::try_parse_from(["gait", "--agent-dir", value.as_str()]).unwrap();
-        apply_agent_dir_flag(&cli);
+        let raw: Vec<String> = ["gait", "sessions", "--agent-dir", value.as_str()].map(String::from).to_vec();
+        apply_agent_dir_flag(&raw);
         let observed = std::env::var_os("GAIT_AGENT_DIR");
         match previous {
             Some(v) => std::env::set_var("GAIT_AGENT_DIR", v),
@@ -278,8 +224,22 @@ mod tests {
 
     #[test]
     fn identity_subcommand_is_gone() {
-        assert!(Cli::try_parse_from(["gait", "identity", "self-proof"]).is_err());
-        assert!(!cli().get_subcommands().any(|c| c.get_name() == "identity"));
+        let registry = ops::registry();
+        assert!(!op_registry::cli::command(&registry)
+            .get_subcommands()
+            .any(|c| c.get_name() == "identity"));
+    }
+
+    #[test]
+    fn agent_dir_is_read_from_raw_argv_in_both_spellings() {
+        let raw = |args: &[&str]| -> Vec<String> {
+            std::iter::once("gait").chain(args.iter().copied()).map(String::from).collect()
+        };
+        let path = |p: &str| Some(std::path::PathBuf::from(p));
+        assert_eq!(agent_dir_arg(&raw(&["--agent-dir", "/a", "task"])), path("/a"));
+        assert_eq!(agent_dir_arg(&raw(&["sessions", "--agent-dir=/b"])), path("/b"));
+        assert_eq!(agent_dir_arg(&raw(&["--", "--agent-dir", "/c"])), None);
+        assert_eq!(agent_dir_arg(&raw(&["task"])), None);
     }
 
     #[test]

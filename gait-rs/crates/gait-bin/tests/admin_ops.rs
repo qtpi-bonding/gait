@@ -40,7 +40,7 @@ fn run(dir: &Path, args: &[&str]) -> Ran {
 
 fn workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    let init = gait().arg("init").arg(dir.path()).output().unwrap();
+    let init = gait().args(["init", "--gait-dir"]).arg(dir.path()).output().unwrap();
     assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
     dir
 }

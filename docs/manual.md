@@ -1,49 +1,40 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: da830e71d3fd983174c26863ea6564f360003b4ddb3313ece05b7bbf9a8df1bb
 ---
 
-# Gait Manual
+# gait
 
-## Getting started
+AI coding agent
+
+## Exit codes
+
+| Exit | Meaning |
+|---|---|
+| 0 | ok |
+| 2 | usage |
+| 65 | logical |
+| 69 | infrastructure |
+| 70 | unknown |
+| 75 | transient |
+
+## Guides
+
+### Getting started
 
 Gait is an AI coding agent with a command-line interface and an interactive REPL.
 
 Use the CLI to initialize a Gait directory, run one-off tasks, or continue a session.
 Use the REPL when you want an interactive coding session.
 
-### CLI commands
+#### REPL commands
 
-#### `gait init`
+- `/help` — Show this command guide (aliases: /?)
+- `/info` — Model, session, gait-dir, codebase
 
-```text
-Usage: init [OPTIONS] [PATH]
+Commands: `init`
 
-Arguments:
-  [PATH]  Target gait-dir (default: current directory)
-
-Options:
-      --force   Create the workspace even if it would live inside a codebase git repo. (In-tree is discouraged: running such a workspace also needs `--allow-intree`, since the agent could otherwise write to its own config. Prefer out-of-tree: `gait init ~/gait-home && gait link ~/gait-home`.)
-      --pretty
-  -h, --help    Print help
-```
-
-### REPL commands
-
-#### `/help`
-
-Show this command guide
-
-Aliases: /?
-
-
-#### `/info`
-
-Model, session, gait-dir, codebase
-
-
-## Running a task
+### Running a task
 
 Every task runs one of three ways: a bare positional (`gait "fix the login bug"`) starts
 or continues the default session; `-e`/`--exec` runs a single hands-free request with no
@@ -60,89 +51,62 @@ the run's workspace lives under a scratch temp directory that is deleted on exit
 `--gait-dir` is *not* where an ephemeral run writes, and its diagnostics are lost with it
 unless `GAIT_DEBUG=1` is set, which keeps the scratch directory and prints its path.
 
-### CLI commands
-
 #### `gait`
 
-AI coding agent
-
 ```text
-AI coding agent
+The turn's own flags. The registry hands over every argument after the leading globals, so a global given after the task (`gait "x" --gait-dir D`) is read here too
 
 Usage: gait [OPTIONS] [TASK]
-       gait <COMMAND>
-
-Commands:
-  sessions    List the active sessions, most recently updated first.
-  ps          Show each mounted session and its live state.
-  stats       Show a session's token use, split into agent work and compaction.
-  log         Show the outcome of a session's last completed run: its message, checkpoint, and the files and tools it touched.
-  undo        Go back to an earlier turn of a session, or list the turns with `--list`.
-  persist     Merge a session onto main and remove its worktree, or all idle sessions with `--all --yes`.
-  discard     Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
-  allow       Approve the permission requests a session is waiting on.
-  deny        Refuse the permission requests a session is waiting on.
-  unlock      Approve the sandbox unlock requests a session is waiting on.
-  reply       Answer the single clarify or inform question a session is waiting on.
-  auth        Provider credentials: API keys, subscription logins and links to other tools' credentials.
-  manual
-  models      List the models of the models.dev catalog, optionally filtered by `--filter`.
-  inference   Named model profiles, and which one a session uses.
-  init
-  link        Point the current directory at an existing gait workspace
-  mode        Named permission modes, and which one a session uses.
-  config      Keys of the gait directory's gait.jsonc.
-  daemons     Background processes that sessions started.
-  register    Register an MCP server, a skill or a plugin. An MCP server and a skill start disabled.
-  unregister  Remove a registered extension.
-  enable      Switch an extension on in the gait directory's config, for sessions that start later.
-  disable     Switch an extension off in the gait directory's config.
-  load        Load an extension into one session from its next turn.
-  unload      Unload an extension from one session.
-  workflow    Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
-  help        Print this message or the help of the given subcommand(s)
 
 Arguments:
-  [TASK]  Task to run (bare positional: `gait "fix the login bug"`)
+  [TASK]
+          Task to run (bare positional: `gait "fix the login bug"`)
 
 Options:
   -i, --interactive
           Interactive REPL mode
+
   -e, --exec <EXEC>
           Ephemeral one-off request
+
   -s, --session <SESSION>
           Continue an existing session by id
+
       --inference <INFERENCE>
           Named inference selection
+
       --verified-goal <VERIFIED_GOAL>
           Verified goal: fixed command run when a turn attempts completion to verify its goal
+
   -a, --agent <AGENT>
           Agent file to load
+
       --auto-approve
           auto-approve all tool-permission prompts; the sandbox ceiling still applies (kernel-enforced)
+
       --allow <ALLOW>
           Pre-approve tool pattern (repeatable)
+
       --deny <DENY>
           Pre-deny tool pattern (repeatable)
+
       --unlock <UNLOCK>
           Pre-grant sandbox path access (repeatable)
+
   -n, --max-iter <MAX_ITER>
           Cap agentic steps
+
   -R, --result-schema <RESULT_SCHEMA>
           Path to structured output schema
+
       --result-schema-json <RESULT_SCHEMA_JSON>
           Inline JSON structured output schema
+
       --allow-intree
-          Override the in-tree safety guard (design §7): run even though the gait-dir is inside the codebase. The agent could then write to its own config/permissions/audit log — prefer `gait init ~/gait-home && gait link ~/gait-home` instead
-      --agent-dir <PATH>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns
-  -h, --help
-          Print help
-  -V, --version
-          Print version
+          Override the in-tree safety guard (design §7): run even though the gait-dir is inside the codebase
 ```
 
-## Sessions
+### Sessions
 
 Sessions preserve turns, tool activity, and workspace state.
 
@@ -166,44 +130,15 @@ earlier to go back to. In the REPL an undo never starts a model turn; after a
 code-only undo (`/uc`) the next message you send carries a one-line note
 (`[undo] code restored to turn N`) so the model knows the files changed under it.
 
-### CLI commands
+#### REPL commands
 
-#### `gait sessions`
+- `/new` — Start a fresh session (aliases: /n)
+- `/undo [N]` — Restore code + transcript to the end of turn N (no N: list turns) (aliases: /u)
+- `/unlock [once|session|global|agent]` — Unlock a held session
 
-List the active sessions, most recently updated first.
+Commands: `sessions`
 
-```text
-List the active sessions, most recently updated first.
-
-Usage: sessions [OPTIONS]
-
-Options:
-      --last <last>  Show only the N most recently updated sessions.
-  -h, --help         Print help
-```
-
-### REPL commands
-
-#### `/new`
-
-Start a fresh session
-
-Aliases: /n
-
-
-#### `/undo [N]`
-
-Restore code + transcript to the end of turn N (no N: list turns)
-
-Aliases: /u
-
-
-#### `/unlock [once|session|global|agent]`
-
-Unlock a held session
-
-
-## Permissions and modes
+### Permissions and modes
 
 Every tool call is classified in order: deny (hard floor, wins even under
 `--auto-approve`) → allow (pattern match) → ask (pauses for a human, or
@@ -243,63 +178,9 @@ is active (there is nowhere to write to). `--scope global` persists to
 `gait.jsonc`. `--scope session`/`--scope once` are log-only, no file
 write.
 
-### CLI commands
+Commands: `allow`, `unlock`, `mode`
 
-#### `gait allow`
-
-Approve the permission requests a session is waiting on.
-
-```text
-Approve the permission requests a session is waiting on.
-
-Usage: allow [OPTIONS] --id <id>
-
-Options:
-      --id <id>            The session id.
-      --pattern <pattern>  The tool pattern to approve; without it the pending requests are approved as asked.
-      --scope <scope>      Where the approval is remembered; `once` when not given. [possible values: once, session, global, mode]
-  -h, --help               Print help (see more with '--help')
-```
-
-#### `gait unlock`
-
-Approve the sandbox unlock requests a session is waiting on.
-
-```text
-Approve the sandbox unlock requests a session is waiting on.
-
-Usage: unlock [OPTIONS] --id <id>
-
-Options:
-      --id <id>        The session id.
-      --scope <scope>  Where the unlock is remembered; `once` when not given. [possible values: once, session, global, agent]
-      --agent <agent>  The agent name for `--scope agent` (the agent file is `agents/<name>/AGENT.md`).
-  -h, --help           Print help (see more with '--help')
-```
-
-#### `gait mode`
-
-Named permission modes, and which one a session uses.
-
-```text
-Named permission modes, and which one a session uses.
-
-Usage: mode
-       mode <COMMAND>
-
-Commands:
-  list    List the named modes with their patterns.
-  show    Show one mode.
-  add     Write a new mode from allow and deny patterns, steering text and a description.
-  select  Use a mode for a session from its next turn.
-  clear   Put a session back on the default mode.
-  help    Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help  Print help
-```
-
-## Inferences and providers
+### Inferences and providers
 
 Inferences name the models Gait can use. Provider credentials are managed separately
 from inference selection.
@@ -327,82 +208,14 @@ The value is parsed as JSON (`50` is a number, `true` a bool, `[...]` an array) 
 falls back to a plain string. Registering and enabling extensions rewrite the file as
 plain JSON and drop comments, so prefer `config set` for single keys.
 
-### CLI commands
+#### REPL commands
 
-#### `gait inference`
+- `/inference [name|default|show <name>|add <name> <provider/id>]` — List, show, add, select, or clear a named inference
+- `/auth [list|status <provider>|link <provider> <source> [--home <path>]|unlink <provider>]` — List, inspect, link, or unlink credentials
 
-Named model profiles, and which one a session uses.
+Commands: `inference`, `auth`, `models`
 
-```text
-Named model profiles, and which one a session uses.
-
-Usage: inference
-       inference <COMMAND>
-
-Commands:
-  list    List the named inference profiles with their models.
-  show    Show one inference profile.
-  add     Write a new inference profile: a model and the token count at which compaction begins.
-  select  Use an inference profile for a session from its next turn.
-  clear   Put a session back on the default inference.
-  help    Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help  Print help
-```
-
-#### `gait auth`
-
-Provider credentials: API keys, subscription logins and links to other tools' credentials.
-
-```text
-Provider credentials: API keys, subscription logins and links to other tools' credentials.
-
-Usage: auth
-       auth <COMMAND>
-
-Commands:
-  list    List the configured providers and what kind of credential each has; never any key text.
-  status  Show whether a provider has a credential and of what kind, without revealing it.
-  add     Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
-  link    Use another tool's credentials for a provider without copying them.
-  login   Sign in to a subscription provider: a device code for `openai-codex`, a browser step for `openai-signin`.
-  logout  Sign out of a subscription provider. API keys are removed with `auth remove`.
-  remove  Remove a stored API key. Removing a provider with no key still succeeds.
-  unlink  Drop the link to another tool's credentials; that tool's own credentials are not touched.
-  help    Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help  Print help
-```
-
-#### `gait models`
-
-List the models of the models.dev catalog, optionally filtered by `--filter`.
-
-```text
-List the models of the models.dev catalog, optionally filtered by `--filter`.
-
-Usage: models [OPTIONS]
-
-Options:
-      --filter <filter>  Keep only models whose provider, id or name contains this text (case-insensitive).
-  -h, --help             Print help
-```
-
-### REPL commands
-
-#### `/inference [name|default|show <name>|add <name> <provider/id>]`
-
-List, show, add, select, or clear a named inference
-
-
-#### `/auth [list|status <provider>|link <provider> <source> [--home <path>]|unlink <provider>]`
-
-List, inspect, link, or unlink credentials
-
-
-## Workflows and extensions
+### Workflows and extensions
 
 Workflows run repeatable sequences of prompts and operations. MCP tools and plugins can
 be enabled for a session when they are available in the configured Gait directory.
@@ -423,63 +236,46 @@ node.
 that usage works in every Gait build (see the Skills guide), since skills are not part of
 this extensions capability.
 
-### CLI commands
-
 #### `gait workflow`
-
-Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
 
 ```text
 Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
 
-Usage: workflow [ACTION] [ARGS]...
+Usage: gait workflow [OPTIONS] [ACTION] [ARGS]...
 
 Arguments:
   [ACTION]
+
+
   [ARGS]...
 
-Options:
-  -h, --help  Print help
-```
-
-#### `gait enable`
-
-Switch an extension on in the gait directory's config, for sessions that start later.
-
-```text
-Switch an extension on in the gait directory's config, for sessions that start later.
-
-Usage: enable --id <id> --kind <kind>
 
 Options:
-      --id <id>      The extension name.
-      --kind <kind>  The kind of extension. [possible values: mcp, skill, plugin]
-  -h, --help         Print help (see more with '--help')
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
 ```
 
-#### `gait disable`
+#### REPL commands
 
-Switch an extension off in the gait directory's config.
+- `/workflow <name> [args...]` — Run a workflow
 
-```text
-Switch an extension off in the gait directory's config.
+Commands: `enable`, `disable`
 
-Usage: disable --id <id> --kind <kind>
-
-Options:
-      --id <id>      The extension name.
-      --kind <kind>  The kind of extension. [possible values: mcp, skill, plugin]
-  -h, --help         Print help (see more with '--help')
-```
-
-### REPL commands
-
-#### `/workflow <name> [args...]`
-
-Run a workflow
-
-
-## The REPL
+### The REPL
 
 `gait -i` starts a fresh session (or resumes one with `--session <id>`) and runs
 request by request in one process. The REPL holds no session state of its own; each
@@ -497,7 +293,7 @@ Input syntax, expanded before the message is sent:
 completion attempt and must exit 0 before the turn can complete; a failure feeds back
 into the same turn so the model can fix it. The command is fixed at session start.
 
-## Where things live
+### Where things live
 
 `--gait-dir` and `--codebase` resolve in this order: the explicit flag, then the
 `GAIT_DIR` / `CODEBASE` environment variable, then a `.gaitref` file found by walking
@@ -522,18 +318,17 @@ may help, 70 for an unclassified error; a clap usage error exits 2.
 A session's log is `<gait-dir>/sessions/<id>/log.jsonl`, its in-flight worktree is
 `<gait-dir>/.active/<id>/`, and configuration is `<gait-dir>/gait.jsonc`.
 
-## Skills
+### Skills
 
 Skills are reusable, markdown-based capability files. Register, load, enable, or unload a
 skill with `--kind skill` (see `enable`/`disable`/`register`/`unregister`/`load`/`unload`)
 or the REPL's `/skill` command — this works in every Gait build.
 
-### REPL commands
+#### REPL commands
 
-#### `/skill [load|unload <name>]`
+- `/skill [load|unload <name>]` — List, load, or unload skills/mcp/plugins
 
-List, load, or unload skills/mcp/plugins
-
+## Reference
 
 ### Config fields
 
@@ -682,3 +477,2096 @@ YAML frontmatter, then the markdown body (the skill's instructions; a skill with
 - `description` — Description shown to the model.
 - `model_invocable` — Whether the model may invoke this skill; omitted values default to true.
 - `name` — Required non-empty skill name.
+
+## Commands
+
+### gait sessions
+
+```text
+List the active sessions, most recently updated first.
+
+Usage: gait sessions [OPTIONS]
+
+Options:
+      --last <last>
+          Show only the N most recently updated sessions.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait ps
+
+```text
+Show each mounted session and its live state.
+
+Usage: gait ps [OPTIONS]
+
+Options:
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait stats
+
+```text
+Show a session's token use, split into agent work and compaction.
+
+Usage: gait stats [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The session id.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait log
+
+```text
+Show the outcome of a session's last completed run: its message, checkpoint, and the files and tools it touched.
+
+Usage: gait log [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The session id.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait undo
+
+```text
+Go back to an earlier turn of a session, or list the turns with `--list`.
+
+Usage: gait undo [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The session id.
+
+      --pretty
+          Indent the JSON output.
+
+      --turn <turn>
+          The turn to go back to, as numbered by `--list`. Turn 0 is the state before the first request and restores code only.
+
+      --code
+          Undo the code only.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --transcript
+          Undo the transcript only.
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+      --list
+          List the turns and their checkpoints instead of undoing.
+
+  -h, --help
+          Print help
+```
+
+Access: writes, destructive
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait persist
+
+```text
+Merge a session onto main and remove its worktree, or all idle sessions with `--all --yes`.
+
+Usage: gait persist [OPTIONS]
+
+Options:
+      --id <id>
+          The session id. Give this or `--all`.
+
+      --all
+          Act on every idle session that is not running. Needs `--yes`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --yes
+          Confirm acting on all sessions.
+
+      --dry-run
+          Show what would be acted on and change nothing.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+      --force
+          Needed with `--all` when more than one session would be discarded: discard is unrecoverable and `--yes` alone does not acknowledge it. Ignored by persist.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait discard
+
+```text
+Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
+
+Usage: gait discard [OPTIONS]
+
+Options:
+      --id <id>
+          The session id. Give this or `--all`.
+
+      --all
+          Act on every idle session that is not running. Needs `--yes`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --yes
+          Confirm acting on all sessions.
+
+      --dry-run
+          Show what would be acted on and change nothing.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+      --force
+          Needed with `--all` when more than one session would be discarded: discard is unrecoverable and `--yes` alone does not acknowledge it. Ignored by persist.
+
+  -h, --help
+          Print help
+```
+
+Access: writes, destructive
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait allow
+
+```text
+Approve the permission requests a session is waiting on.
+
+Usage: gait allow [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The session id.
+
+      --pattern <pattern>
+          The tool pattern to approve; without it the pending requests are approved as asked.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --scope <scope>
+          Where the approval is remembered; `once` when not given.
+
+          Possible values:
+          - once:    For this turn only (the default)
+          - session: For the life of the session
+          - global:  Saved to gait.jsonc
+          - mode:    Saved to the active mode's MODE.md
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait deny
+
+```text
+Refuse the permission requests a session is waiting on.
+
+Usage: gait deny [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The session id.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait unlock
+
+```text
+Approve the sandbox unlock requests a session is waiting on.
+
+Usage: gait unlock [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The session id.
+
+      --pretty
+          Indent the JSON output.
+
+      --scope <scope>
+          Where the unlock is remembered; `once` when not given.
+
+          Possible values:
+          - once:    For this turn only, logged but not saved (the default)
+          - session: For the life of the session, logged but not saved
+          - global:  Saved to gait.jsonc
+          - agent:   Saved to the agent file named by `--agent`
+
+      --agent <agent>
+          The agent name for `--scope agent` (the agent file is `agents/<name>/AGENT.md`).
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait reply
+
+```text
+Answer the single clarify or inform question a session is waiting on.
+
+Usage: gait reply [OPTIONS] --id <id> --message <message>
+
+Options:
+      --id <id>
+          The session id.
+
+      --message <message>
+          The answer to the session's single pending question.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+
+### gait auth list
+
+```text
+List the configured providers and what kind of credential each has; never any key text.
+
+Usage: gait auth list [OPTIONS]
+
+Options:
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait auth status
+
+```text
+Show whether a provider has a credential and of what kind, without revealing it.
+
+Usage: gait auth status [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The provider name, for example `openai-codex` or `anthropic`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait auth add
+
+```text
+Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
+
+Usage: gait auth add [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The provider name, for example `openai-codex` or `anthropic`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait auth link
+
+```text
+Use another tool's credentials for a provider without copying them.
+
+Usage: gait auth link [OPTIONS] --id <id> --source <source>
+
+Options:
+      --id <id>
+          The provider name.
+
+      --pretty
+          Indent the JSON output.
+
+      --source <source>
+          The tool whose credentials are used, for example `codex`.
+
+      --compact
+          Print the JSON output on one line.
+
+      --home <home>
+          Override that tool's home directory.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait auth login
+
+```text
+Sign in to a subscription provider: a device code for `openai-codex`, a browser step for `openai-signin`.
+
+Usage: gait auth login [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The provider to sign in to: `openai-codex` (device code) or `openai-signin` (browser).
+
+      --complete <complete>
+          Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes, network
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait auth logout
+
+```text
+Sign out of a subscription provider. API keys are removed with `auth remove`.
+
+Usage: gait auth logout [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The provider to sign out of: `openai-codex` or `openai-signin`.
+
+      --forget
+          For `openai-signin`: also forget its registration.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes, network, destructive
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait auth remove
+
+```text
+Remove a stored API key. Removing a provider with no key still succeeds.
+
+Usage: gait auth remove [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The provider name, for example `openai-codex` or `anthropic`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes, destructive
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait auth unlink
+
+```text
+Drop the link to another tool's credentials; that tool's own credentials are not touched.
+
+Usage: gait auth unlink [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The provider name, for example `openai-codex` or `anthropic`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait models
+
+```text
+List the models of the models.dev catalog, optionally filtered by `--filter`.
+
+Usage: gait models [OPTIONS]
+
+Options:
+      --filter <filter>
+          Keep only models whose provider, id or name contains this text (case-insensitive).
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads, network
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait inference list
+
+```text
+List the named inference profiles with their models.
+
+Usage: gait inference list [OPTIONS]
+
+Options:
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait inference show
+
+```text
+Show one inference profile.
+
+Usage: gait inference show [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The profile name.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait inference add
+
+```text
+Write a new inference profile: a model and the token count at which compaction begins.
+
+Usage: gait inference add [OPTIONS] --id <id> --model <model> --compaction-threshold-tokens <compaction_threshold_tokens>
+
+Options:
+      --id <id>
+          The name of the new profile; an existing one is not overwritten.
+
+      --model <model>
+          The model, in `provider/id` form, for example `opencode/kimi-k2.6`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --compaction-threshold-tokens <compaction_threshold_tokens>
+          Begin compacting the conversation when it reaches this many tokens.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait inference select
+
+```text
+Use an inference profile for a session from its next turn.
+
+Usage: gait inference select [OPTIONS] --id <id> --session <session>
+
+Options:
+      --id <id>
+          The profile to use.
+
+      --pretty
+          Indent the JSON output.
+
+      --session <session>
+          The session that uses it from its next turn.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait inference clear
+
+```text
+Put a session back on the default inference.
+
+Usage: gait inference clear [OPTIONS] --session <session>
+
+Options:
+      --session <session>
+          The session that goes back to the default inference.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait mode list
+
+```text
+List the named modes with their patterns.
+
+Usage: gait mode list [OPTIONS]
+
+Options:
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait mode show
+
+```text
+Show one mode.
+
+Usage: gait mode show [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The mode name.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait mode add
+
+```text
+Write a new mode from allow and deny patterns, steering text and a description.
+
+Usage: gait mode add [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The name of the new mode; an existing one is not overwritten.
+
+      --allow <allow>
+          A tool pattern the mode allows (repeatable).
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --deny <deny>
+          A tool pattern the mode denies (repeatable).
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --steer <steer>
+          Free-form steering text added to the prompt.
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+      --description <description>
+          A one-line description of the mode.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait mode select
+
+```text
+Use a mode for a session from its next turn.
+
+Usage: gait mode select [OPTIONS] --id <id> --session <session>
+
+Options:
+      --id <id>
+          The mode to use.
+
+      --pretty
+          Indent the JSON output.
+
+      --session <session>
+          The session that uses it from its next turn.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait mode clear
+
+```text
+Put a session back on the default mode.
+
+Usage: gait mode clear [OPTIONS] --session <session>
+
+Options:
+      --session <session>
+          The session that goes back to the default mode.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait config get
+
+```text
+Read one config key; a known key that is not set is null, an unknown key is not found.
+
+Usage: gait config get [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The config key, for example `model` or `max_iter`.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait config set
+
+```text
+Set one config key, keeping the file's comments and every other key.
+
+Usage: gait config set [OPTIONS] --id <id> --value <value>
+
+Options:
+      --id <id>
+          The config key, for example `model` or `max_iter`.
+
+      --pretty
+          Indent the JSON output.
+
+      --value <value>
+          The value: JSON (a number, boolean, array or object) or plain text.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait config show
+
+```text
+Show the effective config: defaults and gait.jsonc, with the skills and MCP servers found on disk.
+
+Usage: gait config show [OPTIONS]
+
+Options:
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait daemons list
+
+```text
+List the running background daemons, or all of them with `--all`.
+
+Usage: gait daemons list [OPTIONS]
+
+Options:
+      --all
+          Also list daemons that have finished, not only the running ones.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait daemons stop
+
+```text
+Stop a running daemon by name and record the stop.
+
+Usage: gait daemons stop [OPTIONS] --id <id>
+
+Options:
+      --id <id>
+          The daemon name.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes, destructive
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait register
+
+```text
+Register an MCP server, a skill or a plugin. An MCP server and a skill start disabled.
+
+Usage: gait register [OPTIONS] --id <id> --kind <kind>
+
+Options:
+      --id <id>
+          The extension name.
+
+      --kind <kind>
+          The kind of extension.
+
+          Possible values:
+          - mcp:    A Model Context Protocol server
+          - skill:  A skill: a SKILL.md of instructions
+          - plugin: A WebAssembly plugin
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --url <url>
+          The URL of an MCP server that is already running.
+
+      --command <command>
+          The program that starts an MCP server.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+      --args <args>
+          The arguments for `--command`, as one string split on spaces. Write it as `--args=-y pkg` when it starts with a dash.
+
+      --description <description>
+          A one-line description; required for a skill.
+
+      --content <content>
+          The text of a skill, given inline.
+
+      --path <path>
+          A file to read a skill from.
+
+      --wasm <wasm>
+          The `.wasm` file of a plugin.
+
+      --env <KEY=VALUE>
+          An environment variable for the MCP server, as `KEY=value` (repeatable).
+
+      --scope <scope>
+          Where to register; `global` when not given.
+
+          Possible values:
+          - global:  The gait directory, for every session (the default)
+          - agent:   The agent file named by `--agent`
+          - session: One session's log, named by `--session`
+
+      --agent <agent>
+          The agent file, for `--scope agent`.
+
+      --session <session>
+          The session id, for `--scope session`.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait unregister
+
+```text
+Remove a registered extension.
+
+Usage: gait unregister [OPTIONS] --id <id> --kind <kind>
+
+Options:
+      --id <id>
+          The extension name.
+
+      --kind <kind>
+          The kind of extension.
+
+          Possible values:
+          - mcp:    A Model Context Protocol server
+          - skill:  A skill: a SKILL.md of instructions
+          - plugin: A WebAssembly plugin
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --scope <scope>
+          Where to unregister from; `global` when not given.
+
+          Possible values:
+          - global:  The gait directory, for every session (the default)
+          - agent:   The agent file named by `--agent`
+          - session: One session's log, named by `--session`
+
+      --agent <agent>
+          The agent file, for `--scope agent`.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+      --session <session>
+          The session id, for `--scope session`.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes, destructive
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait enable
+
+```text
+Switch an extension on in the gait directory's config, for sessions that start later.
+
+Usage: gait enable [OPTIONS] --id <id> --kind <kind>
+
+Options:
+      --id <id>
+          The extension name.
+
+      --kind <kind>
+          The kind of extension.
+
+          Possible values:
+          - mcp:    A Model Context Protocol server
+          - skill:  A skill: a SKILL.md of instructions
+          - plugin: A WebAssembly plugin
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait disable
+
+```text
+Switch an extension off in the gait directory's config.
+
+Usage: gait disable [OPTIONS] --id <id> --kind <kind>
+
+Options:
+      --id <id>
+          The extension name.
+
+      --kind <kind>
+          The kind of extension.
+
+          Possible values:
+          - mcp:    A Model Context Protocol server
+          - skill:  A skill: a SKILL.md of instructions
+          - plugin: A WebAssembly plugin
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait load
+
+```text
+Load an extension into one session from its next turn.
+
+Usage: gait load [OPTIONS] --id <id> --kind <kind> --session <session>
+
+Options:
+      --id <id>
+          The extension name.
+
+      --kind <kind>
+          The kind of extension.
+
+          Possible values:
+          - mcp:    A Model Context Protocol server
+          - skill:  A skill: a SKILL.md of instructions
+          - plugin: A WebAssembly plugin
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --session <session>
+          The session id. A session with a turn running refuses the change.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait unload
+
+```text
+Unload an extension from one session.
+
+Usage: gait unload [OPTIONS] --id <id> --kind <kind> --session <session>
+
+Options:
+      --id <id>
+          The extension name.
+
+      --kind <kind>
+          The kind of extension.
+
+          Possible values:
+          - mcp:    A Model Context Protocol server
+          - skill:  A skill: a SKILL.md of instructions
+          - plugin: A WebAssembly plugin
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --session <session>
+          The session id. A session with a turn running refuses the change.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait init
+
+```text
+Create a gait directory at `--gait-dir`: config, a default agent, skills and sessions, as a git repository.
+
+Usage: gait init [OPTIONS]
+
+Options:
+      --force
+          Create the gait directory even if it would lie inside a codebase's git repository. Running it then also needs `--allow-intree`, since the agent could write to its own config.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait link
+
+```text
+Point the current directory at the gait directory `--gait-dir` by writing a `.gaitref` file.
+
+Usage: gait link [OPTIONS]
+
+Options:
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait manual show
+
+```text
+Print the manual: guides, reference and every command, as Markdown, or with `--json` as descriptors.
+
+Usage: gait manual show [OPTIONS]
+
+Options:
+      --json
+          Return every operation's descriptor, schema, exit codes and error codes as JSON instead of the Markdown manual.
+
+      --pretty
+          Indent the JSON output.
+
+      --text
+          Print the text form instead of JSON.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: reads
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+### gait manual install
+
+```text
+Write the manual to `skills/gait-manual/SKILL.md` in the gait directory, for agents to read.
+
+Usage: gait manual install [OPTIONS]
+
+Options:
+      --force
+          Replace an existing generated manual.
+
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+Access: writes
+
+| Code | Class | Exit |
+|---|---|---|
+| gait.op.not_found | logical | 65 |
+| gait.op.conflict | logical | 65 |
+| gait.op.session_busy | transient | 75 |
+| gait.op.confirmation_required | logical | 65 |
+| gait.op.invalid | logical | 65 |
+| gait.cli.usage | logical | 65 |
+| gait.cli.invalid_input | logical | 65 |
+| gait.cli.not_found | logical | 65 |
+| gait.cli.failed | infrastructure | 69 |
+
+## Library codes
+
+| Code | Class | Exit |
+|---|---|---|
+| op_registry.usage.missing | logical | 2 |
+| op_registry.usage.invalid | logical | 2 |
+| op_registry.usage.unknown_key | logical | 2 |
+| op_registry.usage.repeated_key | logical | 2 |
+| op_registry.usage.one_of | logical | 2 |
+| op_registry.usage.requires_if | logical | 2 |
+| op_registry.usage.stdin_twice | logical | 2 |
+| op_registry.cli.unknown_command | logical | 2 |
+| op_registry.call.unknown_operation | logical | 65 |
+| op_registry.call.wrong_shape | logical | 65 |
+| op_registry.call.outside_audience | logical | 65 |
+| op_registry.call.wrong_path | logical | 65 |

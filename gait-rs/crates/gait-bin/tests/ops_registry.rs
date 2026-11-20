@@ -134,6 +134,7 @@ mod session_ops {
         let dir = tempfile::tempdir().unwrap();
         let init = std::process::Command::new(env!("CARGO_BIN_EXE_gait"))
             .arg("init")
+            .arg("--gait-dir")
             .arg(dir.path())
             .output()
             .unwrap();
@@ -193,4 +194,25 @@ mod session_ops {
         }
         assert!(registry.get("stop").is_none());
     }
+}
+
+/// `init` and `link` are `local:` ops: they run through the registry with no connection,
+/// no daemon and no resolvable gait-dir beforehand.
+#[test]
+#[serial]
+fn assert_local_ops_offline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("ws");
+    let d = dir.to_str().unwrap();
+    let cwd = tmp.path().join("cwd");
+    std::fs::create_dir(&cwd).unwrap();
+    let (code, _out, err) = run(&["gait", "init", "--gait-dir", d]);
+    assert_eq!(code, 0, "{err}");
+    assert!(dir.join(".git").exists());
+    let before = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&cwd).unwrap();
+    let (code, _out, err) = run(&["gait", "link", "--gait-dir", d]);
+    std::env::set_current_dir(before).unwrap();
+    assert_eq!(code, 0, "{err}");
+    assert!(cwd.join(".gaitref").exists());
 }

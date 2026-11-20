@@ -24,7 +24,7 @@ fn gait() -> Command {
 fn workspace() -> (tempfile::TempDir, tempfile::TempDir) {
     let dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
-    let init = gait().arg("init").arg(dir.path()).output().unwrap();
+    let init = gait().args(["init", "--gait-dir"]).arg(dir.path()).output().unwrap();
     assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
     (dir, cwd)
 }

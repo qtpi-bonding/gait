@@ -91,7 +91,7 @@ pub struct RunArgs {
     /// Override the in-tree safety guard (design §7 / Task 5): run even though
     /// the gait-dir is inside the codebase. Running such a workspace lets the
     /// agent write to its own config/permissions/audit log — prefer moving the
-    /// workspace out of tree (`gait init ~/gait-home && gait link ~/gait-home`).
+    /// workspace out of tree (`gait init --gait-dir ~/gait-home && gait link --gait-dir ~/gait-home`).
     #[arg(long = "allow-intree")]
     pub allow_intree: bool,
     // Consumed by caller (args.rs); included to prevent "unexpected argument" errors.

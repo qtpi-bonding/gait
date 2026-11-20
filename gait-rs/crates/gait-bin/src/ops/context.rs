@@ -25,6 +25,12 @@ pub struct GaitContext {
 }
 
 impl GaitContext {
+    /// The `--gait-dir` flag (or `$GAIT_DIR`) as given, without resolving it:
+    /// the directory `init` and `link` act on.
+    pub fn gait_dir_flag(&self) -> Option<&Path> {
+        self.gait_dir_flag.as_deref()
+    }
+
     /// The gait directory: the flag (which also carries `$GAIT_DIR`), else the
     /// `.gaitref` / `.gait/` walk-up from the current directory.
     pub fn gait_dir(&self) -> anyhow::Result<PathBuf> {
