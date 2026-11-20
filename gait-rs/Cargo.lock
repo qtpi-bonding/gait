@@ -1792,9 +1792,11 @@ dependencies = [
  "gait-types",
  "gait-workflow",
  "git2",
+ "op-registry",
  "pbjson-types",
  "prost 0.13.5",
  "schemars 0.8.22",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3508,6 +3510,33 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "op-registry"
+version = "0.3.0"
+source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=65b4f42d0c867d5a392bb6bb78da3f26efc2623a#65b4f42d0c867d5a392bb6bb78da3f26efc2623a"
+dependencies = [
+ "anyhow",
+ "clap",
+ "coded-error",
+ "futures-util",
+ "op-registry-derive",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "op-registry-derive"
+version = "0.3.0"
+source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=65b4f42d0c867d5a392bb6bb78da3f26efc2623a#65b4f42d0c867d5a392bb6bb78da3f26efc2623a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "openssl-probe"

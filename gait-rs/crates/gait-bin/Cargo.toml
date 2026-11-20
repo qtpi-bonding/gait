@@ -29,12 +29,17 @@ default = ["full"]
 full = [
     "workflow", "rich-tui", "telemetry",
     "gait-core/mcp", "gait-core/code-mode",
+    "schema", "secrets",
 ]
 # `gait-min`'s composition: no rich-TUI renderer, no `gait-workflow`
 # dependency, no gait-core MCP/code-mode. Empty by design — Min's behavior
 # comes from what is *not* enabled elsewhere, not from anything this feature
 # itself turns on.
 min = []
+# Output JSON schemas (schemars 1, a different major from the workspace's
+# schemars 0.8) and `SecretFile`. Full `gait` only; `gait-min` stays without.
+schema = ["op-registry/schema", "dep:schemars_v1"]
+secrets = ["op-registry/secrets"]
 telemetry = ["dep:concord-telemetry", "dep:tracing", "gait-core/telemetry"]
 # `gait workflow` / REPL `/workflow` (real YAML DAG runs). Forwards into
 # `gait-cli`'s and `gait-repl`'s own `workflow` features, which gate
@@ -62,6 +67,8 @@ gait-llama-cpp = { path = "../gait-llama-cpp", optional = true }
 gait-workflow = { path = "../gait-workflow", optional = true }
 gait-repl = { path = "../gait-repl", default-features = false }
 gait-cli = { path = "../gait-cli", default-features = false }
+op-registry = { workspace = true }
+schemars_v1 = { package = "schemars", version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
