@@ -68,10 +68,16 @@ async fn run(raw: Vec<String>) -> ExitCode {
     }
     use clap::CommandFactory;
     let verbs = gait_bin::interim::verbs(&Cli::command());
-    match gait_bin::interim::route(&raw, &verbs) {
+    let registry = gait_bin::ops::registry();
+    let registry_verbs = gait_bin::interim::registry_verbs(&registry);
+    if gait_bin::interim::is_root_help(&raw) {
+        println!("{}", gait_bin::cli().render_help());
+        return ExitCode::SUCCESS;
+    }
+    match gait_bin::interim::route(&raw, &verbs, &registry_verbs) {
         gait_bin::interim::Route::Registry => {
             let argv = raw.iter().map(std::ffi::OsString::from).collect();
-            op_registry::cli::run(&gait_bin::ops::registry(), argv, &gait_bin::ops::GaitHooks).await
+            op_registry::cli::run(&registry, argv, &gait_bin::ops::GaitHooks).await
         }
         gait_bin::interim::Route::NearMiss(detail) => {
             ExitCode::from(gait_bin::interim::near_miss_exit(detail))
@@ -133,18 +139,6 @@ async fn run_cli(raw: Vec<String>) -> ExitCode {
         }
         Commands::Init(args) => gait_bin::finish_unit(gait_cli::cli::init::cmd_init(args)),
         Commands::Link(args) => gait_bin::finish_unit(gait_cli::cli::link::cmd_link(args)),
-        Commands::Sessions(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_sessions(args)),
-        Commands::Ps(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_ps(args)),
-        Commands::Stop(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_stop(args)),
-        Commands::Persist(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_persist(args)),
-        Commands::Discard(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_discard(args)),
-        Commands::Undo(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_undo(args)),
-        Commands::Stats(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_stats(args)),
-        Commands::Log(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_log(args)),
-        Commands::Allow(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_allow(args)),
-        Commands::Deny(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_deny(args)),
-        Commands::Unlock(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_unlock(args)),
-        Commands::Reply(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_reply(args)),
         Commands::Config(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_config(args)),
         Commands::Register(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_register(*args)),
         Commands::Unregister(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_unregister(*args)),

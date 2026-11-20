@@ -16,8 +16,7 @@ use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
 use gait_cli::cli::link::LinkArgs;
 use gait_cli::cli::session::{
-    AllowArgs, DenyArgs, DiscardArgs, LoadArgs, LogArgs, PersistArgs, PsArgs, ReplyArgs,
-    SessionsArgs, StatsArgs, StopArgs, UndoArgs, UnloadArgs, UnlockArgs,
+    LoadArgs, UnloadArgs,
 };
 #[cfg(feature = "workflow")]
 use gait_cli::cli::workflow::WorkflowArgs;
@@ -103,18 +102,6 @@ pub enum Commands {
     Manual(manual::ManualArgs),
     Init(InitArgs),
     Link(LinkArgs),
-    Sessions(SessionsArgs),
-    Ps(PsArgs),
-    Stop(StopArgs),
-    Persist(PersistArgs),
-    Discard(DiscardArgs),
-    Undo(UndoArgs),
-    Stats(StatsArgs),
-    Log(LogArgs),
-    Allow(AllowArgs),
-    Deny(DenyArgs),
-    Unlock(UnlockArgs),
-    Reply(ReplyArgs),
     Config(ConfigArgs),
 
     Register(Box<RegisterArgs>),
@@ -135,7 +122,7 @@ pub enum Commands {
 }
 
 pub fn cli() -> clap::Command {
-    Cli::command()
+    interim::with_registry_commands(Cli::command(), &ops::registry())
 }
 
 /// Record the error (code, class, fingerprint, never the text) unless the turn that

@@ -1,7 +1,6 @@
-//! End-to-end test for `gait reply` (crates/gait-cli/src/cli/session.rs::cmd_reply),
-//! spawned as a subprocess since cmd_reply calls std::process::exit and eprintln
-//! (Wall 1 boundary — gait-ops itself never does either). Follows the same
-//! subprocess-spawn convention as run_tool_hand.rs in this same tests/ dir.
+//! End-to-end test for `gait reply` (the `reply` op in src/ops/session.rs),
+//! spawned as a subprocess. Follows the same subprocess-spawn convention as
+//! run_tool_hand.rs in this same tests/ dir.
 use std::path::Path;
 
 fn make_session(ws: &Path, id: &str) -> std::path::PathBuf {
@@ -31,7 +30,7 @@ fn cmd_reply_answers_pending_clarify_via_subprocess() {
     );
     let exe = env!("CARGO_BIN_EXE_gait");
     let output = std::process::Command::new(exe)
-        .args(["reply", "scli02", "postgres", "--gait-dir"])
+        .args(["reply", "--id", "scli02", "--message", "postgres", "--gait-dir"])
         .arg(ws.path())
         .output()
         .unwrap();
@@ -39,6 +38,12 @@ fn cmd_reply_answers_pending_clarify_via_subprocess() {
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"sessionId": "scli02", "kind": "clarify", "id": "c1"})
     );
     let state = gait_state::session::log::session_state(&tx).unwrap();
     assert!(matches!(
@@ -53,10 +58,23 @@ fn cmd_reply_errors_when_nothing_pending_via_subprocess() {
     let _tx = make_session(ws.path(), "scli03");
     let exe = env!("CARGO_BIN_EXE_gait");
     let output = std::process::Command::new(exe)
-        .args(["reply", "scli03", "postgres", "--gait-dir"])
+        .args(["reply", "--id", "scli03", "--message", "postgres", "--gait-dir"])
         .arg(ws.path())
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(65));
     assert!(String::from_utf8_lossy(&output.stderr).contains("no pending"));
+}
+
+#[test]
+fn reply_without_a_message_is_a_usage_error() {
+    let ws = tempfile::TempDir::new().unwrap();
+    let _tx = make_session(ws.path(), "scli04");
+    let exe = env!("CARGO_BIN_EXE_gait");
+    let output = std::process::Command::new(exe)
+        .args(["reply", "--id", "scli04", "--gait-dir"])
+        .arg(ws.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", String::from_utf8_lossy(&output.stderr));
 }

@@ -99,7 +99,7 @@ guides:
       `availability_risk`) that tripped is recorded in the session log's
       `ClassifyDecision` event, not in the model-facing text.
 
-      `gait allow <session-id> --pattern <pattern> --scope <global|mode|session|once>`
+      `gait allow --id <session-id> --pattern <pattern> --scope <global|mode|session|once>`
       answers a pending permission gate. `--scope mode` persists to the
       session's *currently active* mode's `MODE.md` — it errors if no mode
       is active (there is nowhere to write to). `--scope global` persists to

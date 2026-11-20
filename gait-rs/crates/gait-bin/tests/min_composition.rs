@@ -10,9 +10,7 @@
 //! `[[bin]]` has `required-features = ["min"]`).
 #![cfg(feature = "min")]
 
-use clap::CommandFactory;
 use gait_bin::manual::{render_manual, ManualFlavor, ManualInput};
-use gait_bin::min_cli::MinCli;
 use gait_repl::plain::MIN_REPL_COMMANDS;
 
 fn run_gait_min(arg: &str) -> String {
@@ -93,7 +91,7 @@ fn min_manual_help_excludes_install() {
 fn min_manual_omits_workflows_and_extensions() {
     let rendered = render_manual(ManualInput {
         program_name: "gait-min",
-        cli: MinCli::command(),
+        cli: gait_bin::min_cli::cli(),
         repl_commands: MIN_REPL_COMMANDS,
         flavor: ManualFlavor::Min,
     })

@@ -52,7 +52,7 @@ fn missing_session_exits_65() {
     let init = gait().arg("init").arg(workspace.path()).status().unwrap();
     assert!(init.success());
     let status = gait()
-        .args(["allow", "nosuch", "--gait-dir"])
+        .args(["allow", "--id", "nosuch", "--gait-dir"])
         .arg(workspace.path())
         .status()
         .unwrap();
@@ -79,27 +79,27 @@ fn assert_not_found(args: &[&str]) {
 
 #[test]
 fn stats_unknown_session_is_not_found() {
-    assert_not_found(&["stats", "nosuch"]);
+    assert_not_found(&["stats", "--id", "nosuch"]);
 }
 
 #[test]
 fn log_unknown_session_is_not_found() {
-    assert_not_found(&["log", "nosuch"]);
+    assert_not_found(&["log", "--id", "nosuch"]);
 }
 
 #[test]
 fn undo_list_unknown_session_is_not_found() {
-    assert_not_found(&["undo", "nosuch", "--list"]);
+    assert_not_found(&["undo", "--id", "nosuch", "--list"]);
 }
 
 #[test]
 fn discard_unknown_session_is_not_found() {
-    assert_not_found(&["discard", "nosuch", "--yes"]);
+    assert_not_found(&["discard", "--id", "nosuch"]);
 }
 
 #[test]
 fn persist_unknown_session_is_not_found() {
-    assert_not_found(&["persist", "nosuch", "--yes"]);
+    assert_not_found(&["persist", "--id", "nosuch"]);
 }
 
 #[test]
@@ -129,10 +129,80 @@ fn daemons_stop_unknown_is_not_found() {
 
 #[test]
 fn reply_unknown_session_is_not_found() {
-    assert_not_found(&["reply", "nosuch", "hi"]);
+    assert_not_found(&["reply", "--id", "nosuch", "--message", "hi"]);
 }
 
 #[test]
 fn load_skill_into_unknown_session_is_not_found() {
     assert_not_found(&["load", "skill", "x", "nosuch"]);
+}
+
+fn assert_usage(args: &[&str]) {
+    let workspace = tempfile::TempDir::new().unwrap();
+    let init = gait().arg("init").arg(workspace.path()).status().unwrap();
+    assert!(init.success());
+    let output = gait()
+        .arg(args[0])
+        .arg("--gait-dir")
+        .arg(workspace.path())
+        .args(&args[1..])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{args:?}: stderr: {stderr}");
+    let last = stderr.lines().last().unwrap_or("");
+    let value: serde_json::Value = serde_json::from_str(last).expect("the error is a JSON line");
+    assert!(value["error"]["code"].is_string(), "{last}");
+}
+
+#[test]
+fn a_session_op_without_its_id_is_a_usage_error() {
+    for verb in ["stats", "log", "undo", "allow", "deny", "unlock"] {
+        assert_usage(&[verb]);
+    }
+    assert_usage(&["reply", "--message", "hi"]);
+}
+
+#[test]
+fn persist_and_discard_need_exactly_one_of_id_and_all() {
+    for verb in ["persist", "discard"] {
+        assert_usage(&[verb]);
+        assert_usage(&[verb, "--id", "x", "--all", "--yes"]);
+    }
+}
+
+#[test]
+fn bulk_persist_and_discard_need_yes() {
+    for verb in ["persist", "discard"] {
+        assert_usage(&[verb, "--all"]);
+    }
+}
+
+#[test]
+fn bulk_on_an_empty_workspace_is_an_empty_result() {
+    let workspace = tempfile::TempDir::new().unwrap();
+    assert!(gait().arg("init").arg(workspace.path()).status().unwrap().success());
+    for verb in ["persist", "discard"] {
+        let output = gait()
+            .arg(verb)
+            .arg("--gait-dir")
+            .arg(workspace.path())
+            .args(["--all", "--yes"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{verb}: {}", String::from_utf8_lossy(&output.stderr));
+        let value: serde_json::Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+        assert_eq!(value["acted"], serde_json::json!([]), "{verb}: {value}");
+        assert_eq!(value["eligible"], serde_json::json!([]), "{verb}: {value}");
+    }
+}
+
+#[test]
+fn a_bad_allow_scope_is_a_usage_error() {
+    // `agent` was retired for `allow`; it is not one of its values any more.
+    for scope in ["agent", "everywhere"] {
+        assert_usage(&["allow", "--id", "x", "--scope", scope]);
+    }
+    assert_usage(&["unlock", "--id", "x", "--scope", "everywhere"]);
 }

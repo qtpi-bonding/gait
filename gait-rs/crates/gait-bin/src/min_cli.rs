@@ -20,8 +20,7 @@ use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
 use gait_cli::cli::link::LinkArgs;
 use gait_cli::cli::session::{
-    AllowArgs, DenyArgs, DiscardArgs, LoadArgs, LogArgs, PersistArgs, PsArgs, ReplyArgs,
-    SessionsArgs, StatsArgs, StopArgs, UndoArgs, UnloadArgs, UnlockArgs,
+    LoadArgs, UnloadArgs,
 };
 
 use crate::manual;
@@ -98,18 +97,6 @@ pub enum MinCommands {
     Manual(manual::MinManualArgs),
     Init(InitArgs),
     Link(LinkArgs),
-    Sessions(SessionsArgs),
-    Ps(PsArgs),
-    Stop(StopArgs),
-    Persist(PersistArgs),
-    Discard(DiscardArgs),
-    Undo(UndoArgs),
-    Stats(StatsArgs),
-    Log(LogArgs),
-    Allow(AllowArgs),
-    Deny(DenyArgs),
-    Unlock(UnlockArgs),
-    Reply(ReplyArgs),
     Config(ConfigArgs),
 
     Register(Box<RegisterArgs>),
@@ -126,5 +113,5 @@ pub enum MinCommands {
 }
 
 pub fn cli() -> clap::Command {
-    MinCli::command()
+    crate::interim::with_registry_commands(MinCli::command(), &crate::ops::min_registry())
 }

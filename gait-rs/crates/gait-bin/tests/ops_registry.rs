@@ -121,3 +121,76 @@ fn resolver_gives_the_apps_not_found_for_missing_objects() {
         .expect_err("unknown kind");
     assert!(format!("{err:#}").contains("widget"));
 }
+
+// ---- session ops (Task 6) ----
+
+mod session_ops {
+    use super::*;
+    use gait_bin::ops::decl::ops;
+    use gait_bin::ops::session::{SessionId, SessionsParams};
+    use op_registry::CallOptions;
+
+    fn gait_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new(env!("CARGO_BIN_EXE_gait"))
+            .arg("init")
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        dir
+    }
+
+    fn ctx(dir: &Path) -> GaitContext {
+        let globals = Globals { gait_dir: Some(dir.to_path_buf()), agent_dir: None };
+        <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap()
+    }
+
+    #[test]
+    fn sessions_is_a_bare_array_of_camel_case_rows() {
+        let dir = gait_dir();
+        let rows = futures_executor_block(registry().call_typed::<ops::Sessions>(
+            &ctx(dir.path()),
+            SessionsParams { last: Some(3) },
+            CallOptions::default(),
+        ))
+        .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn stats_of_an_unknown_session_is_not_found() {
+        let dir = gait_dir();
+        let err = futures_executor_block(registry().call_typed::<ops::Stats>(
+            &ctx(dir.path()),
+            SessionId { id: Ref::new("nosuch") },
+            CallOptions::default(),
+        ))
+        .unwrap_err();
+        assert_eq!(not_found_code(&err), "gait.op.not_found", "{err:#}");
+    }
+
+    #[test]
+    fn deny_of_an_unknown_session_is_not_found() {
+        let dir = gait_dir();
+        let err = futures_executor_block(registry().call_typed::<ops::Deny>(
+            &ctx(dir.path()),
+            SessionId { id: Ref::new("nosuch") },
+            CallOptions::default(),
+        ))
+        .unwrap_err();
+        assert_eq!(not_found_code(&err), "gait.op.not_found", "{err:#}");
+    }
+
+    #[test]
+    fn the_session_ops_are_in_the_registry_and_stop_is_not() {
+        let registry = registry();
+        for name in [
+            "sessions", "ps", "stats", "log", "undo", "persist", "discard", "allow", "deny",
+            "unlock", "reply",
+        ] {
+            assert!(registry.get(name).is_some(), "missing op {name}");
+        }
+        assert!(registry.get("stop").is_none());
+    }
+}

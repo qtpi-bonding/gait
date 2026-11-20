@@ -106,10 +106,8 @@ fn flag_values_are_not_verbs() {
 
 #[test]
 fn command_word_runs_the_command() {
-    // Interim: the verbs are still the old positional clap forms until their
-    // port (Task 6 moves this to `stats --id nosuch`).
     let (dir, cwd) = workspace();
-    let out = run(cwd.path(), &["stats", "nosuch", "--gait-dir", dir.path().to_str().unwrap()]);
+    let out = run(cwd.path(), &["stats", "--id", "nosuch", "--gait-dir", dir.path().to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(65), "{}", stderr(&out));
     assert!(stderr(&out).contains("not found"), "{}", stderr(&out));
     assert!(!stderr(&out).contains(NO_INFERENCE), "ran a turn: {}", stderr(&out));

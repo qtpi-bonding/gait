@@ -420,7 +420,7 @@ fn undo_with(
         if do_transcript {
             return Err(coded_error::into_anyhow(OpError::Conflict(
                 "turn 0 (before the first request) restores code only: use \
-                 `gait undo <session> --turn 0 --code` (REPL: /uc 0)"
+                 `gait undo --id <session> --turn 0 --code` (REPL: /uc 0)"
                     .to_string(),
             )));
         }

@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: 442be3ee79908376ef41334add409aa16c0260d36a8740ecac8d3cd658b9ab87
+manual-source-hash: 89047ad0870fbe87b8165f0475417b4d0ab037de338bbbf0c34369a42fd84f82
 ---
 
 # Gait Manual
@@ -73,21 +73,20 @@ Usage: gait [OPTIONS] [TASK]
        gait <COMMAND>
 
 Commands:
+  sessions    List the active sessions, most recently updated first.
+  ps          Show each mounted session and its live state.
+  stats       Show a session's token use, split into agent work and compaction.
+  log         Show the outcome of a session's last completed run: its message, checkpoint, and the files and tools it touched.
+  undo        Go back to an earlier turn of a session, or list the turns with `--list`.
+  persist     Merge a session onto main and remove its worktree, or all idle sessions with `--all --yes`.
+  discard     Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
+  allow       Approve the permission requests a session is waiting on.
+  deny        Refuse the permission requests a session is waiting on.
+  unlock      Approve the sandbox unlock requests a session is waiting on.
+  reply       Answer the single clarify or inform question a session is waiting on.
   manual
   init
   link        Point the current directory at an existing gait workspace
-  sessions
-  ps
-  stop
-  persist
-  discard
-  undo
-  stats
-  log
-  allow
-  deny
-  unlock
-  reply
   config      `gait config <set|get|show> ...` — the general external-CLI equivalent of any REPL slash command that reads or mutates `gait.jsonc`. `set`/`get` call the generic `gait_ops::config::set`/`get` (the comment-safe jsonc mutators); `show` calls the shared `gait_ops::config::resolve` op. gait-dir-wide, not session-scoped. Mirrors `WorkflowArgs`/`cmd_workflow`'s action+rest shape exactly
   register    `gait register mcp|skill|plugin <name> [flags]`
   unregister  `gait unregister mcp|skill|plugin <name>`
@@ -171,14 +170,16 @@ code-only undo (`/uc`) the next message you send carries a one-line note
 
 #### `gait sessions`
 
+List the active sessions, most recently updated first.
+
 ```text
-Usage: sessions [OPTIONS] --gait-dir <GAIT_DIR>
+List the active sessions, most recently updated first.
+
+Usage: sessions [OPTIONS]
 
 Options:
-      --gait-dir <GAIT_DIR>  [env: GAIT_DIR]
-      --pretty
-      --last <LAST>          Show only the N most-recently-updated sessions
-  -h, --help                 Print help
+      --last <last>  Show only the N most recently updated sessions.
+  -h, --help         Print help
 ```
 
 ### REPL commands
@@ -235,7 +236,7 @@ model; the specific axis (`confidentiality_risk`/`integrity_risk`/
 `availability_risk`) that tripped is recorded in the session log's
 `ClassifyDecision` event, not in the model-facing text.
 
-`gait allow <session-id> --pattern <pattern> --scope <global|mode|session|once>`
+`gait allow --id <session-id> --pattern <pattern> --scope <global|mode|session|once>`
 answers a pending permission gate. `--scope mode` persists to the
 session's *currently active* mode's `MODE.md` — it errors if no mode
 is active (there is nowhere to write to). `--scope global` persists to
@@ -246,34 +247,34 @@ write.
 
 #### `gait allow`
 
-```text
-Usage: allow [OPTIONS] --gait-dir <GAIT_DIR> <SESSION_ID>
+Approve the permission requests a session is waiting on.
 
-Arguments:
-  <SESSION_ID>
+```text
+Approve the permission requests a session is waiting on.
+
+Usage: allow [OPTIONS] --id <id>
 
 Options:
-      --pattern <PATTERN>
-      --scope <SCOPE>
-      --gait-dir <GAIT_DIR>  [env: GAIT_DIR]
-      --pretty
-  -h, --help                 Print help
+      --id <id>            The session id.
+      --pattern <pattern>  The tool pattern to approve; without it the pending requests are approved as asked.
+      --scope <scope>      Where the approval is remembered; `once` when not given. [possible values: once, session, global, mode]
+  -h, --help               Print help (see more with '--help')
 ```
 
 #### `gait unlock`
 
-```text
-Usage: unlock [OPTIONS] --gait-dir <GAIT_DIR> <SESSION_ID>
+Approve the sandbox unlock requests a session is waiting on.
 
-Arguments:
-  <SESSION_ID>
+```text
+Approve the sandbox unlock requests a session is waiting on.
+
+Usage: unlock [OPTIONS] --id <id>
 
 Options:
-      --scope <SCOPE>        Grant scope: once (default, log only) | session (log only) | global (→ gait.jsonc) | agent (→ agent file) [default: once]
-      --agent <AGENT>        Agent name for agent-scoped grants (resolves to agents/<name>.md)
-      --gait-dir <GAIT_DIR>  [env: GAIT_DIR]
-      --pretty
-  -h, --help                 Print help
+      --id <id>        The session id.
+      --scope <scope>  Where the unlock is remembered; `once` when not given. [possible values: once, session, global, agent]
+      --agent <agent>  The agent name for `--scope agent` (the agent file is `agents/<name>/AGENT.md`).
+  -h, --help           Print help (see more with '--help')
 ```
 
 #### `gait mode`

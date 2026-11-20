@@ -2,8 +2,22 @@
 //! once. The ops arrive domain by domain; this module holds the context, the
 //! process globals and the hooks they all share, and the turn, which is the
 //! registry's free-text fallback.
+/// Declares an op output struct: serialized in camelCase, with a JSON schema
+/// under the `schema` feature. The doc comments are the schema descriptions.
+macro_rules! output {
+    ($($(#[$meta:meta])* pub struct $name:ident { $($body:tt)* })*) => {$(
+        $(#[$meta])*
+        #[derive(Debug, Clone, serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        #[cfg_attr(feature = "schema", derive(schemars_v1::JsonSchema))]
+        #[cfg_attr(feature = "schema", schemars(crate = "schemars_v1"))]
+        pub struct $name { $($body)* }
+    )*};
+}
+
 mod context;
 mod hooks;
+pub mod session;
 pub mod turn;
 
 pub use context::{GaitContext, Globals};
@@ -13,7 +27,16 @@ pub use turn::Repl;
 /// The `ops!` block. It sits in its own module so `registry()` below can add
 /// the call hook to the registry it generates.
 pub mod decl {
+    use super::session::{
+        AllowParams, BulkParams, PsParams, ReplyParams, SessionId, SessionsParams, UndoParams,
+        UnlockParams,
+    };
+    use super::session::{
+        AllowResult, DenyResult, ProcessItem, ReplyResult, SessionAct, SessionItem, SessionStats,
+        SessionSummary, UndoResult, UnlockResult,
+    };
     use super::{GaitContext, Globals};
+    use gait_ops::OpError;
 
     op_registry::ops! {
         Ctx = GaitContext;
@@ -21,6 +44,50 @@ pub mod decl {
         pillar = "gait";
         bin = "gait"; version = env!("CARGO_PKG_VERSION"); about = "AI coding agent";
         groups = {};
+        /// List the active sessions, most recently updated first.
+        "sessions" => { params: SessionsParams, output: Vec<SessionItem>,
+                        access: reads, audience: owner, op: super::session::sessions,
+                        errors: [OpError] },
+        /// Show each mounted session and its live state.
+        "ps" => { params: PsParams, output: Vec<ProcessItem>,
+                  access: reads, audience: owner, op: super::session::ps,
+                  errors: [OpError] },
+        /// Show a session's token use, split into agent work and compaction.
+        "stats" => { params: SessionId, output: SessionStats,
+                     access: reads, audience: owner, op: super::session::stats,
+                     errors: [OpError] },
+        /// Show the outcome of a session's last completed run: its message, checkpoint, and the files and tools it touched.
+        "log" => { params: SessionId, output: SessionSummary,
+                   access: reads, audience: owner, op: super::session::log,
+                   errors: [OpError] },
+        /// Go back to an earlier turn of a session, or list the turns with `--list`.
+        "undo" => { params: UndoParams, output: UndoResult,
+                    access: [writes, destructive], audience: owner, op: super::session::undo,
+                    errors: [OpError] },
+        /// Merge a session onto main and remove its worktree, or all idle sessions with `--all --yes`.
+        "persist" => { params: BulkParams, output: SessionAct,
+                       access: writes, audience: owner, op: super::session::persist,
+                       errors: [OpError] },
+        /// Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
+        "discard" => { params: BulkParams, output: SessionAct,
+                       access: [writes, destructive], audience: owner, op: super::session::discard,
+                       errors: [OpError] },
+        /// Approve the permission requests a session is waiting on.
+        "allow" => { params: AllowParams, output: AllowResult,
+                     access: writes, audience: owner, op: super::session::allow,
+                     errors: [OpError] },
+        /// Refuse the permission requests a session is waiting on.
+        "deny" => { params: SessionId, output: DenyResult,
+                    access: writes, audience: owner, op: super::session::deny,
+                    errors: [OpError] },
+        /// Approve the sandbox unlock requests a session is waiting on.
+        "unlock" => { params: UnlockParams, output: UnlockResult,
+                      access: writes, audience: owner, op: super::session::unlock,
+                      errors: [OpError] },
+        /// Answer the single clarify or inform question a session is waiting on.
+        "reply" => { params: ReplyParams, output: ReplyResult,
+                     access: writes, audience: owner, op: super::session::reply,
+                     errors: [OpError] },
     }
 }
 

@@ -41,11 +41,17 @@ async fn run(raw: Vec<String>) -> ExitCode {
     // Interim (Task 9 removes it): the old enum keeps the verbs, `--help`
     // and the bare command; the turn is the registry's fallback.
     let verbs = gait_bin::interim::verbs(&MinCli::command());
-    match gait_bin::interim::route(&raw, &verbs) {
+    let registry = gait_bin::ops::min_registry();
+    let registry_verbs = gait_bin::interim::registry_verbs(&registry);
+    if gait_bin::interim::is_root_help(&raw) {
+        println!("{}", gait_bin::min_cli::cli().render_help());
+        return ExitCode::SUCCESS;
+    }
+    match gait_bin::interim::route(&raw, &verbs, &registry_verbs) {
         gait_bin::interim::Route::Registry => {
             let argv = raw.iter().map(std::ffi::OsString::from).collect();
             return op_registry::cli::run(
-                &gait_bin::ops::min_registry(),
+                &registry,
                 argv,
                 &gait_bin::ops::GaitHooks,
             )
@@ -90,7 +96,7 @@ async fn run_cli(raw: Vec<String>) -> ExitCode {
             // `gait manual install`).
             if let Err(e) = gait_bin::manual::print(
                 args,
-                MinCli::command(),
+                gait_bin::min_cli::cli(),
                 gait_repl::plain::MIN_REPL_COMMANDS,
             ) {
                 return gait_bin::report(&anyhow::anyhow!(e));
@@ -99,18 +105,6 @@ async fn run_cli(raw: Vec<String>) -> ExitCode {
         }
         MinCommands::Init(args) => gait_bin::finish_unit(gait_cli::cli::init::cmd_init(args)),
         MinCommands::Link(args) => gait_bin::finish_unit(gait_cli::cli::link::cmd_link(args)),
-        MinCommands::Sessions(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_sessions(args)),
-        MinCommands::Ps(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_ps(args)),
-        MinCommands::Stop(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_stop(args)),
-        MinCommands::Persist(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_persist(args)),
-        MinCommands::Discard(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_discard(args)),
-        MinCommands::Undo(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_undo(args)),
-        MinCommands::Stats(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_stats(args)),
-        MinCommands::Log(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_log(args)),
-        MinCommands::Allow(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_allow(args)),
-        MinCommands::Deny(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_deny(args)),
-        MinCommands::Unlock(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_unlock(args)),
-        MinCommands::Reply(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_reply(args)),
         MinCommands::Config(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_config(args)),
 
         MinCommands::Register(args) => {

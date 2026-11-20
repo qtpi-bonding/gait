@@ -351,8 +351,8 @@ pub async fn run_chat(
         String::new()
     };
     let resume = format!("gait chat --session {}{}", session_id, gait_dir_flag);
-    let persist = format!("gait persist {}{}", session_id, gait_dir_flag);
-    let discard = format!("gait discard {}{}", session_id, gait_dir_flag);
+    let persist = format!("gait persist --id {}{}", session_id, gait_dir_flag);
+    let discard = format!("gait discard --id {}{}", session_id, gait_dir_flag);
     #[allow(clippy::print_stderr)]
     // post-loop, `shared`'s builder is going out of scope; nothing left to synchronize against
     {
