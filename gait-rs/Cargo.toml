@@ -13,12 +13,12 @@ repository = "https://github.com/qtpi-bonding/gait"
 # (gait-local and gait-watch need them off), so a member that wants `anyhow`
 # lists it.
 [workspace.dependencies]
-coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "ffeaf3949230a8883b56c75e7031346a4f28ed4d", default-features = false }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "469bfd014535912ef8e4210b6e2f84ce7c895adf" }
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "de21d22e31baff78eae7d4ca817b87430bff1f81", default-features = false }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "f7b30e2f607624ccc8b375009a018f26f388df76" }
 concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telemetry-proto.git", rev = "4892badae333cfa7ebfdb4f17c76d65bb63612e4" }
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "d031b5e7c1d493fd3f7a06070ce10f9922238e47" }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "d031b5e7c1d493fd3f7a06070ce10f9922238e47" }
-message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "3d404439f1bd0a355265a8d0803a2ac5d860de1e" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "6472e3622a73110bcf3fcb11a946f1890bf232e1" }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "6472e3622a73110bcf3fcb11a946f1890bf232e1" }
+message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "b62397ab1cba659741b6cbfbdc6c57d25f41c26a" }
 
 # Full debug info + macOS's split-debuginfo=unpacked means every one of this
 # workspace's ~57 test binaries pays a real dSYM-generation cost at link time.
