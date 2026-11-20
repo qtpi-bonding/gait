@@ -3,7 +3,7 @@
 # shortens the prompt.
 #
 # Needs `gait` on PATH and a logged-in provider (for example
-# `gait auth link openai-codex codex`). Override the model with
+# `gait auth link --id openai-codex --source codex`). Override the model with
 # GAIT_DEMO_MODEL=<provider>/<model-id> and the location with GAIT_DEMO_DIR.
 
 # /tmp keeps the recorded paths free of any home directory.

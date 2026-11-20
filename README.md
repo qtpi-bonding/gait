@@ -72,7 +72,7 @@ mkdir my-workspace && cd my-workspace
 gait init --gait-dir .gait
 
 # 2. Add an API key
-gait auth add anthropic
+gait auth add --id anthropic
 
 # 3. Run one turn (bare positional task)
 gait "add a health check endpoint to src/server.ts" --gait-dir . --codebase /path/to/your/repo

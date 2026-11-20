@@ -163,8 +163,8 @@ Use them when:
 
 ```bash
 gait inference list
-gait inference show deep
-gait inference select deep --session s1a2b3c4 --gait-dir .
+gait inference show --id deep
+gait inference select --id deep --session s1a2b3c4 --gait-dir .
 gait inference clear --session s1a2b3c4 --gait-dir .
 ```
 
