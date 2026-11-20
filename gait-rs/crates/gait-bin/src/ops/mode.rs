@@ -44,14 +44,14 @@ pub struct ModeListParams {}
 /// A mode that must exist.
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeRef {
-    /// The mode name.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "mode")]
     pub id: Ref,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeAddParams {
-    /// The name of the new mode; an existing one is not overwritten.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "mode", id_only)]
     pub id: Ref,
     /// A tool pattern the mode allows (repeatable).
@@ -60,22 +60,22 @@ pub struct ModeAddParams {
     pub deny: Vec<String>,
     /// Free-form steering text added to the prompt.
     pub steer: Option<String>,
-    /// A one-line description of the mode.
+    /// A one-line description; required when registering a skill.
     pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeSelectParams {
-    /// The mode to use.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "mode")]
     pub id: Ref,
-    /// The session that uses it from its next turn.
+    /// The session id the change applies to.
     pub session: String,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeClearParams {
-    /// The session that goes back to the default mode.
+    /// The session id the change applies to.
     pub session: String,
 }
 

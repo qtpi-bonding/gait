@@ -216,3 +216,192 @@ fn assert_local_ops_offline() {
     assert_eq!(code, 0, "{err}");
     assert!(cwd.join(".gaitref").exists());
 }
+
+// ---- the library's test kit and the help gate (Task 10) ----
+
+mod kit {
+    use super::*;
+    use gait_bin::manual::{manual, ManualFlavor};
+    use op_registry::testing::{self, Casing, Fixture, HelpRules, Mount};
+    use serde_json::json;
+
+    const CANONICAL: &str = include_str!("canonical_ops.txt");
+
+    fn full_manual() -> op_registry::manual::Manual {
+        manual(&registry(), ManualFlavor::Full, gait_repl::repl::commands::COMMANDS)
+            .expect("the manual manifest is valid")
+    }
+
+    /// A fresh gait dir for the fixtures and the context.
+    fn gait_dir() -> (tempfile::TempDir, GaitContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new(env!("CARGO_BIN_EXE_gait"))
+            .arg("init")
+            .arg("--gait-dir")
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let globals = Globals { gait_dir: Some(dir.path().to_path_buf()), agent_dir: None };
+        let ctx = <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap();
+        (dir, ctx)
+    }
+
+    #[test]
+    fn assert_parity() {
+        let no_mounts: [Mount<'_>; 0] = [];
+        testing::assert_parity(&registry(), &no_mounts);
+    }
+
+    #[test]
+    fn assert_help_complete() {
+        let rules = HelpRules {
+            // `daemon` is not banned: gait's `daemons` command is real.
+            banned_words: &["round-", "Task ", "/Users/", "/home/", "gait_ops", "Mirrors"],
+        };
+        let warnings = testing::assert_help_complete(&registry(), &rules);
+        for warning in warnings {
+            eprintln!("help warning: {warning}");
+        }
+    }
+
+    #[test]
+    fn assert_manual_snapshot() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/manual_snapshot.md");
+        testing::assert_manual_snapshot(&registry(), &full_manual(), &path);
+    }
+
+    #[test]
+    fn assert_exit_table() {
+        testing::assert_exit_table(&registry(), &full_manual());
+    }
+
+    #[test]
+    fn assert_error_codes() {
+        let (_dir, ctx) = gait_dir();
+        let fixtures = [
+            Fixture { op: "stats", args: json!({"id": "nosuch"}) },
+            Fixture { op: "log", args: json!({"id": "nosuch"}) },
+            Fixture { op: "inference_show", args: json!({"id": "nosuch"}) },
+            Fixture { op: "mode_show", args: json!({"id": "nosuch"}) },
+            Fixture { op: "daemons_stop", args: json!({"id": "nosuch"}) },
+            Fixture { op: "config_get", args: json!({"id": "nosuch"}) },
+            Fixture { op: "unregister", args: json!({"kind": "mcp", "id": "nosuch"}) },
+            Fixture { op: "enable", args: json!({"kind": "mcp", "id": "nosuch"}) },
+            Fixture { op: "auth_status", args: json!({"id": "nosuch"}) },
+        ];
+        futures_executor_block(testing::assert_error_codes(&registry(), &ctx, &fixtures));
+    }
+
+    /// Runs the ignored test `name` of this file in a child process with stdin closed: `auth add`
+    /// reads its key from stdin, and the kit calls it with sample arguments.
+    fn in_child(name: &str) {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("kit::{name}"), "--ignored", "--nocapture", "--test-threads=1"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{name}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn assert_secrets_not_echoed() {
+        in_child("child_secrets_not_echoed");
+    }
+
+    #[test]
+    #[ignore = "run by assert_secrets_not_echoed in a child process"]
+    fn child_secrets_not_echoed() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_file = dir.path().join("key.pem");
+        std::fs::write(&key_file, "KEYLINE-gait-registry-4417\n").unwrap();
+        let sentinel = testing::SecretSentinel { value: "sk-SENTINEL1234567890", key_file: &key_file };
+        let manual = full_manual();
+        futures_executor_block(testing::assert_secrets_not_echoed(&registry(), Some(&manual), &sentinel));
+    }
+
+    #[test]
+    fn assert_canonical() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/canonical_ops.txt");
+        if std::env::var("UPDATE_SNAPSHOTS").is_ok_and(|v| !v.is_empty() && v != "0") {
+            let reg = registry();
+            let mut names: Vec<&str> = reg.names();
+            names.sort_unstable();
+            std::fs::write(&path, names.join("\n") + "\n").unwrap();
+        }
+        let canonical: Vec<&str> = CANONICAL.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        testing::assert_canonical(&registry(), &canonical);
+    }
+
+    /// Ops whose `--id` names something to create, or whose missing-object answer is a value by
+    /// design (listed in OR-notes-t10.txt). The kit expects `not_found` from every op with an `id`.
+    const NOT_A_LOOKUP: &[&str] = &[
+        "auth_add",        // stores a key under a provider name
+        "auth_link",       // links a provider to an external source
+        "auth_login",      // starts a sign-in
+        "auth_logout",     // signs out of the supported providers only
+        "auth_remove",     // idempotent: removing an absent key is success
+        "auth_unlink",     // idempotent
+        "auth_status",     // an unknown provider is `{"status": null}`
+        "inference_add",   // creates a profile
+        "mode_add",        // creates a mode
+        "config_set",      // sets a key
+        "register",        // creates an extension
+    ];
+
+    #[test]
+    fn assert_unknown_ref_not_found() {
+        in_child("child_unknown_ref_not_found");
+    }
+
+    #[test]
+    #[ignore = "run by assert_unknown_ref_not_found in a child process"]
+    fn child_unknown_ref_not_found() {
+        let (_dir, ctx) = gait_dir();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            futures_executor_block(testing::assert_unknown_ref_not_found(&registry(), &ctx, &[]));
+        }));
+        let Err(payload) = result else { return };
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .unwrap_or_default();
+        let offenders: Vec<&str> = message
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("- "))
+            .filter_map(|l| l.split(':').next())
+            .collect();
+        assert!(!offenders.is_empty(), "unexpected failure: {message}");
+        let unexpected: Vec<&&str> = offenders.iter().filter(|o| !NOT_A_LOOKUP.contains(*o)).collect();
+        assert!(unexpected.is_empty(), "ops that should be not_found: {unexpected:?}\n{message}");
+        let silent: Vec<&&str> = NOT_A_LOOKUP.iter().filter(|o| !offenders.contains(*o)).collect();
+        assert!(silent.is_empty(), "allowlisted ops that now pass; drop them: {silent:?}");
+    }
+
+    #[test]
+    #[serial]
+    fn assert_local_ops_offline_kit() {
+        let (_dir, ctx) = gait_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("ws");
+        let fixtures = [
+            Fixture { op: "init", args: json!({"gaitDir": target}) },
+            Fixture { op: "link", args: json!({"gaitDir": target}) },
+        ];
+        let before = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        futures_executor_block(testing::assert_local_ops_offline(&registry(), &ctx, &fixtures));
+        std::env::set_current_dir(before).unwrap();
+    }
+
+    #[test]
+    fn assert_casing() {
+        testing::assert_casing(&registry(), Casing::Camel);
+    }
+}

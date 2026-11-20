@@ -108,7 +108,7 @@ output! {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionRegisterParams {
-    /// The extension name.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "extension", id_only)]
     pub id: Ref,
     /// The kind of extension.
@@ -120,7 +120,7 @@ pub struct ExtensionRegisterParams {
     pub command: Option<String>,
     /// The arguments for `--command`, as one string split on spaces. Write it as `--args=-y pkg` when it starts with a dash.
     pub args: Option<String>,
-    /// A one-line description; required for a skill.
+    /// A one-line description; required when registering a skill.
     pub description: Option<String>,
     /// The text of a skill, given inline.
     pub content: Option<String>,
@@ -130,35 +130,35 @@ pub struct ExtensionRegisterParams {
     pub wasm: Option<String>,
     /// An environment variable for the MCP server, as `KEY=value` (repeatable).
     pub env: BTreeMap<String, String>,
-    /// Where to register; `global` when not given.
+    /// Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
     #[op(value_enum)]
     pub scope: Option<Scope>,
-    /// The agent file, for `--scope agent`.
+    /// The agent config to change, for `--scope agent`: its name for `unlock`, the path of its `.md` file for `register` and `unregister`.
     pub agent: Option<String>,
-    /// The session id, for `--scope session`.
+    /// The session id the change applies to.
     pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionUnregisterParams {
-    /// The extension name.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "extension", id_only)]
     pub id: Ref,
     /// The kind of extension.
     #[op(value_enum)]
     pub kind: Kind,
-    /// Where to unregister from; `global` when not given.
+    /// Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
     #[op(value_enum)]
     pub scope: Option<Scope>,
-    /// The agent file, for `--scope agent`.
+    /// The agent config to change, for `--scope agent`: its name for `unlock`, the path of its `.md` file for `register` and `unregister`.
     pub agent: Option<String>,
-    /// The session id, for `--scope session`.
+    /// The session id the change applies to.
     pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionToggleParams {
-    /// The extension name.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "extension", id_only)]
     pub id: Ref,
     /// The kind of extension.
@@ -168,13 +168,13 @@ pub struct ExtensionToggleParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionLoadParams {
-    /// The extension name.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "extension", id_only)]
     pub id: Ref,
     /// The kind of extension.
     #[op(value_enum)]
     pub kind: Kind,
-    /// The session id. A session with a turn running refuses the change.
+    /// The session id the change applies to.
     pub session: String,
 }
 

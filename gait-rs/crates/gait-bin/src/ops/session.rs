@@ -172,7 +172,7 @@ output! {
 /// The session every one of these ops acts on.
 #[derive(Debug, Clone, OpParams)]
 pub struct SessionId {
-    /// The session id.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "session", id_only)]
     pub id: Ref,
 }
@@ -188,7 +188,7 @@ pub struct PsParams {}
 
 #[derive(Debug, Clone, OpParams)]
 pub struct UndoParams {
-    /// The session id.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The turn to go back to, as numbered by `--list`. Turn 0 is the state before the first request and restores code only.
@@ -204,15 +204,15 @@ pub struct UndoParams {
 /// `persist` and `discard` act on one session or on all idle ones.
 #[derive(Debug, Clone, OpParams)]
 pub struct BulkParams {
-    /// The session id. Give this or `--all`.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     pub id: Option<String>,
-    /// Act on every idle session that is not running. Needs `--yes`.
+    /// Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
     pub all: bool,
     /// Confirm acting on all sessions.
     pub yes: bool,
     /// Show what would be acted on and change nothing.
     pub dry_run: bool,
-    /// Needed with `--all` when more than one session would be discarded: discard is unrecoverable and `--yes` alone does not acknowledge it. Ignored by persist.
+    /// Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
     pub force: bool,
 }
 
@@ -231,12 +231,12 @@ pub enum AllowScope {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct AllowParams {
-    /// The session id.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The tool pattern to approve; without it the pending requests are approved as asked.
     pub pattern: Option<String>,
-    /// Where the approval is remembered; `once` when not given.
+    /// Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
     #[op(value_enum)]
     pub scope: Option<AllowScope>,
 }
@@ -256,19 +256,19 @@ pub enum UnlockScope {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct UnlockParams {
-    /// The session id.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "session", id_only)]
     pub id: Ref,
-    /// Where the unlock is remembered; `once` when not given.
+    /// Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
     #[op(value_enum)]
     pub scope: Option<UnlockScope>,
-    /// The agent name for `--scope agent` (the agent file is `agents/<name>/AGENT.md`).
+    /// The agent config to change, for `--scope agent`: its name for `unlock`, the path of its `.md` file for `register` and `unregister`.
     pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ReplyParams {
-    /// The session id.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The answer to the session's single pending question.

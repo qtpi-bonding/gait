@@ -245,10 +245,10 @@ Usage: gait workflow [OPTIONS] [ACTION] [ARGS]...
 
 Arguments:
   [ACTION]
-
+          What to do: list, run, continue, log, abort or validate.
 
   [ARGS]...
-
+          The workflow id or file and any options the action takes.
 
 Options:
       --pretty
@@ -564,7 +564,7 @@ Usage: gait stats [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The session id.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -603,7 +603,7 @@ Usage: gait log [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The session id.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -642,7 +642,7 @@ Usage: gait undo [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The session id.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -693,10 +693,10 @@ Usage: gait persist [OPTIONS]
 
 Options:
       --id <id>
-          The session id. Give this or `--all`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --all
-          Act on every idle session that is not running. Needs `--yes`.
+          Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
 
       --pretty
           Indent the JSON output.
@@ -719,7 +719,7 @@ Options:
           Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
 
       --force
-          Needed with `--all` when more than one session would be discarded: discard is unrecoverable and `--yes` alone does not acknowledge it. Ignored by persist.
+          Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
 
   -h, --help
           Print help
@@ -744,10 +744,10 @@ Usage: gait discard [OPTIONS]
 
 Options:
       --id <id>
-          The session id. Give this or `--all`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --all
-          Act on every idle session that is not running. Needs `--yes`.
+          Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
 
       --pretty
           Indent the JSON output.
@@ -770,7 +770,7 @@ Options:
           Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
 
       --force
-          Needed with `--all` when more than one session would be discarded: discard is unrecoverable and `--yes` alone does not acknowledge it. Ignored by persist.
+          Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
 
   -h, --help
           Print help
@@ -795,7 +795,7 @@ Usage: gait allow [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The session id.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pattern <pattern>
           The tool pattern to approve; without it the pending requests are approved as asked.
@@ -807,7 +807,7 @@ Options:
           Print the JSON output on one line.
 
       --scope <scope>
-          Where the approval is remembered; `once` when not given.
+          Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
 
           Possible values:
           - once:    For this turn only (the default)
@@ -846,7 +846,7 @@ Usage: gait deny [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The session id.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -885,13 +885,13 @@ Usage: gait unlock [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The session id.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
 
       --scope <scope>
-          Where the unlock is remembered; `once` when not given.
+          Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
 
           Possible values:
           - once:    For this turn only, logged but not saved (the default)
@@ -900,7 +900,7 @@ Options:
           - agent:   Saved to the agent file named by `--agent`
 
       --agent <agent>
-          The agent name for `--scope agent` (the agent file is `agents/<name>/AGENT.md`).
+          The agent config to change, for `--scope agent`: its name for `unlock`, the path of its `.md` file for `register` and `unregister`.
 
       --compact
           Print the JSON output on one line.
@@ -936,7 +936,7 @@ Usage: gait reply [OPTIONS] --id <id> --message <message>
 
 Options:
       --id <id>
-          The session id.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --message <message>
           The answer to the session's single pending question.
@@ -1018,7 +1018,7 @@ Usage: gait auth status [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The provider name, for example `openai-codex` or `anthropic`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1061,7 +1061,7 @@ Usage: gait auth add [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The provider name, for example `openai-codex` or `anthropic`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1104,7 +1104,7 @@ Usage: gait auth link [OPTIONS] --id <id> --source <source>
 
 Options:
       --id <id>
-          The provider name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1153,7 +1153,7 @@ Usage: gait auth login [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The provider to sign in to: `openai-codex` (device code) or `openai-signin` (browser).
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --complete <complete>
           Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
@@ -1199,7 +1199,7 @@ Usage: gait auth logout [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The provider to sign out of: `openai-codex` or `openai-signin`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --forget
           For `openai-signin`: also forget its registration.
@@ -1245,7 +1245,7 @@ Usage: gait auth remove [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The provider name, for example `openai-codex` or `anthropic`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1288,7 +1288,7 @@ Usage: gait auth unlink [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The provider name, for example `openai-codex` or `anthropic`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1409,7 +1409,7 @@ Usage: gait inference show [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The profile name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1452,7 +1452,7 @@ Usage: gait inference add [OPTIONS] --id <id> --model <model> --compaction-thres
 
 Options:
       --id <id>
-          The name of the new profile; an existing one is not overwritten.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --model <model>
           The model, in `provider/id` form, for example `opencode/kimi-k2.6`.
@@ -1501,13 +1501,13 @@ Usage: gait inference select [OPTIONS] --id <id> --session <session>
 
 Options:
       --id <id>
-          The profile to use.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
 
       --session <session>
-          The session that uses it from its next turn.
+          The session id the change applies to.
 
       --compact
           Print the JSON output on one line.
@@ -1547,7 +1547,7 @@ Usage: gait inference clear [OPTIONS] --session <session>
 
 Options:
       --session <session>
-          The session that goes back to the default inference.
+          The session id the change applies to.
 
       --pretty
           Indent the JSON output.
@@ -1630,7 +1630,7 @@ Usage: gait mode show [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The mode name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1673,7 +1673,7 @@ Usage: gait mode add [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The name of the new mode; an existing one is not overwritten.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --allow <allow>
           A tool pattern the mode allows (repeatable).
@@ -1699,7 +1699,7 @@ Options:
           Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
 
       --description <description>
-          A one-line description of the mode.
+          A one-line description; required when registering a skill.
 
   -h, --help
           Print help
@@ -1728,13 +1728,13 @@ Usage: gait mode select [OPTIONS] --id <id> --session <session>
 
 Options:
       --id <id>
-          The mode to use.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
 
       --session <session>
-          The session that uses it from its next turn.
+          The session id the change applies to.
 
       --compact
           Print the JSON output on one line.
@@ -1774,7 +1774,7 @@ Usage: gait mode clear [OPTIONS] --session <session>
 
 Options:
       --session <session>
-          The session that goes back to the default mode.
+          The session id the change applies to.
 
       --pretty
           Indent the JSON output.
@@ -1817,7 +1817,7 @@ Usage: gait config get [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The config key, for example `model` or `max_iter`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1860,7 +1860,7 @@ Usage: gait config set [OPTIONS] --id <id> --value <value>
 
 Options:
       --id <id>
-          The config key, for example `model` or `max_iter`.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -1946,7 +1946,7 @@ Usage: gait daemons list [OPTIONS]
 
 Options:
       --all
-          Also list daemons that have finished, not only the running ones.
+          Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
 
       --pretty
           Indent the JSON output.
@@ -1989,7 +1989,7 @@ Usage: gait daemons stop [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The daemon name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --pretty
           Indent the JSON output.
@@ -2032,7 +2032,7 @@ Usage: gait register [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The extension name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --kind <kind>
           The kind of extension.
@@ -2066,7 +2066,7 @@ Options:
           The arguments for `--command`, as one string split on spaces. Write it as `--args=-y pkg` when it starts with a dash.
 
       --description <description>
-          A one-line description; required for a skill.
+          A one-line description; required when registering a skill.
 
       --content <content>
           The text of a skill, given inline.
@@ -2081,7 +2081,7 @@ Options:
           An environment variable for the MCP server, as `KEY=value` (repeatable).
 
       --scope <scope>
-          Where to register; `global` when not given.
+          Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
 
           Possible values:
           - global:  The gait directory, for every session (the default)
@@ -2089,10 +2089,10 @@ Options:
           - session: One session's log, named by `--session`
 
       --agent <agent>
-          The agent file, for `--scope agent`.
+          The agent config to change, for `--scope agent`: its name for `unlock`, the path of its `.md` file for `register` and `unregister`.
 
       --session <session>
-          The session id, for `--scope session`.
+          The session id the change applies to.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2121,7 +2121,7 @@ Usage: gait unregister [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The extension name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --kind <kind>
           The kind of extension.
@@ -2138,7 +2138,7 @@ Options:
           Print the JSON output on one line.
 
       --scope <scope>
-          Where to unregister from; `global` when not given.
+          Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
 
           Possible values:
           - global:  The gait directory, for every session (the default)
@@ -2146,7 +2146,7 @@ Options:
           - session: One session's log, named by `--session`
 
       --agent <agent>
-          The agent file, for `--scope agent`.
+          The agent config to change, for `--scope agent`: its name for `unlock`, the path of its `.md` file for `register` and `unregister`.
 
       --gait-dir <gait_dir>
           The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
@@ -2157,7 +2157,7 @@ Options:
           Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
 
       --session <session>
-          The session id, for `--scope session`.
+          The session id the change applies to.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2186,7 +2186,7 @@ Usage: gait enable [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The extension name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --kind <kind>
           The kind of extension.
@@ -2237,7 +2237,7 @@ Usage: gait disable [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The extension name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --kind <kind>
           The kind of extension.
@@ -2288,7 +2288,7 @@ Usage: gait load [OPTIONS] --id <id> --kind <kind> --session <session>
 
 Options:
       --id <id>
-          The extension name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --kind <kind>
           The kind of extension.
@@ -2305,7 +2305,7 @@ Options:
           Print the JSON output on one line.
 
       --session <session>
-          The session id. A session with a turn running refuses the change.
+          The session id the change applies to.
 
       --gait-dir <gait_dir>
           The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
@@ -2342,7 +2342,7 @@ Usage: gait unload [OPTIONS] --id <id> --kind <kind> --session <session>
 
 Options:
       --id <id>
-          The extension name.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
       --kind <kind>
           The kind of extension.
@@ -2359,7 +2359,7 @@ Options:
           Print the JSON output on one line.
 
       --session <session>
-          The session id. A session with a turn running refuses the change.
+          The session id the change applies to.
 
       --gait-dir <gait_dir>
           The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
@@ -2396,7 +2396,7 @@ Usage: gait init [OPTIONS]
 
 Options:
       --force
-          Create the gait directory even if it would lie inside a codebase's git repository. Running it then also needs `--allow-intree`, since the agent could write to its own config.
+          Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
 
       --pretty
           Indent the JSON output.
@@ -2520,7 +2520,7 @@ Usage: gait manual install [OPTIONS]
 
 Options:
       --force
-          Replace an existing generated manual.
+          Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
 
       --pretty
           Indent the JSON output.

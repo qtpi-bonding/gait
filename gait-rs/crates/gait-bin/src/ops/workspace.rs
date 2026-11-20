@@ -46,7 +46,7 @@ output! {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct InitParams {
-    /// Create the gait directory even if it would lie inside a codebase's git repository. Running it then also needs `--allow-intree`, since the agent could write to its own config.
+    /// Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
     pub force: bool,
 }
 

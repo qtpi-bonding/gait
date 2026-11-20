@@ -41,14 +41,14 @@ pub struct InferenceListParams {}
 /// An inference profile that must exist.
 #[derive(Debug, Clone, OpParams)]
 pub struct InferenceRef {
-    /// The profile name.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "inference")]
     pub id: Ref,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct InferenceAddParams {
-    /// The name of the new profile; an existing one is not overwritten.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "inference", id_only)]
     pub id: Ref,
     /// The model, in `provider/id` form, for example `opencode/kimi-k2.6`.
@@ -59,16 +59,16 @@ pub struct InferenceAddParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct InferenceSelectParams {
-    /// The profile to use.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "inference")]
     pub id: Ref,
-    /// The session that uses it from its next turn.
+    /// The session id the change applies to.
     pub session: String,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct InferenceClearParams {
-    /// The session that goes back to the default inference.
+    /// The session id the change applies to.
     pub session: String,
 }
 

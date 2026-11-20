@@ -22,7 +22,7 @@ pub struct ManualShowParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ManualInstallParams {
-    /// Replace an existing generated manual.
+    /// Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
     pub force: bool,
 }
 

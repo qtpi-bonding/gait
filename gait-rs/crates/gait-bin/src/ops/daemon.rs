@@ -30,13 +30,13 @@ output! {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct DaemonListParams {
-    /// Also list daemons that have finished, not only the running ones.
+    /// Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
     pub all: bool,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct DaemonStopParams {
-    /// The daemon name.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "daemon")]
     pub id: Ref,
 }
