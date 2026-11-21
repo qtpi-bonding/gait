@@ -10,3 +10,4 @@ CLAUDE.md
 *.md
 # The generated manual snapshot is a test fixture (tests/ops_registry.rs).
 !crates/gait-bin/tests/manual_snapshot.md
+!crates/gait-bin/tests/manual_snapshot_local.md
