@@ -71,8 +71,8 @@ When stdin is not a terminal, the login is two-step:
 
 ```bash
 gait auth login --id openai-signin                        # prints JSON containing authorizationUrl
-gait auth login --id openai-signin --complete '<pasted url>'
-gait auth login --id openai-signin --complete -           # read the pasted URL from stdin
+gait auth login --id openai-signin --callback-file '<callback-file>'
+gait auth login --id openai-signin --callback-file -      # read the callback URL from stdin
 ```
 
 A pending login expires after 10 minutes. Tokens refresh automatically before each turn.

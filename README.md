@@ -36,7 +36,7 @@ Under the sealed path, each turn runs as three processes with different trust le
 
   The `git` CLI is **not** required at runtime — gait talks to git exclusively through `git2`/libgit2. The build shells out to `git rev-parse HEAD` to stamp the binary with a build hash but degrades gracefully to `"unknown"` if `git` isn't on `PATH`.
 
-- An **API key** for at least one model provider, or a local OpenAI-compatible server. See [docs/providers.md](docs/providers.md). Add it after install with `gait auth add <provider>`, or just set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in the environment.
+- An **API key** for at least one model provider, or a local OpenAI-compatible server. See [docs/providers.md](docs/providers.md). Add it after install with `gait auth add --id <provider>`; use `--key-file -` in scripts, or just set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in the environment.
 
 ## Install
 
@@ -71,7 +71,7 @@ Min keeps the CLI, the plain REPL, durable event-sourced sessions, the permissio
 mkdir my-workspace && cd my-workspace
 gait init --gait-dir .gait
 
-# 2. Add an API key
+# 2. Add an API key (the terminal prompts without echo)
 gait auth add --id anthropic
 
 # 3. Run one turn (bare positional task)

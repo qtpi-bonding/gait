@@ -116,13 +116,15 @@ Use `gait --help` for all top-level flags.
 
 ```bash
 gait auth list
-gait auth status <provider>
-gait auth add <provider>
-gait auth remove <provider>
-gait auth login <provider>
-gait auth logout <provider>
-gait auth link <provider> <source>
-gait auth unlink <provider>
+gait auth status --id <provider>
+gait auth add --id <provider>             # prompts without echo in a terminal
+gait auth add --id <provider> --key-file -
+gait auth remove --id <provider>
+gait auth login --id <provider>
+gait auth login --id openai-signin --callback-file -
+gait auth logout --id <provider>
+gait auth link --id <provider> --source <source>
+gait auth unlink --id <provider>
 gait models
 gait models <filter>
 ```

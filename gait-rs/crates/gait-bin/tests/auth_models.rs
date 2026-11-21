@@ -59,7 +59,7 @@ fn add_status_list_remove_round_trip_without_echoing_the_key() {
     let add = run(
         {
             let mut c = gait(home.path());
-            c.args(["auth", "add", "--id", "acme"]);
+            c.args(["auth", "add", "--id", "acme", "--key-file", "-"]);
             c
         },
         &format!("{SENTINEL}\n"),
@@ -102,27 +102,41 @@ fn add_status_list_remove_round_trip_without_echoing_the_key() {
 #[test]
 fn add_with_an_empty_key_is_an_error_line_not_a_success() {
     let home = private_home();
+    let key_file = tempfile::NamedTempFile::new().unwrap();
+    let mut add = gait(home.path());
+    add.args(["auth", "add", "--id", "acme", "--key-file"])
+        .arg(key_file.path());
+    let add = run(add, "\n");
+    assert_eq!(add.status.code(), Some(2));
+    assert_eq!(last_error(&add)["error"]["code"], "op_registry.usage.invalid");
+}
+
+#[test]
+fn add_without_a_file_in_a_non_terminal_run_is_usage_error() {
+    let home = private_home();
     let mut add = gait(home.path());
     add.args(["auth", "add", "--id", "acme"]);
-    let add = run(add, "\n");
-    assert_eq!(add.status.code(), Some(65));
-    assert_eq!(last_error(&add)["error"]["code"], "gait.op.conflict");
+    let add = run(add, "");
+    assert_eq!(add.status.code(), Some(2));
+    assert_eq!(last_error(&add)["error"]["code"], "op_registry.usage.missing");
 }
 
 #[test]
 fn errors_and_help_never_carry_the_key() {
     let home = private_home();
-    // A key given where it does not belong: `--complete` is for openai-signin.
+    // A callback file given where it does not belong: it is for openai-signin.
     let mut wrong = gait(home.path());
-    wrong.args(["auth", "login", "--id", "anthropic", "--complete", SENTINEL]);
+    wrong.args(["auth", "login", "--id", "anthropic", "--callback-file", "-"]);
     let wrong = run(wrong, "");
     assert_eq!(wrong.status.code(), Some(2), "{}", text(&wrong.stderr));
     assert_eq!(last_error(&wrong)["error"]["code"], "op_registry.usage.invalid");
-    assert_no_secret("auth login --complete on the wrong provider", &wrong);
+    assert_no_secret("auth login --callback-file on the wrong provider", &wrong);
 
     // The key on stdin of a failing add (an unwritable home).
     let mut relative = gait(home.path());
-    relative.env("GAIT_HOME", "relative/home").args(["auth", "add", "--id", "acme"]);
+    relative
+        .env("GAIT_HOME", "relative/home")
+        .args(["auth", "add", "--id", "acme", "--key-file", "-"]);
     let relative = run(relative, &format!("{SENTINEL}\n"));
     assert_ne!(relative.status.code(), Some(0));
     assert_no_secret("auth add into a bad home", &relative);
@@ -180,7 +194,7 @@ fn usage_errors_exit_2() {
         vec!["auth", "frobnicate"],
         vec!["auth", "status"],
         vec!["auth", "link", "--id", "openai-codex"],
-        vec!["auth", "logout", "--id", "openai-signin", "--complete", "x"],
+        vec!["auth", "logout", "--id", "openai-signin", "--callback-file", "x"],
         vec!["auth", "logout", "--id", "openai-codex", "--forget"],
     ] {
         let mut cmd = gait(home.path());
@@ -196,8 +210,8 @@ fn unsupported_providers_are_logical_errors() {
     for args in [
         vec!["auth", "login", "--id", "anthropic"],
         vec!["auth", "logout", "--id", "anthropic"],
-        vec!["auth", "add", "--id", "openai-codex"],
-        vec!["auth", "add", "--id", "openai-signin"],
+        vec!["auth", "add", "--id", "openai-codex", "--key-file", "-"],
+        vec!["auth", "add", "--id", "openai-signin", "--key-file", "-"],
     ] {
         let mut cmd = gait(home.path());
         cmd.args(&args);

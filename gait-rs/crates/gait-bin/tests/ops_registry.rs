@@ -1,10 +1,26 @@
 //! The op-registry skeleton: globals, context, hooks and an empty registry.
 use gait_bin::ops::{registry, GaitContext, GaitHooks, Globals};
 use op_registry::cli::{run_with_io, Io};
+#[cfg(feature = "full")]
+use op_registry::cli::Prompter;
 use op_registry::{OpGlobals, Ref, Resolve, Scope};
 use serial_test::serial;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "full")]
+use std::sync::Arc;
+#[cfg(feature = "full")]
+use std::os::unix::fs::PermissionsExt;
+
+#[cfg(feature = "full")]
+struct TestPrompter;
+
+#[cfg(feature = "full")]
+impl Prompter for TestPrompter {
+    fn read_secret(&self, _label: &str) -> std::io::Result<zeroize::Zeroizing<String>> {
+        Ok(zeroize::Zeroizing::new("prompted-key".to_owned()))
+    }
+}
 
 fn argv(args: &[&str]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
@@ -14,6 +30,31 @@ fn run(args: &[&str]) -> (u8, String, String) {
     let (io, captured) = Io::memory(b"", false, false);
     let code = futures_executor_block(run_with_io(&registry(), argv(args), &GaitHooks, io));
     (code, captured.stdout(), captured.stderr())
+}
+
+#[cfg(feature = "full")]
+#[test]
+#[serial]
+fn auth_add_uses_the_installed_prompter() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(
+        home.path(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    std::env::set_var("GAIT_HOME", home.path());
+    let (io, captured) = Io::memory(b"", false, false);
+    let io = io.with_prompter(Arc::new(TestPrompter));
+    let code = futures_executor_block(run_with_io(
+        &registry(),
+        argv(&["gait", "auth", "add", "--id", "x"]),
+        &GaitHooks,
+        io,
+    ));
+    std::env::remove_var("GAIT_HOME");
+    assert_eq!(code, 0, "{}", captured.stderr());
+    let stored = std::fs::read_to_string(home.path().join("auth.json")).unwrap();
+    assert!(stored.contains("prompted-key"));
 }
 
 fn futures_executor_block<F: std::future::Future>(f: F) -> F::Output {

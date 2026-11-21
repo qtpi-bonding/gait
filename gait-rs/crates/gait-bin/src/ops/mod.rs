@@ -69,9 +69,11 @@ pub mod decl {
         SessionSummary, UndoResult, UnlockResult,
     };
     use super::auth::{
-        AuthEntry, AuthLinkParams, AuthListParams, AuthLogin, AuthLoginParams, AuthLogout,
-        AuthLogoutParams, AuthRemoved, AuthSaved, AuthStatus, ModelItem, ModelsParams, ProviderId,
+        AuthEntry, AuthLinkParams, AuthListParams, AuthLogout, AuthLogoutParams, AuthRemoved,
+        AuthSaved, AuthStatus, ModelItem, ModelsParams, ProviderId,
     };
+    #[cfg(feature = "full")]
+    use super::auth::{AuthAddParams, AuthLogin, AuthLoginParams};
     use super::config::{ConfigEntry, ConfigKey, ConfigSetParams, ConfigShowParams};
     use super::daemon::{DaemonItem, DaemonListParams, DaemonStopParams, DaemonStopped};
     use super::extension::{
@@ -154,15 +156,17 @@ pub mod decl {
         "auth status" => { params: ProviderId, output: AuthStatus,
                            access: reads, audience: owner, op: super::auth::status,
                            errors: [OpError, CliError], paths: [cli] },
-        /// Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
-        "auth add" => { params: ProviderId, output: AuthSaved,
+        #[cfg(feature = "full")]
+        /// Store an API key for a provider. Use `--key-file -` for scripts; otherwise the terminal prompts without echo.
+        "auth add" => { params: AuthAddParams, output: AuthSaved,
                         access: writes, audience: owner, op: super::auth::add,
                         errors: [OpError, CliError], paths: [cli] },
         /// Use another tool's credentials for a provider without copying them.
         "auth link" => { params: AuthLinkParams, output: AuthSaved,
                          access: writes, audience: owner, op: super::auth::link,
                          errors: [OpError, CliError], paths: [cli] },
-        /// Sign in to a subscription provider: a device code for `openai-codex`, a browser step for `openai-signin`.
+        #[cfg(feature = "full")]
+        /// Sign in to a subscription provider. For scripts, complete `openai-signin` with `--callback-file -`.
         "auth login" => { params: AuthLoginParams, output: AuthLogin,
                           access: [writes, network], audience: owner, op: super::auth::login,
                           errors: [OpError, CliError], paths: [cli] },
@@ -170,7 +174,7 @@ pub mod decl {
         "auth logout" => { params: AuthLogoutParams, output: AuthLogout,
                            access: [writes, network, destructive], audience: owner, op: super::auth::logout,
                            errors: [OpError, CliError], paths: [cli] },
-        /// Remove a stored API key. Removing a provider with no key still succeeds.
+        /// Remove a stored API key. Removing a provider with no key still succeeds; the id is absent_ok.
         "auth remove" => { params: ProviderId, output: AuthRemoved,
                            access: [writes, destructive], audience: owner, op: super::auth::remove,
                            errors: [OpError, CliError], paths: [cli] },
@@ -309,9 +313,9 @@ pub fn min_registry() -> op_registry::Registry<GaitContext> {
 /// A state conflict an op reports is a caller mistake: a usage error, exit 2.
 fn conflict_is_usage(error: anyhow::Error) -> anyhow::Error {
     match coded_error::downcast_ref::<gait_ops::OpError>(&error) {
-        Some(gait_ops::OpError::Conflict(message)) => coded_error::into_anyhow(op_registry::UsageError::Conflicts {
-            field: "operation".into(),
-            other: message.clone(),
+        Some(gait_ops::OpError::Conflict(message)) => coded_error::into_anyhow(op_registry::UsageError::InvalidField {
+            name: "arguments".into(),
+            reason: message.clone(),
         }),
         _ => error,
     }

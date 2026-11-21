@@ -195,8 +195,9 @@ Keys can also come from environment variables such as `ANTHROPIC_API_KEY` and
 `OPENAI_API_KEY`. Official ChatGPT plan sign-in uses `openai-signin`:
 run `gait auth login --id openai-signin`, open the authorization URL, and paste the
 resulting callback URL when prompted. For a later process, use
-`gait auth login --id openai-signin --complete <url>` (or `--complete -` to read one
-trimmed line from stdin). Sign out with `gait auth logout --id openai-signin`, adding
+`gait auth login --id openai-signin --callback-file <file>` (or
+`--callback-file -` to read it from stdin). Sign out with
+`gait auth logout --id openai-signin`, adding
 `--forget` when switching accounts. If the provider cannot revoke a session, disconnect
 the app in ChatGPT Settings. The legacy `openai-codex` device-code path is unofficial;
 linking it to `codex` stores only a pointer, and the credentials stay in Codex's own
@@ -1055,13 +1056,16 @@ Access: reads
 ### gait auth add
 
 ```text
-Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
+Store an API key for a provider. The terminal prompts without echo when `--key-file` is omitted; use `--key-file -` for scripts.
 
 Usage: gait auth add [OPTIONS] --id <id>
 
 Options:
       --id <id>
           The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+
+      --key-file <key_file>
+          Read the API key from this file, or from stdin with `-`.
 
       --pretty
           Indent the JSON output.
@@ -1155,7 +1159,7 @@ Options:
       --id <id>
           The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
-      --complete <complete>
+      --callback-file <callback_file>
           Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
 
       --pretty

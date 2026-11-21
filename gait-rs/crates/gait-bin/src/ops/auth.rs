@@ -3,7 +3,8 @@
 //! No op ever returns or prints key material.
 use gait_cli::cli::error::CliError;
 use op_registry::{CallOptions, OpParams, Ref, UsageError};
-use std::io::{BufRead, IsTerminal};
+#[cfg(feature = "full")]
+use op_registry::SecretFile;
 use std::path::PathBuf;
 
 const SIGNIN: &str = "openai-signin";
@@ -112,14 +113,25 @@ pub struct AuthLinkParams {
     pub home: Option<PathBuf>,
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthLoginParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
-    #[op(secret)]
-    pub complete: Option<String>,
+    pub callback_file: Option<SecretFile>,
+}
+
+#[cfg(feature = "full")]
+#[derive(Debug, Clone, OpParams)]
+pub struct AuthAddParams {
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    #[op(subject = "provider", id_only, absent_ok)]
+    pub id: Ref,
+    /// Read the API key from this file, or from stdin with `-`.
+    #[op(prompt = "API key")]
+    pub key_file: SecretFile,
 }
 
 #[derive(Debug, Clone, OpParams)]
@@ -147,25 +159,6 @@ fn failed(error: anyhow::Error) -> anyhow::Error {
     }
 }
 
-/// The first line of `input`, trimmed.
-fn first_line<R: std::io::Read>(input: R) -> std::io::Result<String> {
-    let mut line = String::new();
-    std::io::BufReader::new(input).read_line(&mut line)?;
-    Ok(line.trim().to_owned())
-}
-
-/// A callback URL given as itself or as `-` for one trimmed line of `stdin`.
-pub fn read_callback_arg<R: std::io::Read>(arg: &str, stdin: R) -> anyhow::Result<String> {
-    if arg != "-" {
-        return Ok(arg.to_owned());
-    }
-    let value = first_line(stdin)?;
-    if value.is_empty() {
-        return Err(CliError::usage("no callback URL provided on stdin"));
-    }
-    Ok(value)
-}
-
 /// List the configured providers and what kind of credential each has; never any key text.
 pub async fn list(
     _ctx: &super::GaitContext,
@@ -190,11 +183,12 @@ pub async fn status(
     Ok(AuthStatus { provider: provider.to_owned(), status })
 }
 
-/// Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
+#[cfg(feature = "full")]
+/// Store an API key for a provider. The key is read from a secret file or prompt; it is never an argument.
 pub async fn add(
     _ctx: &super::GaitContext,
-    params: ProviderId,
-    _opts: CallOptions,
+    params: AuthAddParams,
+    opts: CallOptions,
 ) -> anyhow::Result<AuthSaved> {
     let provider = params.id.as_raw();
     if provider == SIGNIN {
@@ -207,11 +201,11 @@ pub async fn add(
             "openai-codex uses a ChatGPT subscription; run: gait auth login --id openai-codex",
         ));
     }
-    let stdin = std::io::stdin();
-    if stdin.is_terminal() {
-        eprint!("{provider} API key: ");
-    }
-    let key = first_line(stdin.lock()).map_err(|e| CliError::failed(format!("cannot read the key: {e}")))?;
+    let key = std::str::from_utf8(params.key_file.bytes())
+        .map_err(|e| CliError::usage(format!("invalid API key: {e}")))?
+        .trim()
+        .to_owned();
+    opts.redact(params.key_file.bytes());
     let out = gait_ops::auth::add(provider, key).map_err(failed)?;
     Ok(AuthSaved { provider: out.provider, display: out.display, action: "saved".into() })
 }
@@ -246,6 +240,7 @@ pub async fn remove(
     Ok(AuthRemoved { provider: out.provider, action: "removed".into() })
 }
 
+#[cfg(feature = "full")]
 fn saved(out: gait_ops::auth::AuthWriteOutcome) -> AuthLogin {
     AuthLogin {
         provider: out.provider,
@@ -256,6 +251,7 @@ fn saved(out: gait_ops::auth::AuthWriteOutcome) -> AuthLogin {
     }
 }
 
+#[cfg(feature = "full")]
 /// Sign in to a subscription provider: a device code for `openai-codex`, a browser step for `openai-signin`.
 pub async fn login(
     _ctx: &super::GaitContext,
@@ -263,22 +259,25 @@ pub async fn login(
     opts: CallOptions,
 ) -> anyhow::Result<AuthLogin> {
     let provider = params.id.as_raw();
-    if params.complete.is_some() && provider != SIGNIN {
+    if params.callback_file.is_some() && provider != SIGNIN {
         return Err(coded_error::into_anyhow(UsageError::InvalidField {
-            name: "complete".into(),
+            name: "callback_file".into(),
             reason: "only valid with `auth login --id openai-signin`".into(),
         }));
     }
     if provider == SIGNIN {
-        if let Some(arg) = params.complete.as_deref() {
-            let callback = read_callback_arg(arg, std::io::stdin()).map_err(failed)?;
+        if let Some(file) = params.callback_file {
+            let callback = std::str::from_utf8(file.bytes())
+                .map_err(|e| CliError::usage(format!("invalid callback URL: {e}")))?
+                .trim()
+                .to_owned();
+            opts.redact(file.bytes());
             return gait_ops::auth::login_complete(provider, callback).await.map(saved).map_err(failed);
         }
         let start = gait_ops::auth::login_begin(provider).await.map_err(failed)?;
-        if std::io::stdin().is_terminal() {
-            opts.notices.notice(start.authorization_url.clone());
-            eprint!("Paste the URL you were redirected to: ");
-            let callback = read_callback_arg("-", std::io::stdin()).map_err(failed)?;
+        opts.notices.notice(start.authorization_url.clone());
+        if let Some(secret) = opts.prompt_secret("callback URL") {
+            let callback = secret.expose().trim().to_owned();
             return gait_ops::auth::login_complete(provider, callback).await.map(saved).map_err(failed);
         }
         return Ok(AuthLogin {
@@ -357,39 +356,3 @@ pub async fn models(
         .collect())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn read_callback_arg_dash_reads_stdin_and_trims() {
-        let result =
-            read_callback_arg("-", std::io::Cursor::new(b"  https://callback.example/x  \nrest\n")).unwrap();
-        assert_eq!(result, "https://callback.example/x");
-    }
-
-    #[test]
-    fn read_callback_arg_literal_passthrough() {
-        let value = "https://callback.example/x?code=1";
-        assert_eq!(read_callback_arg(value, std::io::Cursor::new(b"ignored\n")).unwrap(), value);
-    }
-
-    #[test]
-    fn read_callback_arg_dash_rejects_empty_line_and_eof() {
-        assert!(read_callback_arg("-", std::io::Cursor::new(b"\n")).is_err());
-        assert!(read_callback_arg("-", std::io::Cursor::new(b"")).is_err());
-        assert!(read_callback_arg("-", std::io::Cursor::new(b"  \t\r\n")).is_err());
-    }
-
-    #[test]
-    fn read_callback_arg_dash_handles_crlf_and_missing_newline() {
-        assert_eq!(
-            read_callback_arg("-", std::io::Cursor::new(b" https://callback\r\n")).unwrap(),
-            "https://callback"
-        );
-        assert_eq!(
-            read_callback_arg("-", std::io::Cursor::new(b"https://callback")).unwrap(),
-            "https://callback"
-        );
-    }
-}

@@ -98,6 +98,7 @@ gait-events = { path = "../gait-events" }
 tracing = "0.1"
 tempfile = "3"
 serial_test = "3"
+zeroize = "1"
 prost        = "0.13"
 pbjson-types = "0.7"
 concord-telemetry = { workspace = true, features = ["testing"] }
