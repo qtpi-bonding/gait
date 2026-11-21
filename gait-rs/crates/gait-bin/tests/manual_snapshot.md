@@ -478,6 +478,54 @@ YAML frontmatter, then the markdown body (the skill's instructions; a skill with
 - `model_invocable` — Whether the model may invoke this skill; omitted values default to true.
 - `name` — Required non-empty skill name.
 
+## Other commands
+
+These run from the command line only. They are not ops: no JSON, MCP or typed call reaches them.
+
+### gait workflow
+
+CLI only, not an op.
+
+```text
+Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
+
+Usage: gait workflow [OPTIONS] [ACTION] [ARGS]...
+
+Arguments:
+  [ACTION]
+          What to do: list, run, continue, log, abort or validate.
+
+  [ARGS]...
+          The workflow id or file and any options the action takes.
+
+Options:
+      --pretty
+          Indent the JSON output.
+
+      --compact
+          Print the JSON output on one line.
+
+      --gait-dir <gait_dir>
+          The gait directory to use. Without it, `$GAIT_DIR` and then a `.gait/` directory or `.gaitref` file found walking up from the current directory are used.
+          
+          [env: GAIT_DIR]
+
+      --agent-dir <agent_dir>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+
+  -h, --help
+          Print help
+```
+
+### turn
+
+CLI only, not an op.
+
+```text
+Run a task: `gait "fix the login bug"`, `-i` for the REPL, `-e` for a one-off request.
+A first word that is a command runs the command; put `--` before a task that starts with one.
+```
+
 ## Commands
 
 ### gait sessions
@@ -510,6 +558,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli, typed
 
 | Code | Class | Exit |
 |---|---|---|
@@ -546,6 +596,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -586,6 +638,8 @@ Options:
 
 Access: reads
 
+Paths: cli, typed
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -624,6 +678,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -671,10 +727,15 @@ Options:
           List the turns and their checkpoints instead of undoing.
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
+
+Rules:
+  --turn conflicts with --list
 ```
 
 Access: writes, destructive
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -718,14 +779,13 @@ Options:
       --agent-dir <agent_dir>
           Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
 
-      --force
-          Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
-
   -h, --help
           Print help
 ```
 
 Access: writes
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -778,6 +838,8 @@ Options:
 
 Access: writes, destructive
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -829,6 +891,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -867,6 +931,8 @@ Options:
 ```
 
 Access: writes
+
+Paths: cli, typed
 
 | Code | Class | Exit |
 |---|---|---|
@@ -919,6 +985,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -961,6 +1029,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -996,6 +1066,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1040,6 +1112,8 @@ Options:
 
 Access: reads
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1055,13 +1129,16 @@ Access: reads
 ### gait auth add
 
 ```text
-Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
+Store an API key for a provider. Use `--key-file -` for scripts; otherwise the terminal prompts without echo.
 
 Usage: gait auth add [OPTIONS] --id <id>
 
 Options:
       --id <id>
           The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+
+      --key-file <key_file>
+          Read the API key from this file, or from stdin with `-`. Asked for on a terminal when left out.
 
       --pretty
           Indent the JSON output.
@@ -1082,6 +1159,8 @@ Options:
 ```
 
 Access: writes
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1132,6 +1211,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1147,7 +1228,7 @@ Access: writes
 ### gait auth login
 
 ```text
-Sign in to a subscription provider: a device code for `openai-codex`, a browser step for `openai-signin`.
+Sign in to a subscription provider. For scripts, complete `openai-signin` with `--callback-file -`.
 
 Usage: gait auth login [OPTIONS] --id <id>
 
@@ -1155,7 +1236,7 @@ Options:
       --id <id>
           The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
 
-      --complete <complete>
+      --callback-file <callback_file>
           Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
 
       --pretty
@@ -1177,6 +1258,8 @@ Options:
 ```
 
 Access: writes, network
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1224,6 +1307,8 @@ Options:
 
 Access: writes, network, destructive
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1239,7 +1324,7 @@ Access: writes, network, destructive
 ### gait auth remove
 
 ```text
-Remove a stored API key. Removing a provider with no key still succeeds.
+Remove a stored API key. Removing a provider with no key still succeeds; the id is absent_ok.
 
 Usage: gait auth remove [OPTIONS] --id <id>
 
@@ -1266,6 +1351,8 @@ Options:
 ```
 
 Access: writes, destructive
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1310,6 +1397,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1353,6 +1442,8 @@ Options:
 
 Access: reads, network
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.cli.usage | logical | 65 |
@@ -1387,6 +1478,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1430,6 +1523,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1480,6 +1575,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1526,6 +1623,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1569,6 +1668,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1608,6 +1709,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1651,6 +1754,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1707,6 +1812,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1753,6 +1860,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1796,6 +1905,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1838,6 +1949,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1885,6 +1998,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -1924,6 +2039,8 @@ Options:
 ```
 
 Access: reads
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -1968,6 +2085,8 @@ Options:
 
 Access: reads
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -2010,6 +2129,8 @@ Options:
 ```
 
 Access: writes, destructive
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -2063,7 +2184,7 @@ Options:
           Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
 
       --args <args>
-          The arguments for `--command`, as one string split on spaces. Write it as `--args=-y pkg` when it starts with a dash.
+          The arguments for `--command`, as one string split on spaces.
 
       --description <description>
           A one-line description; required when registering a skill.
@@ -2096,9 +2217,15 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+
+Rules:
+  give at most one of --url, --command
+  give at most one of --content, --path
 ```
 
 Access: writes
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -2165,6 +2292,8 @@ Options:
 
 Access: writes, destructive
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -2216,6 +2345,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -2266,6 +2397,8 @@ Options:
 ```
 
 Access: writes
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -2321,6 +2454,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -2375,6 +2510,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -2418,6 +2555,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -2457,6 +2596,8 @@ Options:
 ```
 
 Access: writes
+
+Paths: cli
 
 | Code | Class | Exit |
 |---|---|---|
@@ -2504,6 +2645,8 @@ Options:
 
 Access: reads
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.cli.usage | logical | 65 |
@@ -2542,6 +2685,8 @@ Options:
 
 Access: writes
 
+Paths: cli
+
 | Code | Class | Exit |
 |---|---|---|
 | gait.op.not_found | logical | 65 |
@@ -2564,6 +2709,8 @@ Access: writes
 | op_registry.usage.repeated_key | logical | 2 |
 | op_registry.usage.one_of | logical | 2 |
 | op_registry.usage.requires_if | logical | 2 |
+| op_registry.usage.conflicts | logical | 2 |
+| op_registry.usage.at_least_one | logical | 2 |
 | op_registry.usage.stdin_twice | logical | 2 |
 | op_registry.cli.unknown_command | logical | 2 |
 | op_registry.call.unknown_operation | logical | 65 |

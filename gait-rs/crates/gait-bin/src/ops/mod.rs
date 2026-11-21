@@ -323,8 +323,8 @@ pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     registry.push_extra(workflow_command(), run_workflow);
     match repl {
         #[cfg(feature = "rich-tui")]
-        Repl::Rich => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, false, turn::run_rich),
-        Repl::Plain => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, false, turn::run_plain),
+        Repl::Rich => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, true, turn::run_rich),
+        Repl::Plain => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, true, turn::run_plain),
     }
     registry
 }

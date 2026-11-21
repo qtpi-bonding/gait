@@ -77,10 +77,12 @@ fn double_dash_escape() {
     // `--` ends the flags: what follows is the task, even a bare command word.
     let out = run(cwd.path(), &["--gait-dir", gait_dir, "--inference", "nosuch-inf", "--", "log"]);
     assert_turn(&out, dir.path(), "-- log");
-    // Straight after the program name as well: everything after it is the task
-    // line (the globals after it are read by the turn).
+    // Straight after the program name as well: everything after it is the
+    // turn's own argument line and the registry reads no globals from it, so
+    // the flags after it are the turn's to refuse.
     let out = run(cwd.path(), &["--", "log", "--gait-dir", gait_dir, "--inference", "nosuch-inf"]);
-    assert_turn(&out, dir.path(), "-- log (flags after)");
+    assert_eq!(out.status.code(), Some(2), "-- log (flags after): {}", stderr(&out));
+    assert!(!stderr(&out).contains(NO_INFERENCE), "{}", stderr(&out));
 }
 
 #[test]
@@ -223,15 +225,13 @@ fn help_and_version_are_reserved() {
     let out = run(cwd.path(), &["--version"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(stdout(&out).contains(env!("CARGO_PKG_VERSION")), "{}", stdout(&out));
-    // After a flag they are still help and version, never a task (the registry's
-    // help; until Task 9 the bare forms above print the old enum's, which lists
-    // the verbs the registry does not hold yet).
-    let out = run(cwd.path(), &["--inference", "m", "--help"]);
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(stdout(&out).contains("--gait-dir"), "{}", stdout(&out));
-    let out = run(cwd.path(), &["--inference", "m", "--version"]);
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(stdout(&out).contains(env!("CARGO_PKG_VERSION")));
+    // After a turn flag they are the turn's unknown flags (the registry shows
+    // help and version only first): a usage error, never a task.
+    for flag in ["--help", "--version"] {
+        let out = run(cwd.path(), &["--inference", "m", flag]);
+        assert_eq!(out.status.code(), Some(2), "{flag}: {}", stderr(&out));
+        assert!(!stderr(&out).contains(NO_INFERENCE), "{flag}: ran a turn: {}", stderr(&out));
+    }
     // Help never prints this machine's paths (the home and cwd are not in it).
     let help = stdout(&run(cwd.path(), &["--help"]));
     for banned in ["/Users/", "/home/", cwd.path().to_str().unwrap()] {
