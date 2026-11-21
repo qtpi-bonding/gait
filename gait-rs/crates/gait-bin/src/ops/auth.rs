@@ -210,6 +210,7 @@ pub async fn add(
 
 /// The first line of a secret file, trimmed: what the old stdin read took, so a
 /// trailing comment or second line is not stored as part of the secret.
+#[cfg(feature = "full")]
 fn first_line(bytes: &[u8], what: &str) -> anyhow::Result<String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| CliError::usage(format!("the {what} is not valid UTF-8")))?;
