@@ -30,7 +30,7 @@ output! {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalSetupParams {
-    /// The profile id; `local-qwen` when not given.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "inference", id_only, absent_ok)]
     pub id: Option<Ref>,
     /// The GGUF file of Qwen2.5-Coder-7B-Instruct Q4_K_M.
@@ -41,21 +41,21 @@ pub struct LocalSetupParams {
     /// The llama.cpp layers to offload; 0 is CPU-only.
     #[op(default = 0)]
     pub gpu_layers: u32,
-    /// Begin compaction at this many tokens, before the context is full.
+    /// Begin compacting the conversation when it reaches this many tokens.
     #[op(default = 6000)]
     pub compaction_threshold_tokens: u64,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalRunnerParams {
-    /// The profile id; `local-qwen` when not given.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "inference", id_only)]
     pub id: Option<Ref>,
 }
 
 const DEFAULT_NAME: &str = "local-qwen";
 
-/// Write a local inference profile for a Qwen2.5-Coder GGUF file.
+/// Write a local inference profile for a Qwen2.5-Coder GGUF file; `--id` defaults to `local-qwen`.
 pub async fn setup(
     ctx: &GaitContext,
     params: LocalSetupParams,
@@ -86,6 +86,7 @@ async fn runner(
 ) -> anyhow::Result<LocalRunner> {
     let dir = ctx.gait_dir()?;
     let name = params.id.as_ref().map(Ref::as_raw).unwrap_or(DEFAULT_NAME);
+    gait_ops::inference::show(&dir, name).map_err(infra)?;
     let inference = gait_core::inferences::load_inference(&dir, name).map_err(infra)?;
     let not_local = || CliError::invalid_input(format!("inference '{name}' is not a configured local profile"));
     let llm = inference
@@ -141,7 +142,7 @@ async fn runner_command(
     Ok(serde_json::from_str(&line).ok())
 }
 
-/// Show whether the local model runner for a profile is running.
+/// Show whether the local model runner for a profile is running; `--id` defaults to `local-qwen`.
 pub async fn status(
     ctx: &GaitContext,
     params: LocalRunnerParams,
@@ -150,7 +151,7 @@ pub async fn status(
     runner(ctx, params, "status").await
 }
 
-/// Stop the local model runner for a profile.
+/// Stop the local model runner for a profile; `--id` defaults to `local-qwen`.
 pub async fn stop(
     ctx: &GaitContext,
     params: LocalRunnerParams,

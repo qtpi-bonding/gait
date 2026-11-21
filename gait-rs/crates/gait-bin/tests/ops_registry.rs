@@ -266,7 +266,19 @@ mod kit {
     use op_registry::testing::{self, Casing, Fixture, HelpRules, Mount};
     use serde_json::json;
 
+    /// The op names of this build: the `local` feature adds the three `local` ops.
+    #[cfg(not(feature = "local"))]
     const CANONICAL: &str = include_str!("canonical_ops.txt");
+    #[cfg(feature = "local")]
+    const CANONICAL: &str = include_str!("canonical_ops_local.txt");
+    #[cfg(not(feature = "local"))]
+    const CANONICAL_FILE: &str = "tests/canonical_ops.txt";
+    #[cfg(feature = "local")]
+    const CANONICAL_FILE: &str = "tests/canonical_ops_local.txt";
+    #[cfg(not(feature = "local"))]
+    const MANUAL_SNAPSHOT_FILE: &str = "tests/manual_snapshot.md";
+    #[cfg(feature = "local")]
+    const MANUAL_SNAPSHOT_FILE: &str = "tests/manual_snapshot_local.md";
 
     fn full_manual() -> op_registry::manual::Manual {
         manual(&registry(), ManualFlavor::Full, gait_repl::repl::commands::COMMANDS)
@@ -313,7 +325,7 @@ mod kit {
 
     #[test]
     fn assert_manual_snapshot() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/manual_snapshot.md");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(MANUAL_SNAPSHOT_FILE);
         testing::assert_manual_snapshot(&registry(), &full_manual(), &path);
     }
 
@@ -407,7 +419,7 @@ mod kit {
 
     #[test]
     fn assert_canonical() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/canonical_ops.txt");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CANONICAL_FILE);
         if std::env::var("UPDATE_SNAPSHOTS").is_ok_and(|v| !v.is_empty() && v != "0") {
             let reg = registry();
             let mut names: Vec<&str> = reg.names();

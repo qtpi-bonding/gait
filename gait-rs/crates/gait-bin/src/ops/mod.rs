@@ -282,17 +282,17 @@ pub mod decl {
         "link" => { params: LinkParams, output: LinkResult,
                     access: writes, audience: owner, local: super::workspace::link,
                     errors: [OpError, CliError], paths: [cli] },
-        /// Write a local inference profile for a Qwen2.5-Coder GGUF file.
+        /// Write a local inference profile for a Qwen2.5-Coder GGUF file; `--id` defaults to `local-qwen`.
         #[cfg(feature = "local")]
         "local setup" => { params: LocalSetupParams, output: LocalSetup,
                            access: writes, audience: owner, op: super::local::setup,
                            errors: [OpError, CliError], paths: [cli] },
-        /// Show whether the local model runner for a profile is running.
+        /// Show whether the local model runner for a profile is running; `--id` defaults to `local-qwen`.
         #[cfg(feature = "local")]
         "local status" => { params: LocalRunnerParams, output: LocalRunner,
                             access: reads, audience: owner, op: super::local::status,
                             errors: [OpError, CliError], paths: [cli] },
-        /// Stop the local model runner for a profile.
+        /// Stop the local model runner for a profile; `--id` defaults to `local-qwen`.
         #[cfg(feature = "local")]
         "local stop" => { params: LocalRunnerParams, output: LocalRunner,
                           access: writes, audience: owner, op: super::local::stop,
