@@ -5,28 +5,28 @@
 use super::{GaitContext, Globals};
 use clap::{ArgAction, Parser};
 use futures_util::future::BoxFuture;
-use op_registry::CliContext;
+use op_registry::cli::FallbackFlag;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// The long flags the turn reads itself (the registry checks they do not
 /// reuse a global's name).
-pub const TURN_FLAGS: &[&str] = &[
-    "session",
-    "inference",
-    "verified-goal",
-    "agent",
-    "auto-approve",
-    "allow",
-    "deny",
-    "unlock",
-    "max-iter",
-    "result-schema",
-    "result-schema-json",
-    "codebase",
-    "allow-intree",
-    "interactive",
-    "exec",
+pub const TURN_FLAGS: &[FallbackFlag] = &[
+    FallbackFlag { long: "session", short: Some('s'), takes_value: true },
+    FallbackFlag { long: "inference", short: None, takes_value: true },
+    FallbackFlag { long: "verified-goal", short: None, takes_value: true },
+    FallbackFlag { long: "agent", short: Some('a'), takes_value: true },
+    FallbackFlag { long: "auto-approve", short: None, takes_value: false },
+    FallbackFlag { long: "allow", short: None, takes_value: true },
+    FallbackFlag { long: "deny", short: None, takes_value: true },
+    FallbackFlag { long: "unlock", short: None, takes_value: true },
+    FallbackFlag { long: "max-iter", short: Some('n'), takes_value: true },
+    FallbackFlag { long: "result-schema", short: Some('R'), takes_value: true },
+    FallbackFlag { long: "result-schema-json", short: None, takes_value: true },
+    FallbackFlag { long: "codebase", short: Some('c'), takes_value: true },
+    FallbackFlag { long: "allow-intree", short: None, takes_value: false },
+    FallbackFlag { long: "interactive", short: Some('i'), takes_value: false },
+    FallbackFlag { long: "exec", short: Some('e'), takes_value: true },
 ];
 
 /// What the turn's `-i` runs: the themed REPL of full `gait`, or the plain REPL
@@ -39,7 +39,7 @@ pub enum Repl {
 }
 
 /// The one-line help the root help lists for the fallback, then its detail.
-pub const TURN_HELP: &str = "Run a task: `gait \"fix the login bug\"`, `-i` for the REPL, `-e` for a one-off request.\n\
+pub const TURN_HELP: &str = "Run a task: `{bin} \"fix the login bug\"`, `-i` for the REPL, `-e` for a one-off request.\n\
 A first word that is a command runs the command; put `--` before a task that starts with one.";
 
 /// The turn's own flags. The registry hands over every argument after the
@@ -99,28 +99,12 @@ pub struct TurnArgs {
     #[arg(long)]
     pub allow_intree: bool,
 
-    /// A registry global given after the task; the leading ones arrive parsed.
-    #[arg(long, hide = true)]
-    pub gait_dir: Option<PathBuf>,
-    /// A registry global given after the task; `main` has already applied it
-    /// to the environment.
-    #[arg(long, hide = true)]
-    pub agent_dir: Option<PathBuf>,
-
-    /// Show the registry's help.
-    #[arg(short = 'h', long, hide = true)]
-    pub help: bool,
-    /// Show the version.
-    #[arg(long, hide = true)]
-    pub version: bool,
 }
 
 /// What a parsed command line asks the turn to do. `plan` is the seam the
 /// tests use to see the choice without running anything.
 #[derive(Debug, PartialEq)]
 pub enum TurnPlan {
-    Help,
-    Version,
     /// `-e`: the one-off request.
     Exec { prompt: String },
     /// `-i`: the REPL.
@@ -138,11 +122,7 @@ impl TurnArgs {
     }
 
     pub fn plan(&self) -> TurnPlan {
-        if self.help {
-            TurnPlan::Help
-        } else if self.version {
-            TurnPlan::Version
-        } else if let Some(prompt) = &self.exec {
+        if let Some(prompt) = &self.exec {
             TurnPlan::Exec { prompt: prompt.clone() }
         } else if self.interactive {
             TurnPlan::Interactive
@@ -156,22 +136,28 @@ impl TurnArgs {
 
 /// The fallback of the full `gait`: `-i` opens the themed REPL.
 #[cfg(feature = "rich-tui")]
-pub fn run_rich<'a>(globals: &'a Globals, args: Vec<OsString>) -> BoxFuture<'a, u8> {
+pub fn run_rich<'a>(globals: &'a Globals, args: Vec<OsString>) -> BoxFuture<'a, anyhow::Result<u8>> {
     Box::pin(run(Repl::Rich, globals, args))
 }
 
 /// The fallback of `gait-min`: `-i` opens the plain REPL.
-pub fn run_plain<'a>(globals: &'a Globals, args: Vec<OsString>) -> BoxFuture<'a, u8> {
+pub fn run_plain<'a>(globals: &'a Globals, args: Vec<OsString>) -> BoxFuture<'a, anyhow::Result<u8>> {
     Box::pin(run(Repl::Plain, globals, args))
 }
 
-async fn run(repl: Repl, globals: &Globals, args: Vec<OsString>) -> u8 {
+async fn run(repl: Repl, globals: &Globals, args: Vec<OsString>) -> anyhow::Result<u8> {
     let parsed = match TurnArgs::parse(&args) {
         Ok(parsed) => parsed,
-        Err(error) => return usage_exit(&error),
+        Err(error) => {
+            let failure = op_registry::UsageError::InvalidField {
+                name: "arguments".to_owned(),
+                reason: error.to_string(),
+            };
+            return Err(coded_error::into_anyhow(failure));
+        }
     };
     let globals = globals.clone();
-    finish(on_turn_thread(move || traced(execute(repl, globals, parsed))).await)
+    on_turn_thread(move || traced(execute(repl, globals, parsed))).await
 }
 
 /// The turn runs inside the `gait.cli` span, parented on `TRACEPARENT`/`BAGGAGE`.
@@ -187,48 +173,18 @@ async fn traced(turn: impl std::future::Future<Output = anyhow::Result<u8>>) -> 
     turn.await
 }
 
-fn finish(result: anyhow::Result<u8>) -> u8 {
-    match result {
-        Ok(code) => code,
-        Err(error) => crate::report_code(&error),
-    }
-}
-
-/// A command line the turn cannot parse: the JSON error line on stderr, exit 2.
-fn usage_exit(error: &clap::Error) -> u8 {
-    let text = error.to_string();
-    let message = text
-        .trim_start()
-        .strip_prefix("error:")
-        .unwrap_or(&text)
-        .split("\n\n")
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_owned();
-    let failure = op_registry::UsageError::InvalidField {
-        name: "arguments".to_owned(),
-        reason: message,
-    };
-    super::usage_error_exit(coded_error::into_anyhow(failure))
-}
-
 async fn execute(repl: Repl, globals: Globals, cli: TurnArgs) -> anyhow::Result<u8> {
     let plan = cli.plan();
     match plan {
-        TurnPlan::Help | TurnPlan::NoTask => {
+        TurnPlan::NoTask => {
             print!("{}", root_help(repl));
-            return Ok(0);
-        }
-        TurnPlan::Version => {
-            println!("gait {}", env!("CARGO_PKG_VERSION"));
             return Ok(0);
         }
         _ => {}
     }
-    let gait_dir = GaitContext::from_globals(&Globals {
-        gait_dir: cli.gait_dir.clone().or(globals.gait_dir),
-        agent_dir: cli.agent_dir.clone().or(globals.agent_dir),
+    let gait_dir = <GaitContext as op_registry::CliContext>::from_globals(&Globals {
+        gait_dir: globals.gait_dir,
+        agent_dir: globals.agent_dir,
     })?
     .gait_dir()?;
     let codebase = cli
@@ -296,7 +252,7 @@ async fn execute(repl: Repl, globals: Globals, cli: TurnArgs) -> anyhow::Result<
             .to_argv();
             gait_cli::cli::run::cmd_run(&run_argv, gait_dir, codebase).await
         }
-        TurnPlan::Help | TurnPlan::Version | TurnPlan::NoTask => unreachable!("handled above"),
+        TurnPlan::NoTask => unreachable!("handled above"),
     }
 }
 
@@ -319,4 +275,29 @@ where
     tokio::task::spawn_blocking(move || handle.block_on(make()))
         .await
         .map_err(|error| gait_cli::cli::error::CliError::failed(format!("turn thread: {error}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TurnArgs, TURN_FLAGS};
+    use clap::{ArgAction, CommandFactory};
+
+    #[test]
+    fn fallback_flags_match_turn_arguments() {
+        let command = TurnArgs::command();
+        for flag in TURN_FLAGS {
+            let argument = command
+                .get_arguments()
+                .find(|argument| argument.get_long() == Some(flag.long))
+                .unwrap_or_else(|| panic!("TurnArgs is missing --{}", flag.long));
+
+            assert_eq!(argument.get_short(), flag.short, "--{} short", flag.long);
+            assert_eq!(
+                matches!(argument.get_action(), ArgAction::Set | ArgAction::Append),
+                flag.takes_value,
+                "--{} takes_value",
+                flag.long
+            );
+        }
+    }
 }

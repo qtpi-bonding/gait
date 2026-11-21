@@ -168,7 +168,7 @@ mod session_ops {
             CallOptions::default(),
         ))
         .unwrap_err();
-        assert_eq!(not_found_code(&err), "gait.op.not_found", "{err:#}");
+        assert_eq!(not_found_code(err.error()), "gait.op.not_found", "{err:#}");
     }
 
     #[test]
@@ -180,7 +180,7 @@ mod session_ops {
             CallOptions::default(),
         ))
         .unwrap_err();
-        assert_eq!(not_found_code(&err), "gait.op.not_found", "{err:#}");
+        assert_eq!(not_found_code(err.error()), "gait.op.not_found", "{err:#}");
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod kit {
         let dir = tempfile::tempdir().unwrap();
         let key_file = dir.path().join("key.pem");
         std::fs::write(&key_file, "KEYLINE-gait-registry-4417\n").unwrap();
-        let sentinel = testing::SecretSentinel { value: "sk-SENTINEL1234567890", key_file: &key_file };
+        let sentinel = testing::SecretSentinel::new("sk-SENTINEL1234567890", &key_file);
         let manual = full_manual();
         futures_executor_block(testing::assert_secrets_not_echoed(&registry(), Some(&manual), &sentinel));
     }

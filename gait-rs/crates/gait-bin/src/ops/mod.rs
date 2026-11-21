@@ -105,7 +105,7 @@ pub mod decl {
         /// List the active sessions, most recently updated first.
         "sessions" => { params: SessionsParams, output: Vec<SessionItem>,
                         access: reads, audience: owner, op: super::session::sessions,
-                        errors: [OpError] },
+                        errors: [OpError], paths: [cli, typed] },
         /// Show each mounted session and its live state.
         "ps" => { params: PsParams, output: Vec<ProcessItem>,
                   access: reads, audience: owner, op: super::session::ps,
@@ -113,7 +113,7 @@ pub mod decl {
         /// Show a session's token use, split into agent work and compaction.
         "stats" => { params: SessionId, output: SessionStats,
                      access: reads, audience: owner, op: super::session::stats,
-                     errors: [OpError] },
+                     errors: [OpError], paths: [cli, typed] },
         /// Show the outcome of a session's last completed run: its message, checkpoint, and the files and tools it touched.
         "log" => { params: SessionId, output: SessionSummary,
                    access: reads, audience: owner, op: super::session::log,
@@ -137,7 +137,7 @@ pub mod decl {
         /// Refuse the permission requests a session is waiting on.
         "deny" => { params: SessionId, output: DenyResult,
                     access: writes, audience: owner, op: super::session::deny,
-                    errors: [OpError] },
+                    errors: [OpError], paths: [cli, typed] },
         /// Approve the sandbox unlock requests a session is waiting on.
         "unlock" => { params: UnlockParams, output: UnlockResult,
                       access: writes, audience: owner, op: super::session::unlock,
@@ -319,8 +319,8 @@ pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     registry.push_extra(workflow_command(), run_workflow);
     match repl {
         #[cfg(feature = "rich-tui")]
-        Repl::Rich => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, turn::run_rich),
-        Repl::Plain => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, turn::run_plain),
+        Repl::Rich => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, false, turn::run_rich),
+        Repl::Plain => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, false, turn::run_plain),
     }
     registry
 }
@@ -328,16 +328,6 @@ pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
 /// Writes `error` as the JSON error line on stderr, records it, and returns its
 /// exit code (2 for the usage codes). For a failure the registry's runner does
 /// not see, such as the turn's own flags.
-pub fn usage_error_exit(error: anyhow::Error) -> u8 {
-    use std::io::IsTerminal;
-    #[cfg(feature = "telemetry")]
-    concord_telemetry::error_anyhow!(&error, source = "gait.cli");
-    let mut stderr = std::io::stderr();
-    let tty = stderr.is_terminal();
-    let _ = op_registry::write_error(&mut stderr, &error, &op_registry::Redactor::default(), tty);
-    op_registry::exit::exit_code(&error)
-}
-
 /// `workflow` stays a clap command: its positional run/continue/log/abort
 /// grammar is not an op. `--gait-dir` and `--pretty` are the registry's globals.
 #[cfg(feature = "workflow")]
@@ -361,7 +351,7 @@ fn workflow_command() -> clap::Command {
 fn run_workflow<'a>(
     globals: &'a Globals,
     matches: &'a clap::ArgMatches,
-) -> futures_util::future::BoxFuture<'a, u8> {
+) -> futures_util::future::BoxFuture<'a, anyhow::Result<u8>> {
     Box::pin(async move {
         let args = gait_cli::cli::workflow::WorkflowArgs {
             gait_dir: globals.gait_dir.clone(),
@@ -371,9 +361,6 @@ fn run_workflow<'a>(
         };
         // The workflow runner holds non-`Send` state across awaits, as the turn does.
         let result = turn::on_turn_thread(move || gait_cli::cli::workflow::cmd_workflow(args)).await;
-        match result {
-            Ok(code) => code,
-            Err(error) => crate::report_code(&error),
-        }
+        result
     })
 }

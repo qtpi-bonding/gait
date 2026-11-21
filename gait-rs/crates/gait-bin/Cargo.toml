@@ -39,7 +39,7 @@ min = []
 # Output JSON schemas (schemars 1, a different major from the workspace's
 # schemars 0.8) and `SecretFile`. Full `gait` only; `gait-min` stays without.
 schema = ["op-registry/schema", "dep:schemars_v1"]
-secrets = ["op-registry/secrets"]
+secrets = ["op-registry/secrets", "op-registry/prompt"]
 telemetry = ["dep:concord-telemetry", "dep:tracing", "gait-core/telemetry"]
 # `gait workflow` / REPL `/workflow` (real YAML DAG runs). Forwards into
 # `gait-cli`'s and `gait-repl`'s own `workflow` features, which gate

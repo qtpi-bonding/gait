@@ -442,7 +442,7 @@ dependencies = [
  "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1403,7 +1403,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1486,7 +1486,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2718,8 +2718,8 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "identity-crypto"
-version = "0.11.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=6472e3622a73110bcf3fcb11a946f1890bf232e1#6472e3622a73110bcf3fcb11a946f1890bf232e1"
+version = "0.12.0"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=d7514fc567ed118aa7108ca75ce9a5129e2507d1#d7514fc567ed118aa7108ca75ce9a5129e2507d1"
 dependencies = [
  "chrono",
  "hex",
@@ -2736,8 +2736,8 @@ dependencies = [
 
 [[package]]
 name = "identity-keyfile"
-version = "0.11.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=6472e3622a73110bcf3fcb11a946f1890bf232e1#6472e3622a73110bcf3fcb11a946f1890bf232e1"
+version = "0.12.0"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=d7514fc567ed118aa7108ca75ce9a5129e2507d1#d7514fc567ed118aa7108ca75ce9a5129e2507d1"
 dependencies = [
  "identity-crypto",
  "libc",
@@ -3257,7 +3257,7 @@ dependencies = [
 [[package]]
 name = "message-attestation"
 version = "0.5.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=b62397ab1cba659741b6cbfbdc6c57d25f41c26a#b62397ab1cba659741b6cbfbdc6c57d25f41c26a"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=371cc18622dfdbcfa9f05f0c12d247402e046e01#371cc18622dfdbcfa9f05f0c12d247402e046e01"
 dependencies = [
  "coded-error",
  "getrandom 0.4.2",
@@ -3395,7 +3395,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3518,25 +3518,28 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "op-registry"
-version = "0.3.0"
-source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=65b4f42d0c867d5a392bb6bb78da3f26efc2623a#65b4f42d0c867d5a392bb6bb78da3f26efc2623a"
+version = "0.4.0"
+source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=5ad22036c1c249146914e9462374c331877f770e#5ad22036c1c249146914e9462374c331877f770e"
 dependencies = [
  "anyhow",
  "clap",
  "coded-error",
+ "futures-channel",
  "futures-util",
  "op-registry-derive",
+ "rpassword",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "zeroize",
 ]
 
 [[package]]
 name = "op-registry-derive"
-version = "0.3.0"
-source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=65b4f42d0c867d5a392bb6bb78da3f26efc2623a#65b4f42d0c867d5a392bb6bb78da3f26efc2623a"
+version = "0.4.0"
+source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=5ad22036c1c249146914e9462374c331877f770e#5ad22036c1c249146914e9462374c331877f770e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4009,7 +4012,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "once_cell",
@@ -4029,7 +4032,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn",
@@ -4042,7 +4045,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn",
@@ -4207,7 +4210,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4540,6 +4543,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpassword"
+version = "7.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa2c5d9304b618df61ff17f3d3485c6e1854a3d94902a49abbb8d43dfbe0464"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rust_jwk_duo"
 version = "0.1.0"
 source = "git+https://github.com/qtpi-bonding-org/rust_jwk_duo.git?rev=58d11e887afeff427084dab9007665ceef6fa507#58d11e887afeff427084dab9007665ceef6fa507"
@@ -4580,7 +4604,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4593,7 +4617,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5267,7 +5291,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

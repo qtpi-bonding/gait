@@ -141,7 +141,7 @@ fn the_registry_passes_the_secrets_check() {
     let dir = tempfile::TempDir::new().unwrap();
     let key_file = dir.path().join("key.pem");
     std::fs::write(&key_file, "KEYLINE-gait-auth-7731\n").unwrap();
-    let sentinel = op_registry::testing::SecretSentinel { value: SENTINEL, key_file: &key_file };
+    let sentinel = op_registry::testing::SecretSentinel::new(SENTINEL, &key_file);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(op_registry::testing::assert_secrets_not_echoed(
         &gait_bin::ops::registry(),
