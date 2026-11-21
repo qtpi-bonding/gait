@@ -32,7 +32,7 @@ fn sessions_last_flag_is_accepted_and_empty_workspace_returns_no_active_sessions
     );
     let value: serde_json::Value =
         serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
-    assert_eq!(value, serde_json::json!([]));
+    assert_eq!(value, serde_json::json!({"items": []}));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn the_old_positional_session_id_is_gone() {
 }
 
 #[test]
-fn ps_on_an_empty_workspace_is_an_empty_array() {
+fn ps_on_an_empty_workspace_has_items() {
     let ws = tempfile::TempDir::new().unwrap();
     init_workspace(ws.path());
     let exe = env!("CARGO_BIN_EXE_gait");
@@ -96,7 +96,7 @@ fn ps_on_an_empty_workspace_is_an_empty_array() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let value: serde_json::Value =
         serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
-    assert_eq!(value, serde_json::json!([]));
+    assert_eq!(value, serde_json::json!({"items": []}));
 }
 
 #[test]

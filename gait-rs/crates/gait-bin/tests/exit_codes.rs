@@ -184,9 +184,8 @@ fn register_with_two_sources_is_a_usage_error() {
 }
 
 #[test]
-fn a_state_conflict_is_a_usage_error() {
-    // `--scope agent` without `--agent` is an `OpError::Conflict` from the library.
-    assert_usage(&["register", "--id", "x", "--kind", "mcp", "--url", "http://a", "--scope", "agent"]);
+fn undo_list_with_turn_is_a_usage_error() {
+    assert_usage(&["undo", "--id", "x", "--list", "--turn", "1"]);
 }
 
 #[test]

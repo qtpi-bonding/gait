@@ -310,22 +310,10 @@ pub fn min_registry() -> op_registry::Registry<GaitContext> {
     registry
 }
 
-/// A state conflict an op reports is a caller mistake: a usage error, exit 2.
-fn conflict_is_usage(error: anyhow::Error) -> anyhow::Error {
-    match coded_error::downcast_ref::<gait_ops::OpError>(&error) {
-        Some(gait_ops::OpError::Conflict(message)) => coded_error::into_anyhow(op_registry::UsageError::InvalidField {
-            name: "arguments".into(),
-            reason: message.clone(),
-        }),
-        _ => error,
-    }
-}
-
 /// A registry whose turn opens `repl` for `-i`.
 pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     let mut registry = decl::registry();
     registry.set_call_hook(std::sync::Arc::new(GaitCallHook));
-    registry.set_error_mapper(conflict_is_usage);
     registry.merge(workspace::decl::registry());
     #[cfg(feature = "full")]
     registry.merge(manual::decl::registry());

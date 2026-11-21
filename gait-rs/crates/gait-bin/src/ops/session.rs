@@ -192,6 +192,7 @@ pub struct UndoParams {
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The turn to go back to, as numbered by `--list`. Turn 0 is the state before the first request and restores code only.
+    #[op(conflicts_with = "list")]
     pub turn: Option<u32>,
     /// Undo the code only.
     pub code: bool,

@@ -78,7 +78,7 @@ fn add_status_list_remove_round_trip_without_echoing_the_key() {
     let mut list = gait(home.path());
     list.args(["auth", "list"]);
     let list = run(list, "");
-    assert_eq!(json(&list), serde_json::json!([{"provider": "acme", "kind": "api", "status": null}]));
+    assert_eq!(json(&list), serde_json::json!({"items": [{"provider": "acme", "kind": "api", "status": null}]}));
     assert_no_secret("auth list", &list);
 
     // A bare `gait auth` lists (the group's default).
@@ -96,7 +96,7 @@ fn add_status_list_remove_round_trip_without_echoing_the_key() {
     assert_eq!(json(&remove), serde_json::json!({"provider": "acme", "action": "removed"}));
     let mut after = gait(home.path());
     after.args(["auth", "list"]);
-    assert_eq!(json(&run(after, "")), serde_json::json!([]));
+    assert_eq!(json(&run(after, "")), serde_json::json!({"items": []}));
 }
 
 #[test]
@@ -107,8 +107,8 @@ fn add_with_an_empty_key_is_an_error_line_not_a_success() {
     add.args(["auth", "add", "--id", "acme", "--key-file"])
         .arg(key_file.path());
     let add = run(add, "\n");
-    assert_eq!(add.status.code(), Some(2));
-    assert_eq!(last_error(&add)["error"]["code"], "op_registry.usage.invalid");
+    assert_eq!(add.status.code(), Some(65));
+    assert_eq!(last_error(&add)["error"]["code"], "gait.op.conflict");
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn seed_models_cache(home: &std::path::Path) {
 }
 
 #[test]
-fn models_is_a_typed_json_array() {
+fn models_are_typed_items() {
     let home = private_home();
     seed_models_cache(home.path());
     let mut all = gait(home.path());
@@ -243,17 +243,17 @@ fn models_is_a_typed_json_array() {
     assert_eq!(all.status.code(), Some(0), "{}", text(&all.stderr));
     assert_eq!(
         json(&all),
-        serde_json::json!([
+        serde_json::json!({"items": [
             {"id": "alpha-1", "provider": "acme", "name": "Alpha One", "contextLength": 128000},
             {"id": "beta-2", "provider": "other", "name": "Beta Two", "contextLength": null},
-        ])
+        ]})
     );
     let mut some = gait(home.path());
     some.args(["models", "--filter", "ACME"]);
     let some = run(some, "");
     let value = json(&some);
-    assert_eq!(value.as_array().unwrap().len(), 1);
-    assert_eq!(value[0]["id"], "alpha-1");
+    assert_eq!(value["items"].as_array().unwrap().len(), 1);
+    assert_eq!(value["items"][0]["id"], "alpha-1");
 }
 
 #[test]

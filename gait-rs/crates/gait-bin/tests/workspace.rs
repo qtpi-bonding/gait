@@ -117,7 +117,7 @@ fn link_writes_a_gaitref_that_later_commands_resolve() {
     // The pointer is found by walk-up with no flag.
     let sessions = gait(&work, &["sessions"]);
     assert_eq!(sessions.code, Some(0), "{}", sessions.stderr);
-    assert_eq!(json(&sessions.stdout), Value::Array(vec![]));
+    assert_eq!(json(&sessions.stdout), serde_json::json!({"items": []}));
 }
 
 #[test]

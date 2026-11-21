@@ -59,8 +59,8 @@ fn inference_add_list_show_round_trip() {
     assert_eq!(list.code, Some(0), "{}", list.stderr);
     // The workspace's own profile is listed too; the new one is among them.
     let rows = list.json();
-    assert!(rows.as_array().unwrap().contains(&json!({"name": "fast", "model": "opencode/kimi-k2.6"})), "{rows}");
-    assert!(rows.as_array().unwrap().iter().all(|r| r["name"].is_string() && r["model"].is_string()));
+    assert!(rows["items"].as_array().unwrap().contains(&json!({"name": "fast", "model": "opencode/kimi-k2.6"})), "{rows}");
+    assert!(rows["items"].as_array().unwrap().iter().all(|r| r["name"].is_string() && r["model"].is_string()));
 
     // Bare `inference` is `list`.
     let bare = run(ws.path(), &["inference"]);
@@ -116,8 +116,8 @@ fn mode_add_list_show_with_repeated_flags() {
     assert_eq!(shown["allow"], json!(["read", "grep"]));
     let list = run(ws.path(), &["mode", "list"]);
     let rows = list.json();
-    assert_eq!(rows.as_array().unwrap().len(), 1, "{rows}");
-    assert_eq!(rows[0]["name"], "review");
+    assert_eq!(rows["items"].as_array().unwrap().len(), 1, "{rows}");
+    assert_eq!(rows["items"][0]["name"], "review");
     let missing = run(ws.path(), &["mode", "show", "--id", "nosuch"]);
     assert_eq!(missing.code, Some(65));
     assert_eq!(missing.error_code(), "gait.op.not_found");
@@ -148,13 +148,13 @@ fn config_set_get_with_id_and_value() {
 }
 
 #[test]
-fn daemons_bare_lists_and_stop_needs_a_known_daemon() {
+fn daemons_items_lists_and_stop_needs_a_known_daemon() {
     let ws = workspace();
     let bare = run(ws.path(), &["daemons"]);
     assert_eq!(bare.code, Some(0), "{}", bare.stderr);
-    assert_eq!(bare.json(), json!([]));
+    assert_eq!(bare.json(), json!({"items": []}));
     let all = run(ws.path(), &["daemons", "list", "--all"]);
-    assert_eq!(all.json(), json!([]));
+    assert_eq!(all.json(), json!({"items": []}));
     let stop = run(ws.path(), &["daemons", "stop", "--id", "ghost"]);
     assert_eq!(stop.code, Some(65));
     assert_eq!(stop.error_code(), "gait.op.not_found");
