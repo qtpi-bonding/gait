@@ -140,10 +140,10 @@ pub mod decl {
         /// Create a gait directory at `--gait-dir`: config, a default agent, skills and sessions, as a git repository.
         "init" => { params: InitParams, output: InitResult,
                     access: writes, audience: owner, local: super::init,
-                    errors: [OpError, CliError] },
+                    errors: [OpError, CliError], paths: [cli] },
         /// Point the current directory at the gait directory `--gait-dir` by writing a `.gaitref` file.
         "link" => { params: LinkParams, output: LinkResult,
                     access: writes, audience: owner, local: super::link,
-                    errors: [OpError, CliError] },
+                    errors: [OpError, CliError], paths: [cli] },
     }
 }

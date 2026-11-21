@@ -94,7 +94,7 @@ output! {
 #[derive(Debug, Clone, OpParams)]
 pub struct ProviderId {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "provider", id_only)]
+    #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
 }
 
@@ -104,7 +104,7 @@ pub struct AuthListParams {}
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthLinkParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "provider", id_only)]
+    #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// The tool whose credentials are used, for example `codex`.
     pub source: String,
@@ -115,7 +115,7 @@ pub struct AuthLinkParams {
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthLoginParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "provider", id_only)]
+    #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
     #[op(secret)]
@@ -125,7 +125,7 @@ pub struct AuthLoginParams {
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthLogoutParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "provider", id_only)]
+    #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// For `openai-signin`: also forget its registration.
     pub forget: bool,

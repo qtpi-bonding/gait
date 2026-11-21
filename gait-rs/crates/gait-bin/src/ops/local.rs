@@ -3,7 +3,7 @@
 //! into the registry.
 use super::{infra, GaitContext};
 use gait_cli::cli::error::CliError;
-use op_registry::{CallOptions, OpParams};
+use op_registry::{CallOptions, OpParams, Ref};
 use std::path::Path;
 
 output! {
@@ -30,8 +30,9 @@ output! {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalSetupParams {
-    /// The profile name; `local-qwen` when not given.
-    pub name: Option<String>,
+    /// The profile id; `local-qwen` when not given.
+    #[op(subject = "inference", id_only, absent_ok, default = "local-qwen", hide_default)]
+    pub id: Option<Ref>,
     /// The GGUF file of Qwen2.5-Coder-7B-Instruct Q4_K_M.
     pub model_path: String,
     /// The context window to give llama.cpp; 8192 is a conservative starter.
@@ -47,8 +48,9 @@ pub struct LocalSetupParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalRunnerParams {
-    /// The profile name; `local-qwen` when not given.
-    pub name: Option<String>,
+    /// The profile id; `local-qwen` when not given.
+    #[op(subject = "inference", id_only, default = "local-qwen", hide_default)]
+    pub id: Option<Ref>,
 }
 
 const DEFAULT_NAME: &str = "local-qwen";
@@ -59,7 +61,7 @@ pub async fn setup(
     params: LocalSetupParams,
     _opts: CallOptions,
 ) -> anyhow::Result<LocalSetup> {
-    let name = params.name.as_deref().unwrap_or(DEFAULT_NAME);
+    let name = params.id.as_ref().map(Ref::as_raw).unwrap_or(DEFAULT_NAME);
     let info = gait_ops::inference::add_local_qwen(
         &ctx.gait_dir()?,
         name,
@@ -83,7 +85,7 @@ async fn runner(
     action: &str,
 ) -> anyhow::Result<LocalRunner> {
     let dir = ctx.gait_dir()?;
-    let name = params.name.as_deref().unwrap_or(DEFAULT_NAME);
+    let name = params.id.as_ref().map(Ref::as_raw).unwrap_or(DEFAULT_NAME);
     let inference = gait_core::inferences::load_inference(&dir, name).map_err(infra)?;
     let not_local = || CliError::invalid_input(format!("inference '{name}' is not a configured local profile"));
     let llm = inference
@@ -176,14 +178,14 @@ pub mod decl {
         /// Write a local inference profile for a Qwen2.5-Coder GGUF file.
         "local setup" => { params: LocalSetupParams, output: LocalSetup,
                            access: writes, audience: owner, op: super::setup,
-                           errors: [OpError, CliError] },
+                           errors: [OpError, CliError], paths: [cli] },
         /// Show whether the local model runner for a profile is running.
         "local status" => { params: LocalRunnerParams, output: LocalRunner,
                             access: reads, audience: owner, op: super::status,
-                            errors: [OpError, CliError] },
+                            errors: [OpError, CliError], paths: [cli] },
         /// Stop the local model runner for a profile.
         "local stop" => { params: LocalRunnerParams, output: LocalRunner,
                           access: writes, audience: owner, op: super::stop,
-                          errors: [OpError, CliError] },
+                          errors: [OpError, CliError], paths: [cli] },
     }
 }

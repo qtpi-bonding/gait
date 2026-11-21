@@ -49,7 +49,7 @@ pub struct InferenceRef {
 #[derive(Debug, Clone, OpParams)]
 pub struct InferenceAddParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "inference", id_only)]
+    #[op(subject = "inference", id_only, absent_ok)]
     pub id: Ref,
     /// The model, in `provider/id` form, for example `opencode/kimi-k2.6`.
     pub model: String,

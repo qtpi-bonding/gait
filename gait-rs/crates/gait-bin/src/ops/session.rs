@@ -272,6 +272,7 @@ pub struct ReplyParams {
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The answer to the session's single pending question.
+    #[op(allow_hyphen)]
     pub message: String,
 }
 

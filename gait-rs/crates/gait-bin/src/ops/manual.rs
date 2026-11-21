@@ -87,10 +87,10 @@ pub mod decl {
         /// Print the manual: guides, reference and every command, as Markdown, or with `--json` as descriptors.
         "manual show" => { params: ManualShowParams, output: ManualOutput,
                            access: reads, audience: owner, local: super::show,
-                           errors: [CliError], default: true, text: true },
+                           errors: [CliError], default: true, text: true, paths: [cli] },
         /// Write the manual to `skills/gait-manual/SKILL.md` in the gait directory, for agents to read.
         "manual install" => { params: ManualInstallParams, output: ManualInstalled,
                               access: writes, audience: owner, local: super::install,
-                              errors: [OpError, CliError] },
+                              errors: [OpError, CliError], paths: [cli] },
     }
 }

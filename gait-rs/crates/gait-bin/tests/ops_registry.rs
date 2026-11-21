@@ -234,14 +234,19 @@ mod kit {
 
     /// A fresh gait dir for the fixtures and the context.
     fn gait_dir() -> (tempfile::TempDir, GaitContext) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
         let init = std::process::Command::new(env!("CARGO_BIN_EXE_gait"))
+            .env_remove("GAIT_DIR")
             .arg("init")
             .arg("--gait-dir")
             .arg(dir.path())
             .output()
             .unwrap();
-        assert!(init.status.success());
+        assert!(
+            init.status.success(),
+            "init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
         let globals = Globals { gait_dir: Some(dir.path().to_path_buf()), agent_dir: None };
         let ctx = <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap();
         (dir, ctx)
@@ -288,9 +293,43 @@ mod kit {
             Fixture { op: "config_get", args: json!({"id": "nosuch"}) },
             Fixture { op: "unregister", args: json!({"kind": "mcp", "id": "nosuch"}) },
             Fixture { op: "enable", args: json!({"kind": "mcp", "id": "nosuch"}) },
-            Fixture { op: "auth_status", args: json!({"id": "nosuch"}) },
         ];
         futures_executor_block(testing::assert_error_codes(&registry(), &ctx, &fixtures));
+    }
+
+    #[test]
+    #[serial]
+    fn absent_ok_subjects_accept_new_ids() {
+        let (dir, _ctx) = gait_dir();
+        let gait_dir = dir.path().to_str().unwrap();
+
+        let (code, output, error) = super::run(&[
+            "gait", "auth", "status", "--gait-dir", gait_dir, "--id", "new-provider",
+        ]);
+        assert_eq!(code, 0, "{error}");
+        assert!(output.contains("new-provider"), "{output}");
+
+        let (code, _, error) = super::run(&[
+            "gait", "inference", "add", "--gait-dir", gait_dir, "--id", "new-profile",
+            "--model", "provider/model", "--compaction-threshold-tokens", "1000",
+        ]);
+        assert_eq!(code, 0, "{error}");
+
+        let (code, _, error) = super::run(&[
+            "gait", "config", "set", "--gait-dir", gait_dir, "--id", "theme", "--value", "-dark",
+        ]);
+        assert_eq!(code, 0, "{error}");
+
+        let (code, _, error) = super::run(&[
+            "gait", "mode", "add", "--gait-dir", gait_dir, "--id", "new-mode", "--allow", "read",
+        ]);
+        assert_eq!(code, 0, "{error}");
+
+        let (code, _, error) = super::run(&[
+            "gait", "register", "--gait-dir", gait_dir, "--kind", "mcp", "--id", "dash-args",
+            "--command", "echo", "--args", "-y @pkg/example",
+        ]);
+        assert_eq!(code, 0, "{error}");
     }
 
     /// Runs the ignored test `name` of this file in a child process with stdin closed: `auth add`
@@ -338,22 +377,6 @@ mod kit {
         testing::assert_canonical(&registry(), &canonical);
     }
 
-    /// Ops whose `--id` names something to create, or whose missing-object answer is a value by
-    /// design (listed in OR-notes-t10.txt). The kit expects `not_found` from every op with an `id`.
-    const NOT_A_LOOKUP: &[&str] = &[
-        "auth_add",        // stores a key under a provider name
-        "auth_link",       // links a provider to an external source
-        "auth_login",      // starts a sign-in
-        "auth_logout",     // signs out of the supported providers only
-        "auth_remove",     // idempotent: removing an absent key is success
-        "auth_unlink",     // idempotent
-        "auth_status",     // an unknown provider is `{"status": null}`
-        "inference_add",   // creates a profile
-        "mode_add",        // creates a mode
-        "config_set",      // sets a key
-        "register",        // creates an extension
-    ];
-
     #[test]
     fn assert_unknown_ref_not_found() {
         in_child("child_unknown_ref_not_found");
@@ -363,25 +386,7 @@ mod kit {
     #[ignore = "run by assert_unknown_ref_not_found in a child process"]
     fn child_unknown_ref_not_found() {
         let (_dir, ctx) = gait_dir();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            futures_executor_block(testing::assert_unknown_ref_not_found(&registry(), &ctx, &[]));
-        }));
-        let Err(payload) = result else { return };
-        let message = payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-            .unwrap_or_default();
-        let offenders: Vec<&str> = message
-            .lines()
-            .filter_map(|l| l.trim_start().strip_prefix("- "))
-            .filter_map(|l| l.split(':').next())
-            .collect();
-        assert!(!offenders.is_empty(), "unexpected failure: {message}");
-        let unexpected: Vec<&&str> = offenders.iter().filter(|o| !NOT_A_LOOKUP.contains(*o)).collect();
-        assert!(unexpected.is_empty(), "ops that should be not_found: {unexpected:?}\n{message}");
-        let silent: Vec<&&str> = NOT_A_LOOKUP.iter().filter(|o| !offenders.contains(*o)).collect();
-        assert!(silent.is_empty(), "allowlisted ops that now pass; drop them: {silent:?}");
+        futures_executor_block(testing::assert_unknown_ref_not_found(&registry(), &ctx, &[]));
     }
 
     #[test]

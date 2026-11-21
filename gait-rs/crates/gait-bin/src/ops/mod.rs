@@ -109,7 +109,7 @@ pub mod decl {
         /// Show each mounted session and its live state.
         "ps" => { params: PsParams, output: Vec<ProcessItem>,
                   access: reads, audience: owner, op: super::session::ps,
-                  errors: [OpError] },
+                  errors: [OpError], paths: [cli] },
         /// Show a session's token use, split into agent work and compaction.
         "stats" => { params: SessionId, output: SessionStats,
                      access: reads, audience: owner, op: super::session::stats,
@@ -117,23 +117,23 @@ pub mod decl {
         /// Show the outcome of a session's last completed run: its message, checkpoint, and the files and tools it touched.
         "log" => { params: SessionId, output: SessionSummary,
                    access: reads, audience: owner, op: super::session::log,
-                   errors: [OpError] },
+                   errors: [OpError], paths: [cli] },
         /// Go back to an earlier turn of a session, or list the turns with `--list`.
         "undo" => { params: UndoParams, output: UndoResult,
                     access: [writes, destructive], audience: owner, op: super::session::undo,
-                    errors: [OpError] },
+                    errors: [OpError], paths: [cli] },
         /// Merge a session onto main and remove its worktree, or all idle sessions with `--all --yes`.
         "persist" => { params: BulkParams, output: SessionAct,
                        access: writes, audience: owner, op: super::session::persist,
-                       errors: [OpError] },
+                       errors: [OpError], paths: [cli] },
         /// Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
         "discard" => { params: BulkParams, output: SessionAct,
                        access: [writes, destructive], audience: owner, op: super::session::discard,
-                       errors: [OpError] },
+                       errors: [OpError], paths: [cli] },
         /// Approve the permission requests a session is waiting on.
         "allow" => { params: AllowParams, output: AllowResult,
                      access: writes, audience: owner, op: super::session::allow,
-                     errors: [OpError] },
+                     errors: [OpError], paths: [cli] },
         /// Refuse the permission requests a session is waiting on.
         "deny" => { params: SessionId, output: DenyResult,
                     access: writes, audience: owner, op: super::session::deny,
@@ -141,131 +141,131 @@ pub mod decl {
         /// Approve the sandbox unlock requests a session is waiting on.
         "unlock" => { params: UnlockParams, output: UnlockResult,
                       access: writes, audience: owner, op: super::session::unlock,
-                      errors: [OpError] },
+                      errors: [OpError], paths: [cli] },
         /// Answer the single clarify or inform question a session is waiting on.
         "reply" => { params: ReplyParams, output: ReplyResult,
                      access: writes, audience: owner, op: super::session::reply,
-                     errors: [OpError] },
+                     errors: [OpError], paths: [cli] },
         /// List the configured providers and what kind of credential each has; never any key text.
         "auth list" => { params: AuthListParams, output: Vec<AuthEntry>,
                          access: reads, audience: owner, op: super::auth::list,
-                         errors: [OpError, CliError], default: true },
+                         errors: [OpError, CliError], default: true, paths: [cli] },
         /// Show whether a provider has a credential and of what kind, without revealing it.
         "auth status" => { params: ProviderId, output: AuthStatus,
                            access: reads, audience: owner, op: super::auth::status,
-                           errors: [OpError, CliError] },
+                           errors: [OpError, CliError], paths: [cli] },
         /// Store an API key for a provider. The key is read from the terminal prompt, or one line of stdin; it is never an argument.
         "auth add" => { params: ProviderId, output: AuthSaved,
                         access: writes, audience: owner, op: super::auth::add,
-                        errors: [OpError, CliError] },
+                        errors: [OpError, CliError], paths: [cli] },
         /// Use another tool's credentials for a provider without copying them.
         "auth link" => { params: AuthLinkParams, output: AuthSaved,
                          access: writes, audience: owner, op: super::auth::link,
-                         errors: [OpError, CliError] },
+                         errors: [OpError, CliError], paths: [cli] },
         /// Sign in to a subscription provider: a device code for `openai-codex`, a browser step for `openai-signin`.
         "auth login" => { params: AuthLoginParams, output: AuthLogin,
                           access: [writes, network], audience: owner, op: super::auth::login,
-                          errors: [OpError, CliError] },
+                          errors: [OpError, CliError], paths: [cli] },
         /// Sign out of a subscription provider. API keys are removed with `auth remove`.
         "auth logout" => { params: AuthLogoutParams, output: AuthLogout,
                            access: [writes, network, destructive], audience: owner, op: super::auth::logout,
-                           errors: [OpError, CliError] },
+                           errors: [OpError, CliError], paths: [cli] },
         /// Remove a stored API key. Removing a provider with no key still succeeds.
         "auth remove" => { params: ProviderId, output: AuthRemoved,
                            access: [writes, destructive], audience: owner, op: super::auth::remove,
-                           errors: [OpError, CliError] },
+                           errors: [OpError, CliError], paths: [cli] },
         /// Drop the link to another tool's credentials; that tool's own credentials are not touched.
         "auth unlink" => { params: ProviderId, output: AuthRemoved,
                            access: writes, audience: owner, op: super::auth::unlink,
-                           errors: [OpError, CliError] },
+                           errors: [OpError, CliError], paths: [cli] },
         /// List the models of the models.dev catalog, optionally filtered by `--filter`.
         "models" => { params: ModelsParams, output: Vec<ModelItem>,
                       access: [reads, network], audience: owner, op: super::auth::models,
-                      errors: [CliError] },
+                      errors: [CliError], paths: [cli] },
         /// List the named inference profiles with their models.
         "inference list" => { params: InferenceListParams, output: Vec<InferenceItem>,
                               access: reads, audience: owner, op: super::inference::list,
-                              errors: [OpError, CliError], default: true },
+                              errors: [OpError, CliError], default: true, paths: [cli] },
         /// Show one inference profile.
         "inference show" => { params: InferenceRef, output: InferenceItem,
                               access: reads, audience: owner, op: super::inference::show,
-                              errors: [OpError, CliError] },
+                              errors: [OpError, CliError], paths: [cli] },
         /// Write a new inference profile: a model and the token count at which compaction begins.
         "inference add" => { params: InferenceAddParams, output: InferenceAdded,
                              access: writes, audience: owner, op: super::inference::add,
-                             errors: [OpError, CliError] },
+                             errors: [OpError, CliError], paths: [cli] },
         /// Use an inference profile for a session from its next turn.
         "inference select" => { params: InferenceSelectParams, output: InferenceSelected,
                                 access: writes, audience: owner, op: super::inference::select,
-                                errors: [OpError, CliError] },
+                                errors: [OpError, CliError], paths: [cli] },
         /// Put a session back on the default inference.
         "inference clear" => { params: InferenceClearParams, output: InferenceSelected,
                                access: writes, audience: owner, op: super::inference::clear,
-                               errors: [OpError, CliError] },
+                               errors: [OpError, CliError], paths: [cli] },
         /// List the named modes with their patterns.
         "mode list" => { params: ModeListParams, output: Vec<ModeItem>,
                          access: reads, audience: owner, op: super::mode::list,
-                         errors: [OpError, CliError], default: true },
+                         errors: [OpError, CliError], default: true, paths: [cli] },
         /// Show one mode.
         "mode show" => { params: ModeRef, output: ModeItem,
                          access: reads, audience: owner, op: super::mode::show,
-                         errors: [OpError, CliError] },
+                         errors: [OpError, CliError], paths: [cli] },
         /// Write a new mode from allow and deny patterns, steering text and a description.
         "mode add" => { params: ModeAddParams, output: ModeAdded,
                         access: writes, audience: owner, op: super::mode::add,
-                        errors: [OpError, CliError] },
+                        errors: [OpError, CliError], paths: [cli] },
         /// Use a mode for a session from its next turn.
         "mode select" => { params: ModeSelectParams, output: ModeSelected,
                            access: writes, audience: owner, op: super::mode::select,
-                           errors: [OpError, CliError] },
+                           errors: [OpError, CliError], paths: [cli] },
         /// Put a session back on the default mode.
         "mode clear" => { params: ModeClearParams, output: ModeSelected,
                           access: writes, audience: owner, op: super::mode::clear,
-                          errors: [OpError, CliError] },
+                          errors: [OpError, CliError], paths: [cli] },
         /// Read one config key; a known key that is not set is null, an unknown key is not found.
         "config get" => { params: ConfigKey, output: ConfigEntry,
                           access: reads, audience: owner, op: super::config::get,
-                          errors: [OpError, CliError] },
+                          errors: [OpError, CliError], paths: [cli] },
         /// Set one config key, keeping the file's comments and every other key.
         "config set" => { params: ConfigSetParams, output: ConfigEntry,
                           access: writes, audience: owner, op: super::config::set,
-                          errors: [OpError, CliError] },
+                          errors: [OpError, CliError], paths: [cli] },
         /// Show the effective config: defaults and gait.jsonc, with the skills and MCP servers found on disk.
         "config show" => { params: ConfigShowParams, output: serde_json::Value,
                            access: reads, audience: owner, op: super::config::show,
-                           errors: [OpError, CliError] },
+                           errors: [OpError, CliError], paths: [cli] },
         /// List the running background daemons, or all of them with `--all`.
         "daemons list" => { params: DaemonListParams, output: Vec<DaemonItem>,
                             access: reads, audience: owner, op: super::daemon::list,
-                            errors: [OpError, CliError], default: true },
+                            errors: [OpError, CliError], default: true, paths: [cli] },
         /// Stop a running daemon by name and record the stop.
         "daemons stop" => { params: DaemonStopParams, output: DaemonStopped,
                             access: [writes, destructive], audience: owner, op: super::daemon::stop,
-                            errors: [OpError, CliError] },
+                            errors: [OpError, CliError], paths: [cli] },
         /// Register an MCP server, a skill or a plugin. An MCP server and a skill start disabled.
         "register" => { params: ExtensionRegisterParams, output: ExtensionRegistered,
                         access: writes, audience: owner, op: super::extension::register,
-                        errors: [OpError, CliError] },
+                        errors: [OpError, CliError], paths: [cli] },
         /// Remove a registered extension.
         "unregister" => { params: ExtensionUnregisterParams, output: ExtensionUnregistered,
                           access: [writes, destructive], audience: owner, op: super::extension::unregister,
-                          errors: [OpError, CliError] },
+                          errors: [OpError, CliError], paths: [cli] },
         /// Switch an extension on in the gait directory's config, for sessions that start later.
         "enable" => { params: ExtensionToggleParams, output: ExtensionToggled,
                       access: writes, audience: owner, op: super::extension::enable,
-                      errors: [OpError, CliError] },
+                      errors: [OpError, CliError], paths: [cli] },
         /// Switch an extension off in the gait directory's config.
         "disable" => { params: ExtensionToggleParams, output: ExtensionToggled,
                        access: writes, audience: owner, op: super::extension::disable,
-                       errors: [OpError, CliError] },
+                       errors: [OpError, CliError], paths: [cli] },
         /// Load an extension into one session from its next turn.
         "load" => { params: ExtensionLoadParams, output: ExtensionLoaded,
                     access: writes, audience: owner, op: super::extension::load,
-                    errors: [OpError, CliError] },
+                    errors: [OpError, CliError], paths: [cli] },
         /// Unload an extension from one session.
         "unload" => { params: ExtensionLoadParams, output: ExtensionLoaded,
                       access: writes, audience: owner, op: super::extension::unload,
-                      errors: [OpError, CliError] },
+                      errors: [OpError, CliError], paths: [cli] },
     }
 }
 

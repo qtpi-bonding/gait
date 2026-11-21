@@ -109,7 +109,7 @@ output! {
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionRegisterParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "extension", id_only)]
+    #[op(subject = "extension", id_only, absent_ok)]
     pub id: Ref,
     /// The kind of extension.
     #[op(value_enum)]
@@ -118,11 +118,14 @@ pub struct ExtensionRegisterParams {
     pub url: Option<String>,
     /// The program that starts an MCP server.
     pub command: Option<String>,
-    /// The arguments for `--command`, as one string split on spaces. Write it as `--args=-y pkg` when it starts with a dash.
+    /// The arguments for `--command`, as one string split on spaces.
+    #[op(allow_hyphen)]
     pub args: Option<String>,
     /// A one-line description; required when registering a skill.
+    #[op(allow_hyphen)]
     pub description: Option<String>,
     /// The text of a skill, given inline.
+    #[op(allow_hyphen)]
     pub content: Option<String>,
     /// A file to read a skill from.
     pub path: Option<String>,

@@ -52,15 +52,17 @@ pub struct ModeRef {
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeAddParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "mode", id_only)]
+    #[op(subject = "mode", id_only, absent_ok)]
     pub id: Ref,
     /// A tool pattern the mode allows (repeatable).
     pub allow: Vec<String>,
     /// A tool pattern the mode denies (repeatable).
     pub deny: Vec<String>,
     /// Free-form steering text added to the prompt.
+    #[op(allow_hyphen)]
     pub steer: Option<String>,
     /// A one-line description; required when registering a skill.
+    #[op(allow_hyphen)]
     pub description: Option<String>,
 }
 

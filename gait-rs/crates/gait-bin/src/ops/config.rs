@@ -22,9 +22,10 @@ pub struct ConfigKey {
 #[derive(Debug, Clone, OpParams)]
 pub struct ConfigSetParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    #[op(subject = "key", id_only)]
+    #[op(subject = "key", id_only, absent_ok)]
     pub id: Ref,
     /// The value: JSON (a number, boolean, array or object) or plain text.
+    #[op(allow_hyphen)]
     pub value: String,
 }
 
