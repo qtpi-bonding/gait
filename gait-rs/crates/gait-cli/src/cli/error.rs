@@ -158,4 +158,36 @@ mod tests {
         let err = CliError::usage("gait: needs a session id");
         assert_eq!(format!("{err:#}"), "gait: needs a session id");
     }
+
+    #[test]
+    fn expired_auth_error_keeps_its_code_through_the_run_error_line() {
+        use coded_error::cli::exit_code_anyhow;
+
+        let message =
+            "the linked codex credentials expired; run `codex login` again";
+        let e = coded_error::into_anyhow(gait_auth::AuthError::Expired(message.into()));
+        let err = CliError::failed_with("[gait] run error", e);
+        let facts = coded_error::from_anyhow(&err).unwrap().facts();
+
+        assert_eq!(facts.code, "gait.auth.expired");
+        assert_eq!(facts.class, coded_error::ErrorClass::Logical);
+        assert_eq!(exit_code_anyhow(&err), 65);
+        assert_eq!(text(&err), "[gait] run error: the linked codex credentials expired; run `codex login` again");
+    }
+
+    #[test]
+    fn expired_auth_error_keeps_its_code_when_the_turn_marked_it_recorded() {
+        use coded_error::cli::exit_code_anyhow;
+
+        let message =
+            "the linked codex credentials expired; run `codex login` again";
+        let e = coded_error::into_anyhow(gait_auth::AuthError::Expired(message.into()));
+        let err = mark_recorded(CliError::failed_with("[gait] run error", e));
+        let facts = coded_error::from_anyhow(&err).unwrap().facts();
+
+        assert_eq!(facts.code, "gait.auth.expired");
+        assert_eq!(exit_code_anyhow(&err), 65);
+        assert!(is_recorded(&err));
+        assert_eq!(text(&err), "[gait] run error: the linked codex credentials expired; run `codex login` again");
+    }
 }

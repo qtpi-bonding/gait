@@ -368,4 +368,15 @@ mod tests {
             assert_eq!(e.class(), ErrorClass::Logical, "status {status}");
         }
     }
+
+    #[test]
+    fn auth_error_variant_keeps_the_expired_code() {
+        let e = ProviderError::Auth(gait_auth::AuthError::Expired(
+            "run `codex login` again".into(),
+        ));
+        assert_eq!(e.code(), "gait.auth.expired");
+        assert_eq!(e.class(), coded_error::ErrorClass::Logical);
+        assert_eq!(e.to_string(), "run `codex login` again");
+        assert!(!e.is_retryable());
+    }
 }
