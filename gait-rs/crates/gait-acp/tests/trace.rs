@@ -134,8 +134,7 @@ async fn prompt_with_meta_traceparent_parents_its_events() {
                 .block_task()
                 .await?
                 .session_id;
-            let request =
-                PromptRequest::new(sid, vec!["trace me".to_string().into()]).meta(meta);
+            let request = PromptRequest::new(sid, vec!["trace me".to_string().into()]).meta(meta);
             cx.send_request(request).block_task().await?;
             Ok(())
         })

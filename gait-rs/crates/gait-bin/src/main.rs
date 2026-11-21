@@ -7,7 +7,10 @@ fn main() -> ExitCode {
     // it is read from the raw arguments, ahead of the registry's own parse.
     gait_bin::apply_agent_dir_flag(&raw);
     let identity = IdentityContext::from_env();
-    let agent_id = identity.as_ref().ok().and_then(|value| value.as_ref())
+    let agent_id = identity
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
         .map(|ctx| ctx.agent_id().to_string());
     if let Err(error) = gait_bin::install_agent_identity(identity) {
         return gait_bin::report(&error);
@@ -18,8 +21,7 @@ fn main() -> ExitCode {
     // The hand is the exception: it seals itself with Landlock, so its telemetry
     // starts after the seal and it runs on the main thread alone.
     let _guard = gait_bin::start_telemetry(&raw, "gait", agent_id);
-    gait_bin::build_runtime(&raw)
-        .block_on(run(raw))
+    gait_bin::build_runtime(&raw).block_on(run(raw))
 }
 
 async fn run(raw: Vec<String>) -> ExitCode {
@@ -51,7 +53,9 @@ async fn run(raw: Vec<String>) -> ExitCode {
             let span = tracing::info_span!("gait.run");
             concord_telemetry::propagation::set_parent_from_env(&span);
             return gait_bin::finish_code(
-                gait_cli::cli::args::cmd_run(&raw[2..]).instrument(span).await,
+                gait_cli::cli::args::cmd_run(&raw[2..])
+                    .instrument(span)
+                    .await,
             );
         }
         #[cfg(not(feature = "telemetry"))]

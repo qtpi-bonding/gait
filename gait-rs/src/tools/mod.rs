@@ -496,7 +496,10 @@ mod tests {
         // Task 6c gates its module declaration, `builtin_tools`'s
         // registration, and this list's entry all on `code-mode`.
         let names = builtin_tool_names();
-        assert!(!names.contains(&"code"), "code tool present under min: {names:?}");
+        assert!(
+            !names.contains(&"code"),
+            "code tool present under min: {names:?}"
+        );
     }
 
     #[test]

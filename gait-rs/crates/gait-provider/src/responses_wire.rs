@@ -281,10 +281,16 @@ mod tests {
 
     /// The stream under test, with a call span nobody reads.
     fn response_stream(
-        events: impl futures_util::Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send + 'static,
+        events: impl futures_util::Stream<Item = Result<eventsource_stream::Event, ProviderError>>
+            + Send
+            + 'static,
         fmt: fn(&ResponsesFailure) -> String,
     ) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
-        super::response_stream(events, fmt, crate::telemetry::ModelCall::begin(&Default::default()))
+        super::response_stream(
+            events,
+            fmt,
+            crate::telemetry::ModelCall::begin(&Default::default()),
+        )
     }
 
     fn event(name: &str, data: Value) -> eventsource_stream::Event {
@@ -309,7 +315,12 @@ mod tests {
             cache_write_input_tokens(&usage),
         );
         assert_eq!(
-            (normalized.input_tokens, normalized.output_tokens, normalized.cache_read_tokens, normalized.cache_write_tokens),
+            (
+                normalized.input_tokens,
+                normalized.output_tokens,
+                normalized.cache_read_tokens,
+                normalized.cache_write_tokens
+            ),
             (212, 40, 2688, 100)
         );
         // Never underflows when a backend reports more cache than input.
@@ -334,7 +345,11 @@ mod tests {
             })
             .expect("usage chunk");
         assert_eq!(
-            (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens),
+            (
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens
+            ),
             (212, 2688, 100)
         );
     }
@@ -446,13 +461,40 @@ mod cache_prefix_tests {
     fn a_later_request_extends_the_earlier_one_byte_for_byte() {
         let params = LlmParamsConfig::default();
         let history = vec![user("first"), user("second")];
-        let earlier = request_body("m", "sys", &history[..1], &[], &params, RequestKind::Turn, Some("k"));
-        let later = request_body("m", "sys", &history, &[], &params, RequestKind::Turn, Some("k"));
-        let (a, b) = (earlier["input"].as_array().unwrap(), later["input"].as_array().unwrap());
+        let earlier = request_body(
+            "m",
+            "sys",
+            &history[..1],
+            &[],
+            &params,
+            RequestKind::Turn,
+            Some("k"),
+        );
+        let later = request_body(
+            "m",
+            "sys",
+            &history,
+            &[],
+            &params,
+            RequestKind::Turn,
+            Some("k"),
+        );
+        let (a, b) = (
+            earlier["input"].as_array().unwrap(),
+            later["input"].as_array().unwrap(),
+        );
         assert!(b.len() > a.len());
-        assert_eq!(a[..], b[..a.len()], "history prefix must not change between calls");
+        assert_eq!(
+            a[..],
+            b[..a.len()],
+            "history prefix must not change between calls"
+        );
         for field in ["model", "instructions", "tools", "prompt_cache_key"] {
-            assert_eq!(earlier.get(field), later.get(field), "{field} must be stable");
+            assert_eq!(
+                earlier.get(field),
+                later.get(field),
+                "{field} must be stable"
+            );
         }
     }
 }

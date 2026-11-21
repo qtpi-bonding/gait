@@ -28,7 +28,10 @@ fn min_help_excludes_workflow_and_local() {
 
     // Positive: the Min command surface manual.yaml and Task 4's
     // MIN_REPL_COMMANDS both depend on.
-    assert!(help.contains("the REPL") || help.contains("-i"), "the turn is described: {help}");
+    assert!(
+        help.contains("the REPL") || help.contains("-i"),
+        "the turn is described: {help}"
+    );
     assert!(help.contains("init"), "missing init: {help}");
     assert!(help.contains("sessions"), "missing sessions: {help}");
     assert!(help.contains("config"), "missing config: {help}");
@@ -39,7 +42,14 @@ fn min_help_excludes_workflow_and_local() {
     // register/enable/disable/load/unload are intentionally still present —
     // they stay unconditional in gait-cli (skill/plugin admin, not
     // workflow- or local-specific).
-    for still_present in ["register", "unregister", "enable", "disable", "load", "unload"] {
+    for still_present in [
+        "register",
+        "unregister",
+        "enable",
+        "disable",
+        "load",
+        "unload",
+    ] {
         assert!(
             help.contains(still_present),
             "expected {still_present} to remain present in gait-min: {help}"
@@ -74,7 +84,10 @@ fn min_manual_has_no_install() {
         .output()
         .expect("gait-min manual --help should run");
     let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("--json"), "expected the manual op's flags: {help}");
+    assert!(
+        help.contains("--json"),
+        "expected the manual op's flags: {help}"
+    );
     assert!(
         !help.contains("install"),
         "gait-min manual --help must not expose `install`: {help}"
@@ -83,7 +96,11 @@ fn min_manual_has_no_install() {
         .args(["manual", "install"])
         .output()
         .unwrap();
-    assert_eq!(install.status.code(), Some(2), "install is not a gait-min command");
+    assert_eq!(
+        install.status.code(),
+        Some(2),
+        "install is not a gait-min command"
+    );
 }
 
 /// Renders the Min manual from the Min registry. Confirms `init`, `/new` and
@@ -92,7 +109,8 @@ fn min_manual_has_no_install() {
 #[test]
 fn min_manual_omits_workflows_and_extensions() {
     let registry = gait_bin::ops::min_registry();
-    let rendered = gait_bin::manual::render(&registry, ManualFlavor::Min, MIN_REPL_COMMANDS).unwrap();
+    let rendered =
+        gait_bin::manual::render(&registry, ManualFlavor::Min, MIN_REPL_COMMANDS).unwrap();
     assert!(rendered.contains("### gait-min init"));
     assert!(rendered.contains("`/new`"));
     assert!(rendered.contains("`sandbox`"));
@@ -134,7 +152,10 @@ fn min_manual_writes_stdout_only() {
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     let ops = value["ops"].as_array().unwrap();
     assert!(ops.iter().any(|op| op["name"] == "init"));
-    assert!(ops.iter().all(|op| op.get("outputSchema").is_none()), "no output schemas in gait-min");
+    assert!(
+        ops.iter().all(|op| op.get("outputSchema").is_none()),
+        "no output schemas in gait-min"
+    );
 
     let entries: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()

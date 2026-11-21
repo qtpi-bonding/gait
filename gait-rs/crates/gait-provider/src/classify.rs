@@ -125,7 +125,9 @@ pub async fn classify(model: &str, state: &str) -> Result<RiskScores, ClassifyEr
         .env_var
         .and_then(|v| std::env::var(v).ok())
         .filter(|k| !k.is_empty())
-        .ok_or_else(|| ClassifyError::MissingApiKey(spec.env_var.unwrap_or("<unknown>").to_string()))?;
+        .ok_or_else(|| {
+            ClassifyError::MissingApiKey(spec.env_var.unwrap_or("<unknown>").to_string())
+        })?;
 
     let base_url = spec.base_url.unwrap_or_default();
     let req = build_request(model_id, state);
@@ -139,9 +141,8 @@ pub async fn classify(model: &str, state: &str) -> Result<RiskScores, ClassifyEr
         headers,
         serde_json::to_value(&req).map_err(crate::provider::ProviderError::from)?,
     );
-    let transport = crate::transport::ProviderTransport::new(
-        crate::transport::TransportConfig::default(),
-    )?;
+    let transport =
+        crate::transport::ProviderTransport::new(crate::transport::TransportConfig::default())?;
     let resp: ClassifyResponse = transport.post_json(request).await?;
 
     let get = |k: &str| -> Result<f64, ClassifyError> {
@@ -175,10 +176,7 @@ mod tests {
 
     #[test]
     fn build_request_shapes_three_noul_questions() {
-        let req = build_request(
-            "jev-latest",
-            "shell: rm -rf /tmp/x\n\npatterns: shell:rm *",
-        );
+        let req = build_request("jev-latest", "shell: rm -rf /tmp/x\n\npatterns: shell:rm *");
         assert_eq!(req.questions.len(), 3);
         assert!(req.questions.contains_key("confidentiality_risk"));
         assert!(req.questions.contains_key("integrity_risk"));

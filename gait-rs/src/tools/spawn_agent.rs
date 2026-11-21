@@ -80,9 +80,7 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
         &tx_path,
         events::user_text(opts.task),
         crate::proto::envelope::EventScope::Session,
-        |ev| {
-            gait_identity::sign_direct_event(identity, ev, opts.new_id, 3600, &wall_clock_secs)
-        },
+        |ev| gait_identity::sign_direct_event(identity, ev, opts.new_id, 3600, &wall_clock_secs),
     )?;
 
     opts.repos.traces.commit_session(
@@ -279,7 +277,8 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "scaller001".into(),
-            ).with_identity(Some(identity.clone())),
+            )
+            .with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
         assert!(tool.parameters()["properties"]["inference"].is_object());
@@ -406,7 +405,8 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "scaller".into(),
-            ).with_identity(Some(identity.clone())),
+            )
+            .with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
         let result = tool
@@ -442,7 +442,8 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "sparent01".into(),
-            ).with_identity(Some(identity.clone())),
+            )
+            .with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
 
@@ -503,7 +504,8 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "scaller001".into(),
-            ).with_identity(Some(identity.clone())),
+            )
+            .with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
 

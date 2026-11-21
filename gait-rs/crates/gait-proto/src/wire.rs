@@ -350,7 +350,8 @@ mod tests {
             assert!(minted.ts > 0);
             assert!(!minted.content_hash.is_empty());
             Ok(expected_copy)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(ev.provenance, vec![expected]);
     }
 
@@ -373,7 +374,8 @@ mod tests {
             let mut old = json.clone();
             let mut provenance = serde_json::Map::new();
             provenance.insert(field.to_string(), value);
-            old["provenance"] = serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
+            old["provenance"] =
+                serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
             let error = serde_json::from_value::<Event>(old).expect_err(field);
             assert!(!error.to_string().is_empty());
         }
@@ -381,7 +383,8 @@ mod tests {
         let mut current = json;
         let mut provenance = serde_json::Map::new();
         provenance.insert("authorId".into(), serde_json::json!("p256:aa"));
-        current["provenance"] = serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
+        current["provenance"] =
+            serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
         serde_json::from_value::<Event>(current).expect("authorId is a valid provenance field");
     }
 
@@ -405,7 +408,10 @@ mod tests {
         // An unrelated parse failure keeps its own error.
         std::fs::write(&path, "not json\n").unwrap();
         let message = read_events(&path).unwrap_err().to_string();
-        assert!(!message.contains("removed identity format"), "got: {message}");
+        assert!(
+            !message.contains("removed identity format"),
+            "got: {message}"
+        );
     }
 
     #[test]

@@ -809,7 +809,10 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::NotFound(_))
+        ));
     }
 
     // -- deny --
@@ -847,7 +850,10 @@ mod tests {
         let ws = ws();
         let _tx = make_session(ws.path(), "sdeny02");
         let err = deny(ws.path(), "sdeny02").unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::NotFound(_))
+        ));
     }
 
     // -- unlock (3 plan tests + a few extras) --
@@ -1060,7 +1066,10 @@ mod tests {
             agent: None,
         })
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -1184,7 +1193,13 @@ mod tests {
             }],
         )
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "got {err:?}");
+        assert!(
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::NotFound(_))
+            ),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1203,7 +1218,13 @@ mod tests {
             }],
         )
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "got {err:?}");
+        assert!(
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::NotFound(_))
+            ),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1263,8 +1284,8 @@ mod telemetry_tests {
     use super::*;
     use gait_events::gait::events::v1 as ev;
     use gait_state::proto::gait::log::v1 as pb;
-    use gait_state::session::log::read_events;
     use gait_state::proto::wire;
+    use gait_state::session::log::read_events;
     use tempfile::TempDir;
 
     fn ws() -> TempDir {
@@ -1327,7 +1348,8 @@ mod telemetry_tests {
             },
         )
         .unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
+        let event =
+            capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::Allow as i32);
         assert_eq!(event.scope, ev::GrantScope::Session as i32);
         assert_eq!(event.item_count, 1);
@@ -1343,7 +1365,8 @@ mod telemetry_tests {
         let tx = session(ws.path(), &sid);
         seed_permission(&tx, "p1");
         deny(ws.path(), &sid).unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
+        let event =
+            capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::Deny as i32);
         assert_eq!(event.scope, ev::GrantScope::Unspecified as i32);
         assert!(!event.persisted);
@@ -1369,7 +1392,8 @@ mod telemetry_tests {
             }],
         )
         .unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
+        let event =
+            capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::Allow as i32);
         assert_eq!(event.scope, ev::GrantScope::Global as i32);
         assert_eq!(event.item_count, 1);
@@ -1401,7 +1425,8 @@ mod telemetry_tests {
             agent: None,
         })
         .unwrap();
-        let event = capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
+        let event =
+            capture.single_event_where::<ev::PermissionDecided>(|e| e.gait_session_id == sid);
         assert_eq!(event.decision, ev::PermissionDecision::SandboxUnlock as i32);
         assert_eq!(event.scope, ev::GrantScope::Global as i32);
         assert!(event.persisted);

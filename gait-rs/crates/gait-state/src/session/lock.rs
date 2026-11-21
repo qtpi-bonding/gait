@@ -41,7 +41,12 @@ fn proc_starttime(pid: u32) -> Option<u64> {
 /// The command name may contain spaces and parentheses; fields resume after
 /// the last ')'. After it, `state` is field 3, so field 22 is index 19.
 fn starttime_from_stat(stat: &str) -> Option<u64> {
-    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
 }
 
 /// Is the process recorded in a lock file still the one that wrote it? A pid
@@ -61,7 +66,10 @@ fn holder_is_live(
     if !alive(pid) {
         return false;
     }
-    match (fields.next().and_then(|s| s.parse::<u64>().ok()), starttime(pid)) {
+    match (
+        fields.next().and_then(|s| s.parse::<u64>().ok()),
+        starttime(pid),
+    ) {
         (Some(recorded), Some(current)) => recorded == current,
         _ => true,
     }
@@ -128,8 +136,12 @@ mod tests {
     fn acquiring_a_held_lock_fails_with_the_typed_already_running_error() {
         let dir = TempDir::new().unwrap();
         let _held = SessionLock::acquire(dir.path()).unwrap();
-        let error = SessionLock::acquire(dir.path()).err().expect("second acquire fails");
-        let busy = error.downcast_ref::<super::AlreadyRunning>().expect("typed busy error");
+        let error = SessionLock::acquire(dir.path())
+            .err()
+            .expect("second acquire fails");
+        let busy = error
+            .downcast_ref::<super::AlreadyRunning>()
+            .expect("typed busy error");
         assert_eq!(busy.pid, std::process::id().to_string());
     }
 
@@ -157,7 +169,13 @@ mod tests {
     #[test]
     fn starttime_parses_a_command_name_with_spaces_and_parens() {
         // After "(name)": state, then fields 4..=21 (18 numbers), then starttime.
-        let stat = format!("42 (a b) c) S {} 777 23", (4..=21).map(|n| n.to_string()).collect::<Vec<_>>().join(" "));
+        let stat = format!(
+            "42 (a b) c) S {} 777 23",
+            (4..=21)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         assert_eq!(super::starttime_from_stat(&stat), Some(777));
         assert_eq!(super::starttime_from_stat("42 (short) S 1"), None);
     }

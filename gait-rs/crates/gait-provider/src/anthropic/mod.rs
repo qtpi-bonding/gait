@@ -317,13 +317,14 @@ impl Provider for AnthropicProvider {
             max_tokens: Some(max_tokens),
             model_id: self.model.clone(),
         });
-        let stream = match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                call.fail(&error);
-                return Err(error);
-            }
-        };
+        let stream =
+            match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    call.fail(&error);
+                    return Err(error);
+                }
+            };
         Ok(Box::pin(crate::anthropic::sse::body_stream(stream, call)))
     }
 

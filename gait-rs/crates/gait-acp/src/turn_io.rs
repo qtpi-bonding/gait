@@ -163,7 +163,10 @@ pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, anyhow::E
         Some(Outcome::Failed(failed)) => Err(match failed.error_code.as_deref() {
             Some(code) => coded_error::from_remote(
                 Some(code),
-                failed.error_class.as_deref().and_then(|class| class.parse().ok()),
+                failed
+                    .error_class
+                    .as_deref()
+                    .and_then(|class| class.parse().ok()),
                 failed.message.clone(),
             ),
             None => internal(failed.message.clone()),
@@ -403,10 +406,7 @@ impl AcpTurnSource {
             None
         };
         Self {
-            first: Some(TurnStart::Input {
-                bodies,
-                on_durable,
-            }),
+            first: Some(TurnStart::Input { bodies, on_durable }),
             cx,
             session_id,
             sid,
@@ -718,27 +718,27 @@ impl TurnSource for AcpTurnSource {
                     let req =
                         RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
                     let resp = tokio::select! {
-                        biased;
-                        // Our own session/cancel tripped the token: abandon. The completion
-                        // path sees was_cancelled() and resolves StopReason::Cancelled.
-                        _ = self.cancel.cancelled() => return None,
-                        r = client_request(
-                            tracing::info_span!(
-                                "acp.request_permission",
-                                acp_session_id = %self.session_id.0,
-                                error.code = tracing::field::Empty,
-                error.class = tracing::field::Empty
-                            ),
-                            self.cx.send_request(req).block_task(),
-                        ) => match r {
-                            Ok(r) => r,
-                            // Transport/connection error: abandon the turn (drain reaps it).
-                            Err(e) => {
-                                answer_transport_failed("permission", &e);
-                                return None;
-                            }
-                        },
-                    };
+                            biased;
+                            // Our own session/cancel tripped the token: abandon. The completion
+                            // path sees was_cancelled() and resolves StopReason::Cancelled.
+                            _ = self.cancel.cancelled() => return None,
+                            r = client_request(
+                                tracing::info_span!(
+                                    "acp.request_permission",
+                                    acp_session_id = %self.session_id.0,
+                                    error.code = tracing::field::Empty,
+                    error.class = tracing::field::Empty
+                                ),
+                                self.cx.send_request(req).block_task(),
+                            ) => match r {
+                                Ok(r) => r,
+                                // Transport/connection error: abandon the turn (drain reaps it).
+                                Err(e) => {
+                                    answer_transport_failed("permission", &e);
+                                    return None;
+                                }
+                            },
+                        };
                     note_answer("permission", resp.meta.as_ref());
                     match resp.outcome {
                         RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
@@ -896,15 +896,18 @@ mod tests {
         let session = format!("direct-session-{}", std::process::id());
         direct_on_durable(session.clone())().unwrap();
         direct_on_durable(session.clone())().unwrap();
-        let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(
-            |v| v.gait_session_id == session,
-        );
+        let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(|v| {
+            v.gait_session_id == session
+        });
         assert_eq!(events.len(), 2);
         assert_ne!(events[0].source_record_id, events[1].source_record_id);
         for event in &events {
             assert_ne!(event.source_record_id, session);
             assert_eq!(event.message_ids, vec![event.source_record_id.clone()]);
-            assert_eq!(event.source, gait_events::gait::events::v1::PromptSource::Direct as i32);
+            assert_eq!(
+                event.source,
+                gait_events::gait::events::v1::PromptSource::Direct as i32
+            );
         }
     }
 

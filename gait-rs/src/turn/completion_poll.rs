@@ -137,7 +137,6 @@ fn start_for(gait_dir: &Path, name: &str) -> crate::proto::gait::log::v1::Daemon
         .unwrap_or_default()
 }
 
-
 /// Idempotency keys (see `Completion`) for child agents that already have an
 /// `AgentUpdate` event in this session's log.
 ///

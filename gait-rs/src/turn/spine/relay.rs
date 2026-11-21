@@ -88,8 +88,7 @@ pub(crate) fn emit_turn_completed(
         .active_duration
         .as_ref()
         .map(|duration| {
-            duration.seconds.max(0) as u64 * 1_000
-                + (duration.nanos.max(0) as u64 / 1_000_000)
+            duration.seconds.max(0) as u64 * 1_000 + (duration.nanos.max(0) as u64 / 1_000_000)
         })
         .unwrap_or(0);
     let usage = turn.usage.unwrap_or_default();
@@ -111,7 +110,10 @@ pub(crate) fn emit_turn_completed(
 
 /// `PermissionRequested` for a logged permissions request; other events pass.
 #[cfg(feature = "telemetry")]
-pub(crate) fn note_permission_requested(session_id: &str, logged: &crate::proto::gait::log::v1::Event) {
+pub(crate) fn note_permission_requested(
+    session_id: &str,
+    logged: &crate::proto::gait::log::v1::Event,
+) {
     use crate::proto::gait::log::v1::{event::Body, payload::Kind};
     if let Some(Body::Payload(payload)) = logged.body.as_ref() {
         if let Some(Kind::Permissions(request)) = payload.kind.as_ref() {
@@ -360,7 +362,10 @@ fn close_unfinished_turn(
         ),
         Ok(_) => {}
         Err(failure) => {
-            super::error::record(super::error::SpineError::LogRelayFailed(failure.into()), session_id);
+            super::error::record(
+                super::error::SpineError::LogRelayFailed(failure.into()),
+                session_id,
+            );
         }
     }
 }
@@ -562,11 +567,9 @@ async fn relay_brain_turn_inner(
             .map_err(|e| anyhow::anyhow!("failed to configure brain enrollment: {e}"))?;
         // Convert to tokio Command (keeps all pre_exec hooks) and spawn async.
         let mut tokio_cmd = TokioCommand::from(std_cmd);
-        let child = tokio_cmd
-            .spawn()
-            .map_err(|e| {
-                super::error::raise(super::error::SpineError::BrainSpawnFailed(e), session_id)
-            })?;
+        let child = tokio_cmd.spawn().map_err(|e| {
+            super::error::raise(super::error::SpineError::BrainSpawnFailed(e), session_id)
+        })?;
         #[cfg(feature = "telemetry")]
         concord_telemetry::event!(gait_events::gait::events::v1::BrainSpawned {
             source_record_id: format!("{session_id}:{turn_id}"),
@@ -730,7 +733,8 @@ async fn relay_brain_turn_inner(
                     let sid = session_id.to_string();
                     state.inflight.spawn(async move {
                         let input = handlers::send_message::parse_send_input(&impulse);
-                        let feedback = handlers::send_message::handle_send_message(input, ctx).await;
+                        let feedback =
+                            handlers::send_message::handle_send_message(input, ctx).await;
                         let feedback = handlers::output::finalize_feedback(
                             feedback,
                             &gd,
@@ -1007,7 +1011,9 @@ fn record_terminal_failure(
     } else {
         // The brain sent no code: record it under the spine's own code so the
         // failure is still counted.
-        coded_error::into_anyhow(super::error::SpineError::TurnFailedUncoded(turn.message.clone()))
+        coded_error::into_anyhow(super::error::SpineError::TurnFailedUncoded(
+            turn.message.clone(),
+        ))
     };
     concord_telemetry::error_anyhow!(&err, source = "gait.turn", gait_session_id = %session_id);
 }
@@ -1015,7 +1021,9 @@ fn record_terminal_failure(
 /// Daemons to show the model in `<status>`. Only live ones: a daemon that has
 /// died is reported once through the completion poll, and listing every dead
 /// registry entry on each call only grows the prompt.
-fn running_daemons(gait_dir: &std::path::Path) -> Vec<crate::proto::gait::sandbox::v1::DaemonStatus> {
+fn running_daemons(
+    gait_dir: &std::path::Path,
+) -> Vec<crate::proto::gait::sandbox::v1::DaemonStatus> {
     use crate::session::daemons::{active, is_alive};
     active(gait_dir)
         .unwrap_or_default()
@@ -1304,7 +1312,11 @@ mod tests {
     async fn logged_out_entry_is_login_required() {
         let dir = tempfile::tempdir().unwrap();
         // the auth state refuses a directory looser than 0700 (umask-dependent)
-        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
         let path = dir.path().join("auth.json");
         let credential = gait_auth::SubscriptionCredential {
             provider_id: "openai-signin".into(),
@@ -1329,14 +1341,20 @@ mod tests {
         let error = prepare_credential_with("openai-signin", Some(lease), &method, &store)
             .await
             .expect_err("logged-out entries must stop the turn before brain spawn");
-        assert!(error.to_string().contains("gait auth login --id openai-signin"));
+        assert!(error
+            .to_string()
+            .contains("gait auth login --id openai-signin"));
     }
 
     #[tokio::test]
     async fn prepare_credential_logged_out_error_does_not_leak_secrets() {
         let dir = tempfile::tempdir().unwrap();
         // the auth state refuses a directory looser than 0700 (umask-dependent)
-        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
         let path = dir.path().join("auth.json");
         let credential = gait_auth::SubscriptionCredential {
             provider_id: "openai-signin".into(),
@@ -1460,9 +1478,13 @@ mod telemetry_tests {
             "turn-7",
             "openai/gpt-test",
             &FinalizedTurn {
-                outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::StructuredDone as i32,
+                outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::StructuredDone
+                    as i32,
                 started_ms: 42,
-                active_duration: Some(pbjson_types::Duration { seconds: 1, nanos: 2_000_000 }),
+                active_duration: Some(pbjson_types::Duration {
+                    seconds: 1,
+                    nanos: 2_000_000,
+                }),
                 usage: Some(crate::proto::gait::log::v1::TurnTokenUsage {
                     input: 11,
                     output: 22,
@@ -1472,15 +1494,24 @@ mod telemetry_tests {
                 ..Default::default()
             },
         );
-        let event = capture.single_event_where::<gait_events::gait::events::v1::TurnCompleted>(
-            |value| value.gait_session_id == id,
-        );
+        let event =
+            capture.single_event_where::<gait_events::gait::events::v1::TurnCompleted>(|value| {
+                value.gait_session_id == id
+            });
         assert_eq!(event.source_record_id, format!("{id}:42"));
-        assert_eq!(event.outcome, gait_events::gait::events::v1::TurnOutcome::Done as i32);
+        assert_eq!(
+            event.outcome,
+            gait_events::gait::events::v1::TurnOutcome::Done as i32
+        );
         assert_eq!(event.elapsed_ms, 1002);
         assert_eq!(event.started_ms, 42);
         assert_eq!(
-            (event.input_tokens, event.output_tokens, event.cache_read_tokens, event.cache_write_tokens),
+            (
+                event.input_tokens,
+                event.output_tokens,
+                event.cache_read_tokens,
+                event.cache_write_tokens
+            ),
             (11, 22, 33, 44)
         );
         assert_eq!(event.model, "openai/gpt-test");
@@ -1489,10 +1520,16 @@ mod telemetry_tests {
 
     #[test]
     fn agent_reported_maps_every_notify_outcome() {
-        use gait_events::gait::events::v1::NotifyOutcome as N;
         use crate::session::completion::{NotifyOutcome, WakeRequest};
+        use gait_events::gait::events::v1::NotifyOutcome as N;
         let cases = [
-            (NotifyOutcome::Woke(WakeRequest { gait_dir: "/tmp".into(), parent_session: "p".into() }), N::Woke),
+            (
+                NotifyOutcome::Woke(WakeRequest {
+                    gait_dir: "/tmp".into(),
+                    parent_session: "p".into(),
+                }),
+                N::Woke,
+            ),
             (NotifyOutcome::ParentBusy, N::Busy),
             (NotifyOutcome::AlreadySurfaced, N::AlreadySurfaced),
             (NotifyOutcome::NoParent, N::NoParent),
@@ -1508,7 +1545,14 @@ mod telemetry_tests {
         use gait_events::gait::events::v1::{AgentReported, NotifyOutcome as N};
         let capture = concord_telemetry::testing::capture_exclusive();
         let cases = [
-            (NotifyOutcome::Woke(WakeRequest { gait_dir: "/tmp".into(), parent_session: "p".into() }), N::Woke, true),
+            (
+                NotifyOutcome::Woke(WakeRequest {
+                    gait_dir: "/tmp".into(),
+                    parent_session: "p".into(),
+                }),
+                N::Woke,
+                true,
+            ),
             (NotifyOutcome::ParentBusy, N::Busy, false),
             (NotifyOutcome::AlreadySurfaced, N::AlreadySurfaced, false),
             (NotifyOutcome::NoParent, N::NoParent, false),
@@ -1516,7 +1560,8 @@ mod telemetry_tests {
         for (index, (outcome, expected, signed)) in cases.into_iter().enumerate() {
             let id = format!("report-test-{}-{index}", std::process::id());
             emit_agent_reported(&id, "parent", "child", "done", &outcome);
-            let got = capture.single_event_where::<AgentReported>(|value| value.source_record_id == id);
+            let got =
+                capture.single_event_where::<AgentReported>(|value| value.source_record_id == id);
             assert_eq!(got.signed, signed, "{expected:?}");
             assert_eq!(got.status, "done");
             assert_eq!(got.parent_session_id, "parent");

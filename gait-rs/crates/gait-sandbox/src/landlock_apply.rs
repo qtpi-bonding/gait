@@ -11,10 +11,17 @@ pub(crate) type AbiProbe = dyn Fn() -> Result<i32, i32>;
 pub(crate) fn probe_abi() -> Result<i32, i32> {
     // SAFETY: a pure query; null attr and zero size with the VERSION flag.
     let rc = unsafe {
-        libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<libc::c_void>(), 0usize, 1u32)
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            1u32,
+        )
     };
     if rc < 0 {
-        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::ENOSYS))
+        Err(std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::ENOSYS))
     } else {
         Ok(rc as i32)
     }
@@ -52,17 +59,29 @@ enum SealError {
     )]
     AbiTooOld(i32),
     #[error("Landlock ruleset creation failed (ABI {abi}): {source}")]
-    Create { abi: i32, source: landlock::RulesetError },
+    Create {
+        abi: i32,
+        source: landlock::RulesetError,
+    },
     #[error("Landlock rule for {} failed: {source}", path.display())]
-    PathRule { path: std::path::PathBuf, source: landlock::RulesetError },
+    PathRule {
+        path: std::path::PathBuf,
+        source: landlock::RulesetError,
+    },
     #[error("Landlock network rule for port {port} failed: {source}")]
-    NetRule { port: u16, source: landlock::RulesetError },
+    NetRule {
+        port: u16,
+        source: landlock::RulesetError,
+    },
     #[error("Landlock not applied: no_new_privs failed with {0}")]
     NoNewPrivs(Errno),
     #[error("Landlock not enforced by the kernel (ABI {0})")]
     NotEnforced(i32),
     #[error("Landlock restrict_self failed (ABI {abi}): {source}")]
-    Restrict { abi: i32, source: landlock::RulesetError },
+    Restrict {
+        abi: i32,
+        source: landlock::RulesetError,
+    },
 }
 
 /// Limits of the applied enforcement, for the status reason. Pure.
@@ -76,7 +95,9 @@ pub(crate) fn status_notes(
     let wants_net = net.handle_connect || net.handle_bind;
     if found < 4 {
         if wants_net {
-            notes.push(format!("network not enforced (Landlock ABI {found} lacks TCP rules; needs 4)"));
+            notes.push(format!(
+                "network not enforced (Landlock ABI {found} lacks TCP rules; needs 4)"
+            ));
         }
     } else {
         if let NetworkPolicy::Hosts(_) = network {
@@ -99,7 +120,9 @@ pub(crate) fn status_notes(
 }
 
 fn unavailable(why: SealError) -> anyhow::Result<SandboxStatus> {
-    Ok(SandboxStatus::Unavailable { reason: why.to_string() })
+    Ok(SandboxStatus::Unavailable {
+        reason: why.to_string(),
+    })
 }
 
 /// Apply `scope` to the calling thread using `probe` for the ABI.
@@ -119,9 +142,7 @@ pub(crate) fn apply_with_probe(
 
     let found = match probe() {
         Ok(v) => v,
-        Err(errno) => {
-            return unavailable(SealError::Probe(Errno(errno)))
-        }
+        Err(errno) => return unavailable(SealError::Probe(Errno(errno))),
     };
     if found < 3 {
         return unavailable(SealError::AbiTooOld(found));
@@ -134,8 +155,11 @@ pub(crate) fn apply_with_probe(
 
     let mut eff = scope.clone();
     if !eff.read_all {
-        eff.readable
-            .extend(crate::sandbox::platform_system_reads().iter().map(std::path::PathBuf::from));
+        eff.readable.extend(
+            crate::sandbox::platform_system_reads()
+                .iter()
+                .map(std::path::PathBuf::from),
+        );
     }
     eff.writable.push("/dev/null".into());
     eff.writable.push("/dev/tty".into());
@@ -167,11 +191,16 @@ pub(crate) fn apply_with_probe(
             access &= AccessFs::from_file(abi);
         }
         // A path that vanished since planning is simply not granted.
-        let Ok(fd) = PathFd::new(&rule.path) else { continue };
+        let Ok(fd) = PathFd::new(&rule.path) else {
+            continue;
+        };
         ruleset = match ruleset.add_rule(PathBeneath::new(fd, access)) {
             Ok(r) => r,
             Err(source) => {
-                return unavailable(SealError::PathRule { path: rule.path.clone(), source })
+                return unavailable(SealError::PathRule {
+                    path: rule.path.clone(),
+                    source,
+                })
             }
         };
     }
@@ -180,7 +209,12 @@ pub(crate) fn apply_with_probe(
         for port in &plan.net.connect_ports {
             ruleset = match ruleset.add_rule(NetPort::new(*port, AccessNet::ConnectTcp)) {
                 Ok(r) => r,
-                Err(source) => return unavailable(SealError::NetRule { port: *port, source }),
+                Err(source) => {
+                    return unavailable(SealError::NetRule {
+                        port: *port,
+                        source,
+                    })
+                }
             };
         }
     }
@@ -198,7 +232,11 @@ pub(crate) fn apply_with_probe(
         }
         Ok(_) => {
             let notes = status_notes(&scope.network, &plan.net, found);
-            Ok(if notes.is_empty() { SandboxStatus::Active } else { SandboxStatus::ActiveWithNotes { notes } })
+            Ok(if notes.is_empty() {
+                SandboxStatus::Active
+            } else {
+                SandboxStatus::ActiveWithNotes { notes }
+            })
         }
         Err(source) => unavailable(SealError::Restrict { abi: found, source }),
     }
@@ -233,7 +271,11 @@ mod tests {
     }
 
     fn net(c: bool, b: bool, ports: &[u16]) -> crate::landlock_plan::NetPlan {
-        crate::landlock_plan::NetPlan { handle_connect: c, handle_bind: b, connect_ports: ports.to_vec() }
+        crate::landlock_plan::NetPlan {
+            handle_connect: c,
+            handle_bind: b,
+            connect_ports: ports.to_vec(),
+        }
     }
 
     fn joined(v: Vec<String>) -> String {
@@ -284,14 +326,22 @@ mod tests {
         let scope = SandboxScope::default();
         for abi in [0, 1, 2] {
             let r = reason(apply_with_probe(&scope, &move || Ok(abi)).unwrap());
-            assert!(r.contains(&format!("ABI {abi}")), "reason {r:?} must name the ABI");
+            assert!(
+                r.contains(&format!("ABI {abi}")),
+                "reason {r:?} must name the ABI"
+            );
         }
     }
 
     /// Run this test binary again, running only `child_entry` in `mode`.
     fn run_child(mode: &str, tmp: &std::path::Path) -> (bool, String) {
         let out = Command::new(std::env::current_exe().unwrap())
-            .args(["landlock_apply::tests::child_entry", "--exact", "--nocapture", "--test-threads=1"])
+            .args([
+                "landlock_apply::tests::child_entry",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env("GAIT_LL_CHILD", mode)
             .env("GAIT_LL_TMP", tmp)
             .output()
@@ -314,7 +364,9 @@ mod tests {
     /// Entry point of the re-executed child. A no-op in a normal run.
     #[test]
     fn child_entry() {
-        let Ok(mode) = std::env::var("GAIT_LL_CHILD") else { return };
+        let Ok(mode) = std::env::var("GAIT_LL_CHILD") else {
+            return;
+        };
         let tmp = PathBuf::from(std::env::var("GAIT_LL_TMP").unwrap());
         let inside = tmp.join("in");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -348,10 +400,19 @@ mod tests {
             Err(e) => println!("LL-CONNECT:err {:?}", e.raw_os_error()),
         }
         drop(listener);
-        println!("LL-INSIDE-WRITE:{}", std::fs::write(inside.join("w"), b"x").is_ok());
-        println!("LL-OUTSIDE-WRITE:{}", std::fs::write(tmp.join("w"), b"x").is_ok());
+        println!(
+            "LL-INSIDE-WRITE:{}",
+            std::fs::write(inside.join("w"), b"x").is_ok()
+        );
+        println!(
+            "LL-OUTSIDE-WRITE:{}",
+            std::fs::write(tmp.join("w"), b"x").is_ok()
+        );
         println!("LL-INSIDE-READ:{}", std::fs::read(inside.join("f")).is_ok());
-        println!("LL-OUTSIDE-READ:{}", std::fs::read(tmp.join("outside.txt")).is_ok());
+        println!(
+            "LL-OUTSIDE-READ:{}",
+            std::fs::read(tmp.join("outside.txt")).is_ok()
+        );
         let sh = Command::new("/bin/sh")
             .args(["-c", "echo hi > /dev/null; echo shell-ok"])
             .output();
@@ -381,7 +442,10 @@ mod tests {
         assert!(out.contains("LL-STATUS:Active"), "{out}");
         assert!(out.contains("LL-INSIDE-WRITE:true"), "{out}");
         assert!(out.contains("LL-OUTSIDE-WRITE:false"), "{out}");
-        assert!(out.contains("LL-OUTSIDE-READ:true"), "read_all keeps reads open: {out}");
+        assert!(
+            out.contains("LL-OUTSIDE-READ:true"),
+            "read_all keeps reads open: {out}"
+        );
     }
 
     #[test]
@@ -397,10 +461,16 @@ mod tests {
         let tmp = fixture();
         let (ok, out) = run_child("netdeny", tmp.path());
         assert!(ok, "child failed: {out}");
-        assert!(out.contains(&format!("LL-CONNECT:err Some({})", libc::EACCES)), "{out}");
+        assert!(
+            out.contains(&format!("LL-CONNECT:err Some({})", libc::EACCES)),
+            "{out}"
+        );
         let (ok, out) = run_child("netall", tmp.path());
         assert!(ok, "child failed: {out}");
-        assert!(out.contains("LL-CONNECT:ok"), "control (network All) must connect: {out}");
+        assert!(
+            out.contains("LL-CONNECT:ok"),
+            "control (network All) must connect: {out}"
+        );
     }
 
     #[test]
@@ -415,6 +485,9 @@ mod tests {
         assert!(out.contains("LL-INSIDE-READ:true"), "{out}");
         assert!(out.contains("LL-OUTSIDE-READ:false"), "{out}");
         assert!(out.contains("LL-OUTSIDE-WRITE:false"), "{out}");
-        assert!(out.contains("LL-SHELL:shell-ok"), "shell must load libc and write /dev/null: {out}");
+        assert!(
+            out.contains("LL-SHELL:shell-ok"),
+            "shell must load libc and write /dev/null: {out}"
+        );
     }
 }

@@ -1078,10 +1078,9 @@ fn cascade_redact_tool_call_removes_paired_result() {
 
     // Both ToolCall and ToolResult should be Redacted.
     assert_eq!(muts.len(), 2, "cascade should produce 2 Redacts");
-    assert!(
-        muts.values()
-            .all(|m| matches!(m, MutationState::Redacted { .. }))
-    );
+    assert!(muts
+        .values()
+        .all(|m| matches!(m, MutationState::Redacted { .. })));
 
     let msgs = run_projection(&ActiveMessages, &all, &muts).msgs;
     assert!(msgs.is_empty(), "both paired events redacted → no messages");
@@ -1104,7 +1103,7 @@ fn cascade_redact_overrides_orphan_replace() {
     )
     .unwrap();
     wire::append(&path, redact_body(&tc_event.id)).unwrap(); // Redact ToolCall
-    // Replace ToolResult (same seq-space, but cascade must override).
+                                                             // Replace ToolResult (same seq-space, but cascade must override).
     let new_tr = pb::Payload {
         kind: Some(payload::Kind::ToolResult(pb::ToolResult {
             call_id: "cid2".into(),
@@ -1724,13 +1723,13 @@ fn signed_event_from_another_session_log_is_unverified() {
 #[test]
 fn active_raw_messages_omits_rejected_incoming_message_claim() {
     use std::collections::HashMap;
-    let body = crate::proto::wire::body(crate::proto::gait::log::v1::payload::Kind::IncomingMessage(
-        pb::IncomingMessage {
+    let body = crate::proto::wire::body(
+        crate::proto::gait::log::v1::payload::Kind::IncomingMessage(pb::IncomingMessage {
             content: "do not show this".into(),
             rejected_provenance_claim: true,
             ..Default::default()
-        },
-    ));
+        }),
+    );
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
     wire::append(&path, body).unwrap();
@@ -1751,7 +1750,11 @@ fn active_raw_messages_omits_incoming_message_without_provenance() {
     let path = dir.path().join("tx.jsonl");
     wire::append(&path, body).unwrap();
     let events = read_events(&path).unwrap();
-    assert_eq!(events.len(), 1, "malformed input remains in the durable log");
+    assert_eq!(
+        events.len(),
+        1,
+        "malformed input remains in the durable log"
+    );
     let raw = run_projection(&ActiveRawMessages::default(), &events, &HashMap::new());
     assert!(
         raw.base.is_empty(),
@@ -1787,7 +1790,11 @@ fn signed_event_without_verifier_is_unverified_not_dropped() {
     let mut evs = session_log("room-session");
     evs.push(msg);
     let raw = run_projection(&ActiveRawMessages::default(), &evs, &HashMap::new());
-    assert_eq!(raw.base.len(), 1, "a signed message with no verifier is still folded");
+    assert_eq!(
+        raw.base.len(),
+        1,
+        "a signed message with no verifier is still folded"
+    );
     let Message::User {
         content: MessageContent::Text(text),
         attribution,
@@ -1796,7 +1803,10 @@ fn signed_event_without_verifier_is_unverified_not_dropped() {
     else {
         panic!("expected a user message");
     };
-    assert_eq!(text, "signed, no verifier", "the folded message carries its own text");
+    assert_eq!(
+        text, "signed, no verifier",
+        "the folded message carries its own text"
+    );
     assert_eq!(attribution[0].trust, Trust::Unverified);
     assert_eq!(attribution[0].author_id, "unverified");
 }
@@ -1823,13 +1833,24 @@ fn forged_author_id_with_signed_message_is_not_trusted() {
     let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
     assert_eq!(raw.base.len(), 2);
 
-    let Message::User { attribution: bad_attr, .. } = &raw.base[0] else {
+    let Message::User {
+        attribution: bad_attr,
+        ..
+    } = &raw.base[0]
+    else {
         panic!("expected the forged-but-unsigned-for-this-session message to fold");
     };
     assert_eq!(bad_attr[0].trust, Trust::Unverified);
-    assert_eq!(bad_attr[0].author_id, "unverified", "the stored id must not be trusted");
+    assert_eq!(
+        bad_attr[0].author_id, "unverified",
+        "the stored id must not be trusted"
+    );
 
-    let Message::User { attribution: good_attr, .. } = &raw.base[1] else {
+    let Message::User {
+        attribution: good_attr,
+        ..
+    } = &raw.base[1]
+    else {
         panic!("expected the validly signed message to fold");
     };
     assert_eq!(good_attr[0].trust, Trust::Verified);
@@ -2185,7 +2206,12 @@ fn agent_update_text(raw: &RawMessagesState, index: usize) -> String {
 fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
-    let mut ev = scoped_mint(agent_update_body("s_old_field_ignored", "tests pass"), None, 0, 0);
+    let mut ev = scoped_mint(
+        agent_update_body("s_old_field_ignored", "tests pass"),
+        None,
+        0,
+        0,
+    );
     direct_signed(&ctx, &mut ev, "room-session", now);
 
     let mut evs = session_log("room-session");
@@ -2215,13 +2241,20 @@ fn signed_agent_update_without_a_verifier_folds_with_an_unverified_label() {
     };
     let raw = run_projection(&no_verifier, &evs, &HashMap::new());
 
-    assert_eq!(raw.base.len(), 1, "an unverifiable signed update must be folded, not dropped");
+    assert_eq!(
+        raw.base.len(),
+        1,
+        "an unverifiable signed update must be folded, not dropped"
+    );
     let t = agent_update_text(&raw, 0);
     assert!(
         t.starts_with("[agent:unverified] status: done"),
         "an unverifiable update renders the unverified label, got: {t}"
     );
-    assert!(!t.contains(&ctx.agent_id().to_string()), "no principal id without a verdict, got: {t}");
+    assert!(
+        !t.contains(&ctx.agent_id().to_string()),
+        "no principal id without a verdict, got: {t}"
+    );
 }
 
 #[test]
@@ -2247,7 +2280,13 @@ fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
     let mut ev = scoped_mint(
-        events::daemon_update("svc".into(), 0, "done", "/tmp/svc.log".into(), "svc@1".into()),
+        events::daemon_update(
+            "svc".into(),
+            0,
+            "done",
+            "/tmp/svc.log".into(),
+            "svc@1".into(),
+        ),
         None,
         0,
         0,
@@ -2262,17 +2301,32 @@ fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
     };
     let raw = run_projection(&no_verifier, &evs, &HashMap::new());
 
-    assert_eq!(raw.base.len(), 1, "an unverifiable signed daemon update must be folded");
-    let Message::User { content: MessageContent::Text(t), .. } = &raw.base[0] else {
+    assert_eq!(
+        raw.base.len(),
+        1,
+        "an unverifiable signed daemon update must be folded"
+    );
+    let Message::User {
+        content: MessageContent::Text(t),
+        ..
+    } = &raw.base[0]
+    else {
         panic!("expected a user message");
     };
     assert!(t.contains("[daemon:svc] [unverified]"), "got: {t}");
 
     let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
-    let Message::User { content: MessageContent::Text(t), .. } = &raw.base[0] else {
+    let Message::User {
+        content: MessageContent::Text(t),
+        ..
+    } = &raw.base[0]
+    else {
         panic!("expected a user message");
     };
-    assert!(t.starts_with("[daemon:svc] done"), "verified update has no unverified label, got: {t}");
+    assert!(
+        t.starts_with("[daemon:svc] done"),
+        "verified update has no unverified label, got: {t}"
+    );
 }
 
 #[test]
@@ -2280,7 +2334,13 @@ fn unsigned_daemon_update_folds_labelled_unverified() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
     let ev = scoped_mint(
-        events::daemon_update("svc".into(), 0, "done", "/tmp/svc.log".into(), "svc@1".into()),
+        events::daemon_update(
+            "svc".into(),
+            0,
+            "done",
+            "/tmp/svc.log".into(),
+            "svc@1".into(),
+        ),
         None,
         0,
         0,
@@ -2289,8 +2349,16 @@ fn unsigned_daemon_update_folds_labelled_unverified() {
     evs.push(ev);
     let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
 
-    assert_eq!(raw.base.len(), 1, "an unsigned daemon update must be folded, not dropped");
-    let Message::User { content: MessageContent::Text(t), .. } = &raw.base[0] else {
+    assert_eq!(
+        raw.base.len(),
+        1,
+        "an unsigned daemon update must be folded, not dropped"
+    );
+    let Message::User {
+        content: MessageContent::Text(t),
+        ..
+    } = &raw.base[0]
+    else {
         panic!("expected a user message");
     };
     assert!(t.starts_with("[daemon:svc] [unverified] done"), "got: {t}");
@@ -2319,7 +2387,12 @@ fn daemon_authored_attested_message_renders_verified_with_its_principal_id() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
     let principal = ctx.agent_id().to_string();
-    let mut ev = scoped_mint(agent_update_body("daemon-claimed", "build finished"), None, 0, 0);
+    let mut ev = scoped_mint(
+        agent_update_body("daemon-claimed", "build finished"),
+        None,
+        0,
+        0,
+    );
     direct_signed(&ctx, &mut ev, "room-session", now);
     ev.provenance[0].author_id = Some(principal.clone());
 
@@ -2332,7 +2405,10 @@ fn daemon_authored_attested_message_renders_verified_with_its_principal_id() {
         t.starts_with(&format!("[agent:{principal}] status: done")),
         "a verified daemon-side update renders its principal id, got: {t}"
     );
-    assert!(!t.contains("daemon-claimed"), "the session field must not leak, got: {t}");
+    assert!(
+        !t.contains("daemon-claimed"),
+        "the session field must not leak, got: {t}"
+    );
 }
 
 fn structured_incoming(
@@ -2365,8 +2441,13 @@ fn room(id: &str) -> identity_crypto::pb::Target {
 fn append_incoming(path: &std::path::Path, m: pb::IncomingMessage, author: &str) {
     wire::append_with_given_provenances(
         path,
-        crate::proto::wire::body(crate::proto::gait::log::v1::payload::Kind::IncomingMessage(m)),
-        vec![pb::Provenance { author_id: Some(author.into()), ..Default::default() }],
+        crate::proto::wire::body(crate::proto::gait::log::v1::payload::Kind::IncomingMessage(
+            m,
+        )),
+        vec![pb::Provenance {
+            author_id: Some(author.into()),
+            ..Default::default()
+        }],
         crate::proto::envelope::EventScope::Session,
     )
     .unwrap();
@@ -2374,7 +2455,10 @@ fn append_incoming(path: &std::path::Path, m: pb::IncomingMessage, author: &str)
 
 fn user_text_of(msg: &crate::types::Message) -> String {
     match msg {
-        crate::types::Message::User { content: MessageContent::Text(t), .. } => t.clone(),
+        crate::types::Message::User {
+            content: MessageContent::Text(t),
+            ..
+        } => t.clone(),
         other => panic!("expected a User text message, got {other:?}"),
     }
 }
@@ -2397,9 +2481,17 @@ fn a_resumed_session_renders_a_verified_incoming_message_from_its_structured_fie
     assert!(text.contains(&format!("from=\"{author}\"")), "{text}");
     assert!(text.contains("to=\"room:room-general\""), "{text}");
     assert!(text.contains("trust=\"verified\""), "{text}");
-    assert!(text.contains(">hello from the room</incoming-message>"), "{text}");
-    let Message::User { attribution, .. } = &msgs[0] else { unreachable!() };
-    assert!(attribution.is_empty(), "the shared renderer is the only wrapper");
+    assert!(
+        text.contains(">hello from the room</incoming-message>"),
+        "{text}"
+    );
+    let Message::User { attribution, .. } = &msgs[0] else {
+        unreachable!()
+    };
+    assert!(
+        attribution.is_empty(),
+        "the shared renderer is the only wrapper"
+    );
 }
 
 #[test]
@@ -2419,7 +2511,10 @@ fn hostile_body_and_ids_cannot_forge_a_tag_or_attribute() {
     );
     // Stored ids that fail the Message rules are never shown to the model.
     let msgs = messages(&read_events(&path).unwrap()).unwrap();
-    assert!(msgs.is_empty(), "an unrenderable message is left out of context");
+    assert!(
+        msgs.is_empty(),
+        "an unrenderable message is left out of context"
+    );
 
     let path2 = dir.path().join("tx2.jsonl");
     append_incoming(
@@ -2434,7 +2529,10 @@ fn hostile_body_and_ids_cannot_forge_a_tag_or_attribute() {
     );
     let text = user_text_of(&messages(&read_events(&path2).unwrap()).unwrap()[0]);
     assert_eq!(text.matches("<incoming-message ").count(), 1, "{text}");
-    assert!(!text.contains("</incoming-message><incoming-message"), "{text}");
+    assert!(
+        !text.contains("</incoming-message><incoming-message"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -2442,7 +2540,11 @@ fn an_unknown_render_version_is_left_out_of_context() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
     let author = real_principal();
-    append_incoming(&path, structured_incoming("m-1", "hi", vec![room("r")], 9999), &author);
+    append_incoming(
+        &path,
+        structured_incoming("m-1", "hi", vec![room("r")], 9999),
+        &author,
+    );
     assert!(messages(&read_events(&path).unwrap()).unwrap().is_empty());
 }
 
@@ -2453,18 +2555,17 @@ fn an_incoming_message_without_structured_fields_is_not_shown() {
     wire::append_with_given_provenances(
         &path,
         events::incoming_message("old-shape message".into()),
-        vec![pb::Provenance { author_id: Some("agent-2".into()), ..Default::default() }],
+        vec![pb::Provenance {
+            author_id: Some("agent-2".into()),
+            ..Default::default()
+        }],
         crate::proto::envelope::EventScope::Session,
     )
     .unwrap();
     assert!(messages(&read_events(&path).unwrap()).unwrap().is_empty());
 }
 
-fn named_incoming(
-    name: Option<&str>,
-    owner: Option<&str>,
-    version: u32,
-) -> pb::IncomingMessage {
+fn named_incoming(name: Option<&str>, owner: Option<&str>, version: u32) -> pb::IncomingMessage {
     pb::IncomingMessage {
         from_name: name.map(str::to_owned),
         owner_id: owner.map(str::to_owned),
@@ -2486,7 +2587,10 @@ fn rendered_incoming(m: pb::IncomingMessage, author: &str) -> Option<String> {
 fn incoming_message_logs_and_renders_from_name() {
     let author = real_principal();
     let text = rendered_incoming(named_incoming(Some("gp"), None, 2), &author).unwrap();
-    assert!(text.contains(&format!("from=\"{author}\" from-name=\"gp\" to=")), "{text}");
+    assert!(
+        text.contains(&format!("from=\"{author}\" from-name=\"gp\" to=")),
+        "{text}"
+    );
     assert!(!text.contains("owner="), "{text}");
 }
 
@@ -2495,13 +2599,23 @@ fn v1_logged_message_renders_unchanged() {
     let author = real_principal();
     let text = rendered_incoming(named_incoming(None, None, 1), &author).unwrap();
     assert!(text.contains(&format!("from=\"{author}\" to=")), "{text}");
-    assert!(!text.contains("from-name") && !text.contains("owner="), "{text}");
+    assert!(
+        !text.contains("from-name") && !text.contains("owner="),
+        "{text}"
+    );
 }
 
 #[test]
 fn tampered_logged_name_is_left_out_of_context() {
     let author = real_principal();
-    for bad in ["a\"b", "a<b", "line\nbreak", "p256:abc", &"x".repeat(65), ""] {
+    for bad in [
+        "a\"b",
+        "a<b",
+        "line\nbreak",
+        "p256:abc",
+        &"x".repeat(65),
+        "",
+    ] {
         assert!(
             rendered_incoming(named_incoming(Some(bad), None, 2), &author).is_none(),
             "name {bad:?} must keep the message out of context"
@@ -2516,13 +2630,17 @@ fn owner_from_the_log_renders_owner_true_for_that_author_only() {
     let author = real_principal();
     let other = real_principal();
     let text = rendered_incoming(named_incoming(Some("gp"), Some(&author), 2), &author).unwrap();
-    assert!(text.contains("from-name=\"gp\" owner=\"true\" to="), "{text}");
+    assert!(
+        text.contains("from-name=\"gp\" owner=\"true\" to="),
+        "{text}"
+    );
     let text = rendered_incoming(named_incoming(Some("ada"), Some(&other), 2), &author).unwrap();
     assert!(!text.contains("owner="), "{text}");
     // An owner with no registered name still gets the marker.
     let text = rendered_incoming(named_incoming(None, Some(&author), 2), &author).unwrap();
     assert!(text.contains(" owner=\"true\" to="), "{text}");
     // A malformed logged owner withholds the marker and still renders.
-    let text = rendered_incoming(named_incoming(None, Some("not-a-principal"), 2), &author).unwrap();
+    let text =
+        rendered_incoming(named_incoming(None, Some("not-a-principal"), 2), &author).unwrap();
     assert!(!text.contains("owner="), "{text}");
 }

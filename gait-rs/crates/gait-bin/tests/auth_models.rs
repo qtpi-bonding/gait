@@ -24,9 +24,16 @@ fn gait(home: &std::path::Path) -> Command {
 }
 
 fn run(mut cmd: Command, stdin: &str) -> Output {
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().unwrap();
-    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
     child.wait_with_output().unwrap()
 }
 
@@ -42,13 +49,21 @@ fn json(output: &Output) -> serde_json::Value {
 fn last_error(output: &Output) -> serde_json::Value {
     let stderr = text(&output.stderr);
     let line = stderr.lines().last().unwrap_or("");
-    serde_json::from_str(line).unwrap_or_else(|e| panic!("last stderr line is not JSON ({e}): {stderr}"))
+    serde_json::from_str(line)
+        .unwrap_or_else(|e| panic!("last stderr line is not JSON ({e}): {stderr}"))
 }
 
 fn assert_no_secret(label: &str, output: &Output) {
     for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
-        assert!(!text(bytes).contains(SENTINEL), "{label}: the key is in {stream}: {}", text(bytes));
-        assert!(!text(bytes).contains("sk-SENT"), "{label}: a key prefix is in {stream}");
+        assert!(
+            !text(bytes).contains(SENTINEL),
+            "{label}: the key is in {stream}: {}",
+            text(bytes)
+        );
+        assert!(
+            !text(bytes).contains("sk-SENT"),
+            "{label}: a key prefix is in {stream}"
+        );
     }
 }
 
@@ -65,20 +80,29 @@ fn add_status_list_remove_round_trip_without_echoing_the_key() {
         &format!("{SENTINEL}\n"),
     );
     assert_eq!(add.status.code(), Some(0), "{}", text(&add.stderr));
-    assert_eq!(json(&add), serde_json::json!({"provider": "acme", "display": "api key", "action": "saved"}));
+    assert_eq!(
+        json(&add),
+        serde_json::json!({"provider": "acme", "display": "api key", "action": "saved"})
+    );
     assert_no_secret("auth add", &add);
 
     let mut status = gait(home.path());
     status.args(["auth", "status", "--id", "acme"]);
     let status = run(status, "");
     assert_eq!(status.status.code(), Some(0));
-    assert_eq!(json(&status), serde_json::json!({"provider": "acme", "status": "api"}));
+    assert_eq!(
+        json(&status),
+        serde_json::json!({"provider": "acme", "status": "api"})
+    );
     assert_no_secret("auth status", &status);
 
     let mut list = gait(home.path());
     list.args(["auth", "list"]);
     let list = run(list, "");
-    assert_eq!(json(&list), serde_json::json!({"items": [{"provider": "acme", "kind": "api", "status": null}]}));
+    assert_eq!(
+        json(&list),
+        serde_json::json!({"items": [{"provider": "acme", "kind": "api", "status": null}]})
+    );
     assert_no_secret("auth list", &list);
 
     // A bare `gait auth` lists (the group's default).
@@ -88,12 +112,18 @@ fn add_status_list_remove_round_trip_without_echoing_the_key() {
     assert_eq!(json(&bare), json(&list));
 
     let stored = std::fs::read_to_string(home.path().join("auth.json")).unwrap();
-    assert!(stored.contains(SENTINEL), "the key is stored: the add did not write it");
+    assert!(
+        stored.contains(SENTINEL),
+        "the key is stored: the add did not write it"
+    );
 
     let mut remove = gait(home.path());
     remove.args(["auth", "remove", "--id", "acme"]);
     let remove = run(remove, "");
-    assert_eq!(json(&remove), serde_json::json!({"provider": "acme", "action": "removed"}));
+    assert_eq!(
+        json(&remove),
+        serde_json::json!({"provider": "acme", "action": "removed"})
+    );
     let mut after = gait(home.path());
     after.args(["auth", "list"]);
     assert_eq!(json(&run(after, "")), serde_json::json!({"items": []}));
@@ -118,7 +148,10 @@ fn add_without_a_file_in_a_non_terminal_run_is_usage_error() {
     add.args(["auth", "add", "--id", "acme"]);
     let add = run(add, "");
     assert_eq!(add.status.code(), Some(2));
-    assert_eq!(last_error(&add)["error"]["code"], "op_registry.usage.missing");
+    assert_eq!(
+        last_error(&add)["error"]["code"],
+        "op_registry.usage.missing"
+    );
 }
 
 #[test]
@@ -129,19 +162,32 @@ fn errors_and_help_never_carry_the_key() {
     wrong.args(["auth", "login", "--id", "anthropic", "--callback-file", "-"]);
     let wrong = run(wrong, "");
     assert_eq!(wrong.status.code(), Some(2), "{}", text(&wrong.stderr));
-    assert_eq!(last_error(&wrong)["error"]["code"], "op_registry.usage.invalid");
+    assert_eq!(
+        last_error(&wrong)["error"]["code"],
+        "op_registry.usage.invalid"
+    );
     assert_no_secret("auth login --callback-file on the wrong provider", &wrong);
 
     // The key on stdin of a failing add (an unwritable home).
     let mut relative = gait(home.path());
-    relative
-        .env("GAIT_HOME", "relative/home")
-        .args(["auth", "add", "--id", "acme", "--key-file", "-"]);
+    relative.env("GAIT_HOME", "relative/home").args([
+        "auth",
+        "add",
+        "--id",
+        "acme",
+        "--key-file",
+        "-",
+    ]);
     let relative = run(relative, &format!("{SENTINEL}\n"));
     assert_ne!(relative.status.code(), Some(0));
     assert_no_secret("auth add into a bad home", &relative);
 
-    for args in [vec!["--help"], vec!["auth", "--help"], vec!["auth", "add", "--help"], vec!["auth", "login", "--help"]] {
+    for args in [
+        vec!["--help"],
+        vec!["auth", "--help"],
+        vec!["auth", "add", "--help"],
+        vec!["auth", "login", "--help"],
+    ] {
         let mut help = gait(home.path());
         help.args(&args);
         let help = run(help, "");
@@ -156,7 +202,10 @@ fn the_registry_passes_the_secrets_check() {
     let key_file = dir.path().join("key.pem");
     std::fs::write(&key_file, "KEYLINE-gait-auth-7731\n").unwrap();
     let sentinel = op_registry::testing::SecretSentinel::new(SENTINEL, &key_file);
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(op_registry::testing::assert_secrets_not_echoed(
         &gait_bin::ops::registry(),
         None,
@@ -174,7 +223,16 @@ fn link_and_unlink_report_the_binding() {
     let home = private_home();
     let codex_home = tempfile::TempDir::new().unwrap();
     let mut link = gait(home.path());
-    link.args(["auth", "link", "--id", "openai-codex", "--source", "codex", "--home"]).arg(codex_home.path());
+    link.args([
+        "auth",
+        "link",
+        "--id",
+        "openai-codex",
+        "--source",
+        "codex",
+        "--home",
+    ])
+    .arg(codex_home.path());
     let link = run(link, "");
     assert_eq!(link.status.code(), Some(0), "{}", text(&link.stderr));
     assert_eq!(
@@ -184,7 +242,10 @@ fn link_and_unlink_report_the_binding() {
     let mut unlink = gait(home.path());
     unlink.args(["auth", "unlink", "--id", "openai-codex"]);
     let unlink = run(unlink, "");
-    assert_eq!(json(&unlink), serde_json::json!({"provider": "openai-codex", "action": "unlinked"}));
+    assert_eq!(
+        json(&unlink),
+        serde_json::json!({"provider": "openai-codex", "action": "unlinked"})
+    );
 }
 
 #[test]
@@ -194,13 +255,25 @@ fn usage_errors_exit_2() {
         vec!["auth", "frobnicate"],
         vec!["auth", "status"],
         vec!["auth", "link", "--id", "openai-codex"],
-        vec!["auth", "logout", "--id", "openai-signin", "--callback-file", "x"],
+        vec![
+            "auth",
+            "logout",
+            "--id",
+            "openai-signin",
+            "--callback-file",
+            "x",
+        ],
         vec!["auth", "logout", "--id", "openai-codex", "--forget"],
     ] {
         let mut cmd = gait(home.path());
         cmd.args(&args);
         let out = run(cmd, "");
-        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", text(&out.stderr));
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
     }
 }
 
@@ -216,7 +289,12 @@ fn unsupported_providers_are_logical_errors() {
         let mut cmd = gait(home.path());
         cmd.args(&args);
         let out = run(cmd, "");
-        assert_eq!(out.status.code(), Some(65), "{args:?}: {}", text(&out.stderr));
+        assert_eq!(
+            out.status.code(),
+            Some(65),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
     }
 }
 

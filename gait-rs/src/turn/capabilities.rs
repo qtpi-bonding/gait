@@ -92,8 +92,14 @@ mod coded_error_tests {
     #[test]
     fn capability_error_codes_and_classes_per_variant() {
         let cases = [
-            (CapabilityError::UnknownNative("x".into()), "gait.capability.unknown_native"),
-            (CapabilityError::UnknownMcpServer("s".into()), "gait.capability.unknown_mcp_server"),
+            (
+                CapabilityError::UnknownNative("x".into()),
+                "gait.capability.unknown_native",
+            ),
+            (
+                CapabilityError::UnknownMcpServer("s".into()),
+                "gait.capability.unknown_mcp_server",
+            ),
             (
                 CapabilityError::DisabledMcpServer("s".into()),
                 "gait.capability.disabled_mcp_server",
@@ -112,7 +118,10 @@ mod coded_error_tests {
                 },
                 "gait.capability.invalid_arguments",
             ),
-            (CapabilityError::Reserved("x".into()), "gait.capability.reserved"),
+            (
+                CapabilityError::Reserved("x".into()),
+                "gait.capability.reserved",
+            ),
             (
                 CapabilityError::Denied {
                     tool: "t".into(),
@@ -289,9 +298,9 @@ impl CapabilityDispatcher {
                     coded_error::into_anyhow(CapabilityError::UnknownMcpServer(server.clone()))
                 })?;
                 if !self.is_enabled(&server) {
-                    return Err(coded_error::into_anyhow(CapabilityError::DisabledMcpServer(
-                        server,
-                    )));
+                    return Err(coded_error::into_anyhow(
+                        CapabilityError::DisabledMcpServer(server),
+                    ));
                 }
                 let def = self
                     .registry
@@ -311,10 +320,12 @@ impl CapabilityDispatcher {
                 })?;
                 if let Err(errors) = schema.validate(&invocation.args) {
                     let message = errors.map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
-                    return Err(coded_error::into_anyhow(CapabilityError::InvalidArguments {
-                        address: format!("{server}.{tool}"),
-                        message,
-                    }));
+                    return Err(coded_error::into_anyhow(
+                        CapabilityError::InvalidArguments {
+                            address: format!("{server}.{tool}"),
+                            message,
+                        },
+                    ));
                 }
                 client
                     .call(&tool, invocation.args, def.output_schema.as_ref())

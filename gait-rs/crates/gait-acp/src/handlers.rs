@@ -71,7 +71,12 @@ fn incoming_body(
     gait_core::proto::gait::log::v1::event::Body,
     Option<gait_core::proto::gait::log::v1::Provenance>,
 ) {
-    let crate::attestation::VerifiedIncoming { author_id, message, via, author_name } = incoming;
+    let crate::attestation::VerifiedIncoming {
+        author_id,
+        message,
+        via,
+        author_name,
+    } = incoming;
     let body = gait_core::proto::wire::body(
         gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(
             gait_core::proto::gait::log::v1::IncomingMessage {
@@ -725,10 +730,14 @@ mod tests {
             gait_events::gait::events::v1::PromptSource::Direct,
             None,
         );
-        let event = cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(
-            |value| value.source_record_id == id,
+        let event =
+            cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(|value| {
+                value.source_record_id == id
+            });
+        assert_eq!(
+            event.source,
+            gait_events::gait::events::v1::PromptSource::Direct as i32
         );
-        assert_eq!(event.source, gait_events::gait::events::v1::PromptSource::Direct as i32);
         assert_eq!(event.message_count, 1);
         assert!(event.author.is_none());
     }
@@ -749,10 +758,14 @@ mod tests {
             gait_events::gait::events::v1::PromptSource::Attested,
             Some(author),
         );
-        let event = cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(
-            |value| value.source_record_id == id,
+        let event =
+            cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(|value| {
+                value.source_record_id == id
+            });
+        assert_eq!(
+            event.source,
+            gait_events::gait::events::v1::PromptSource::Attested as i32
         );
-        assert_eq!(event.source, gait_events::gait::events::v1::PromptSource::Attested as i32);
         assert_eq!(event.message_count, 2);
         assert_eq!(event.message_ids.len(), 2);
         assert!(event.author.is_some());
@@ -777,15 +790,18 @@ mod tests {
             },
         );
         assert!(!durable.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(cap
-            .events_where::<gait_events::gait::events::v1::PromptAccepted>(|v| v.source_record_id == id)
-            .is_empty());
+        assert!(
+            cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(|v| v
+                .source_record_id
+                == id)
+                .is_empty()
+        );
         hook().unwrap();
         assert!(durable.load(std::sync::atomic::Ordering::SeqCst));
         assert!(confirmed.load(std::sync::atomic::Ordering::SeqCst));
-        let event = cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(
-            |v| v.source_record_id == id,
-        );
+        let event = cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(|v| {
+            v.source_record_id == id
+        });
         assert_eq!(event.message_count, 2);
         assert!(event.author.is_some());
     }
@@ -803,9 +819,12 @@ mod tests {
             || Ok(()),
         );
         drop(hook);
-        assert!(cap
-            .events_where::<gait_events::gait::events::v1::PromptAccepted>(|v| v.source_record_id == id)
-            .is_empty());
+        assert!(
+            cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(|v| v
+                .source_record_id
+                == id)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -822,12 +841,18 @@ mod tests {
             .expect("an attestation without an attestor is rejected");
         let wire = reject_attestation(&err);
         let data = wire.data.as_ref().unwrap();
-        assert_eq!(data["code"], "gait.acp.prompt.attestation_missing_own_devices");
+        assert_eq!(
+            data["code"],
+            "gait.acp.prompt.attestation_missing_own_devices"
+        );
         assert_eq!(data["class"], "logical");
         let fingerprint = data["fingerprint"].clone();
         let records = cap.errors_where(|record| record.fingerprint == fingerprint);
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].code, "gait.acp.prompt.attestation_missing_own_devices");
+        assert_eq!(
+            records[0].code,
+            "gait.acp.prompt.attestation_missing_own_devices"
+        );
         // Not a count of every error record in the process: other tests in this
         // binary run in parallel and emit their own. The fingerprint above is
         // what ties a record to this rejection.
@@ -838,7 +863,10 @@ mod tests {
         let cap = concord_telemetry::testing::capture_exclusive();
         let err = coded_error::into_anyhow(PromptError::AttestationRequired);
         let wire = reject_attestation(&err);
-        assert_eq!(wire.data.as_ref().unwrap()["code"], "gait.acp.prompt.attestation_required");
+        assert_eq!(
+            wire.data.as_ref().unwrap()["code"],
+            "gait.acp.prompt.attestation_required"
+        );
         assert_eq!(cap.errors_where(|_| true).len(), 1);
     }
 

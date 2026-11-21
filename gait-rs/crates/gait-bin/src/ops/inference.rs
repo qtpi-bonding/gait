@@ -73,7 +73,10 @@ pub struct InferenceClearParams {
 }
 
 fn item(info: gait_ops::inference::InferenceInfo) -> InferenceItem {
-    InferenceItem { name: info.name, model: info.model }
+    InferenceItem {
+        name: info.name,
+        model: info.model,
+    }
 }
 
 /// List the named inference profiles with their models.
@@ -85,7 +88,11 @@ pub async fn list(
     let dir = ctx.gait_dir()?;
     gait_ops::inference::list(&dir)
         .iter()
-        .map(|name| gait_ops::inference::show(&dir, name).map(item).map_err(infra))
+        .map(|name| {
+            gait_ops::inference::show(&dir, name)
+                .map(item)
+                .map_err(infra)
+        })
         .collect()
 }
 
@@ -112,14 +119,14 @@ pub async fn add(
         params.compaction_threshold_tokens,
     )
     .map_err(infra)?;
-    Ok(InferenceAdded { name: info.name, model: info.model, action: "added".into() })
+    Ok(InferenceAdded {
+        name: info.name,
+        model: info.model,
+        action: "added".into(),
+    })
 }
 
-fn apply(
-    ctx: &GaitContext,
-    session: &str,
-    name: &str,
-) -> anyhow::Result<InferenceSelected> {
+fn apply(ctx: &GaitContext, session: &str, name: &str) -> anyhow::Result<InferenceSelected> {
     let dir = ctx.gait_dir()?;
     require_active(&dir, session)?;
     let selection = gait_ops::inference::resolve_selection(&dir, name).map_err(infra)?;

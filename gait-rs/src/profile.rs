@@ -41,7 +41,7 @@ impl ContextPolicy {
 pub struct Profile {
     #[serde(default)]
     pub verified_goal: Option<String>,
-    pub model: String,        // "provider/model-id"
+    pub model: String, // "provider/model-id"
     /// Named inference profile (proto `Inference.name`), for telemetry.
     #[serde(default)]
     pub inference: String,

@@ -79,12 +79,18 @@ fn carve(path: &Path, denies: &[PathBuf], rights: Rights, out: &mut Vec<PathRule
     };
     let is_dir = meta.is_dir();
     if !is_dir || !denies.iter().any(|d| d.starts_with(path)) {
-        out.push(PathRule { path: path.to_path_buf(), rights, is_dir });
+        out.push(PathRule {
+            path: path.to_path_buf(),
+            rights,
+            is_dir,
+        });
         return;
     }
     // A deny lies strictly beneath this directory: no rule for it, full right
     // for each child that is not (an ancestor of) a denied path.
-    let Ok(rd) = std::fs::read_dir(path) else { return };
+    let Ok(rd) = std::fs::read_dir(path) else {
+        return;
+    };
     let mut children: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     children.sort();
     for child in children {
@@ -109,15 +115,27 @@ fn carve_roots(roots: &[PathBuf], denies: &[PathBuf], rights: Rights) -> Vec<Pat
 }
 
 pub(crate) fn plan(scope: &SandboxScope) -> LandlockPlan {
-    let read_denies: Vec<PathBuf> = scope.read_deny.subpaths.iter().filter_map(|p| resolve(p)).collect();
+    let read_denies: Vec<PathBuf> = scope
+        .read_deny
+        .subpaths
+        .iter()
+        .filter_map(|p| resolve(p))
+        .collect();
     // Read denies are also carved out of the write rules, as Seatbelt denies both.
     let mut write_denies = read_denies.clone();
     write_denies.extend(scope.write_deny.subpaths.iter().filter_map(|p| resolve(p)));
 
-    let read_roots =
-        if scope.read_all { vec![PathBuf::from("/")] } else { scope.readable.clone() };
+    let read_roots = if scope.read_all {
+        vec![PathBuf::from("/")]
+    } else {
+        scope.readable.clone()
+    };
     let read = if scope.read_all && read_denies.is_empty() {
-        vec![PathRule { path: PathBuf::from("/"), rights: Rights::Read, is_dir: true }]
+        vec![PathRule {
+            path: PathBuf::from("/"),
+            rights: Rights::Read,
+            is_dir: true,
+        }]
     } else {
         carve_roots(&read_roots, &read_denies, Rights::Read)
     };
@@ -129,7 +147,11 @@ pub(crate) fn plan(scope: &SandboxScope) -> LandlockPlan {
         // Landlock filters by TCP port only; hosts are not enforced.
         NetworkPolicy::Hosts(_) => (true, vec![80, 443]),
     };
-    let net = NetPlan { handle_connect, handle_bind: !scope.local_bind, connect_ports };
+    let net = NetPlan {
+        handle_connect,
+        handle_bind: !scope.local_bind,
+        connect_ports,
+    };
 
     let mut skipped_globs: Vec<String> = Vec::new();
     for g in scope.read_deny.globs.iter().chain(&scope.write_deny.globs) {
@@ -137,7 +159,12 @@ pub(crate) fn plan(scope: &SandboxScope) -> LandlockPlan {
             skipped_globs.push(g.clone());
         }
     }
-    LandlockPlan { read, write, net, skipped_globs }
+    LandlockPlan {
+        read,
+        write,
+        net,
+        skipped_globs,
+    }
 }
 
 #[cfg(test)]
@@ -172,16 +199,26 @@ mod tests {
     }
 
     fn deny(p: &Path) -> DenyPolicy {
-        DenyPolicy { subpaths: vec![p.to_path_buf()], globs: vec![] }
+        DenyPolicy {
+            subpaths: vec![p.to_path_buf()],
+            globs: vec![],
+        }
     }
 
     #[test]
     fn read_all_without_deny_is_one_rule_on_root() {
-        let scope = SandboxScope { read_all: true, ..Default::default() };
+        let scope = SandboxScope {
+            read_all: true,
+            ..Default::default()
+        };
         let p = plan(&scope);
         assert_eq!(
             p.read,
-            vec![PathRule { path: PathBuf::from("/"), rights: Rights::Read, is_dir: true }]
+            vec![PathRule {
+                path: PathBuf::from("/"),
+                rights: Rights::Read,
+                is_dir: true
+            }]
         );
         assert!(p.write.is_empty());
     }
@@ -218,12 +255,22 @@ mod tests {
         let p = plan(&scope);
         // Ancestors of the denied path get no rule.
         for anc in [r.clone(), r.join("home"), r.join("home/me")] {
-            assert!(!paths(&p.read).contains(&anc), "ancestor {anc:?} has a read rule");
-            assert!(!paths(&p.write).contains(&anc), "ancestor {anc:?} has a write rule");
+            assert!(
+                !paths(&p.read).contains(&anc),
+                "ancestor {anc:?} has a read rule"
+            );
+            assert!(
+                !paths(&p.write).contains(&anc),
+                "ancestor {anc:?} has a write rule"
+            );
         }
         // Siblings along the way get the full right.
         for sib in [r.join("etc"), r.join("home/other"), r.join("home/me/docs")] {
-            let rule = p.read.iter().find(|x| x.path == sib).unwrap_or_else(|| panic!("{sib:?}"));
+            let rule = p
+                .read
+                .iter()
+                .find(|x| x.path == sib)
+                .unwrap_or_else(|| panic!("{sib:?}"));
             assert_eq!(rule.rights, Rights::Read);
             assert!(rule.is_dir);
         }
@@ -268,7 +315,10 @@ mod tests {
         let p = plan(&scope);
         // The codebase root has no rule, so `touch <code>/new` fails: documented cost.
         assert!(!paths(&p.write).contains(&code));
-        assert_eq!(paths(&p.write), vec![code.join("src"), code.join("top.txt")]);
+        assert_eq!(
+            paths(&p.write),
+            vec![code.join("src"), code.join("top.txt")]
+        );
         assert!(!covered(&p.write, &code.join("new")));
     }
 
@@ -284,7 +334,11 @@ mod tests {
             ..Default::default()
         };
         let p = plan(&scope);
-        let file = p.read.iter().find(|x| x.path == r.join("d/file.txt")).unwrap();
+        let file = p
+            .read
+            .iter()
+            .find(|x| x.path == r.join("d/file.txt"))
+            .unwrap();
         assert!(!file.is_dir);
         let dir = p.read.iter().find(|x| x.path == r.join("d/sub")).unwrap();
         assert!(dir.is_dir);
@@ -296,12 +350,21 @@ mod tests {
         mk(&r.join("d/f"), true);
         let scope = SandboxScope {
             readable: vec![r.join("d")],
-            read_deny: DenyPolicy { subpaths: vec![], globs: vec!["**/.hidden*".into()] },
-            write_deny: DenyPolicy { subpaths: vec![], globs: vec!["**/*.key".into()] },
+            read_deny: DenyPolicy {
+                subpaths: vec![],
+                globs: vec!["**/.hidden*".into()],
+            },
+            write_deny: DenyPolicy {
+                subpaths: vec![],
+                globs: vec!["**/*.key".into()],
+            },
             ..Default::default()
         };
         let p = plan(&scope);
-        assert_eq!(p.skipped_globs, vec!["**/.hidden*".to_string(), "**/*.key".to_string()]);
+        assert_eq!(
+            p.skipped_globs,
+            vec!["**/.hidden*".to_string(), "**/*.key".to_string()]
+        );
         // Not applied: the read root stays a single rule.
         assert_eq!(paths(&p.read), vec![r.join("d")]);
     }
@@ -337,7 +400,10 @@ mod tests {
         assert!(!covered(&p.read, &r.join("d/target")));
         assert!(!covered(&p.read, &r.join("d/target/f")));
         // The link itself resolves into the denied target, so it is not granted either.
-        assert!(!p.read.iter().any(|x| x.path.starts_with(r.join("d/target"))));
+        assert!(!p
+            .read
+            .iter()
+            .any(|x| x.path.starts_with(r.join("d/target"))));
         assert!(paths(&p.read).contains(&r.join("d/other")));
     }
 
@@ -356,8 +422,16 @@ mod tests {
         };
         let p = plan(&scope);
         for rules in [&p.read, &p.write] {
-            assert!(!covered(rules, &r.join("outside")), "link target granted: {:?}", paths(rules));
-            assert!(!paths(rules).contains(&r.join("work/link")), "{:?}", paths(rules));
+            assert!(
+                !covered(rules, &r.join("outside")),
+                "link target granted: {:?}",
+                paths(rules)
+            );
+            assert!(
+                !paths(rules).contains(&r.join("work/link")),
+                "{:?}",
+                paths(rules)
+            );
         }
         assert!(paths(&p.write).contains(&r.join("work/keep")));
     }
@@ -379,11 +453,20 @@ mod tests {
     }
 
     fn net_of(network: NetworkPolicy, local_bind: bool) -> NetPlan {
-        plan(&SandboxScope { network, local_bind, ..Default::default() }).net
+        plan(&SandboxScope {
+            network,
+            local_bind,
+            ..Default::default()
+        })
+        .net
     }
 
     fn netp(c: bool, b: bool, ports: &[u16]) -> NetPlan {
-        NetPlan { handle_connect: c, handle_bind: b, connect_ports: ports.to_vec() }
+        NetPlan {
+            handle_connect: c,
+            handle_bind: b,
+            connect_ports: ports.to_vec(),
+        }
     }
 
     #[test]

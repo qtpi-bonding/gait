@@ -38,10 +38,16 @@ pub async fn show(
 ) -> anyhow::Result<ManualOutput> {
     let registry = super::registry();
     if params.json {
-        return Ok(ManualOutput::Json(op_registry::manual::render_json(&registry)));
+        return Ok(ManualOutput::Json(op_registry::manual::render_json(
+            &registry,
+        )));
     }
-    let markdown = render(&registry, ManualFlavor::Full, gait_repl::repl::commands::COMMANDS)
-        .map_err(manual_error)?;
+    let markdown = render(
+        &registry,
+        ManualFlavor::Full,
+        gait_repl::repl::commands::COMMANDS,
+    )
+    .map_err(manual_error)?;
     Ok(ManualOutput::Markdown { markdown })
 }
 
@@ -54,18 +60,26 @@ pub async fn install(
     let gait_dir = ctx.gait_dir()?;
     let path = gait_dir.join("skills/gait-manual/SKILL.md");
     if path.exists() && !params.force {
-        return Err(coded_error::into_anyhow(gait_ops::OpError::Conflict(format!(
-            "{} already exists; pass --force to regenerate it",
-            path.display()
-        ))));
+        return Err(coded_error::into_anyhow(gait_ops::OpError::Conflict(
+            format!(
+                "{} already exists; pass --force to regenerate it",
+                path.display()
+            ),
+        )));
     }
-    let content = install_text(&super::registry(), ManualFlavor::Full, gait_repl::repl::commands::COMMANDS)
-        .map_err(manual_error)?;
+    let content = install_text(
+        &super::registry(),
+        ManualFlavor::Full,
+        gait_repl::repl::commands::COMMANDS,
+    )
+    .map_err(manual_error)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(infra)?;
     }
     std::fs::write(&path, content).map_err(infra)?;
-    Ok(ManualInstalled { installed: path.display().to_string() })
+    Ok(ManualInstalled {
+        installed: path.display().to_string(),
+    })
 }
 
 /// The manual ops of the full `gait`, merged into the registry.

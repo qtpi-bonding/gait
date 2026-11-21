@@ -10,8 +10,8 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use gait_proto::gait::sandbox::v1::{
-    hand_response, network_scope::Mode, HandResponse, Impulse, NetworkScope, OutputCaptureMode,
-    OutputPresentation, Scope,
+    HandResponse, Impulse, NetworkScope, OutputCaptureMode, OutputPresentation, Scope,
+    hand_response, network_scope::Mode,
 };
 use prost::Message;
 

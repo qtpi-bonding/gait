@@ -121,7 +121,10 @@ fn require_anthropic_key() -> Option<String> {
     }
 }
 
-fn node_complete_output(events: &[gait_core::proto::gait::workflow::v1::WorkflowEvent], node_id: &str) -> Option<String> {
+fn node_complete_output(
+    events: &[gait_core::proto::gait::workflow::v1::WorkflowEvent],
+    node_id: &str,
+) -> Option<String> {
     events.iter().find_map(|e| match &e.kind {
         Some(workflow_event::Kind::NodeComplete(nc)) if nc.node_id == node_id => {
             Some(nc.output.clone())

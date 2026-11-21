@@ -111,7 +111,9 @@ pub(crate) async fn run_step(
         let Some(chunk_result) = chunk_opt else { break };
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(e @ gait_provider::provider::ProviderError::StreamIncomplete { received_bytes }) => {
+            Err(
+                e @ gait_provider::provider::ProviderError::StreamIncomplete { received_bytes },
+            ) => {
                 // Task 6: transport_error observability — v1 uses log::warn!
                 // A structured recorder event can follow once transport errors
                 // are promoted to first-class proto events.
@@ -144,10 +146,16 @@ pub(crate) async fn run_step(
                 {
                     eprintln!("[gait] transport_error kind=overloaded");
                 }
-                return Err(coded_error::attach(anyhow::anyhow!("provider overloaded"), &e));
+                return Err(coded_error::attach(
+                    anyhow::anyhow!("provider overloaded"),
+                    &e,
+                ));
             }
             Err(e) => {
-                return Err(coded_error::attach(anyhow::anyhow!("stream error: {}", e), &e))
+                return Err(coded_error::attach(
+                    anyhow::anyhow!("stream error: {}", e),
+                    &e,
+                ))
             }
         };
         match chunk {
@@ -256,7 +264,10 @@ mod bounded_tests {
         let long = "x".repeat(PROVIDER_ERROR_TEXT_MAX * 3);
         let kept = bounded(&long);
         assert_eq!(kept.chars().count(), PROVIDER_ERROR_TEXT_MAX + 1);
-        assert_eq!(bounded("HTTP error 429: slow down"), "HTTP error 429: slow down");
+        assert_eq!(
+            bounded("HTTP error 429: slow down"),
+            "HTTP error 429: slow down"
+        );
     }
 
     #[test]

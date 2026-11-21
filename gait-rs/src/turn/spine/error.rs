@@ -56,8 +56,14 @@ mod tests {
 
     #[test]
     fn a_stall_is_transient_and_a_dead_brain_is_infrastructure() {
-        assert_eq!(SpineError::LlmStalled("x".into()).class(), coded_error::ErrorClass::Transient);
-        assert_eq!(SpineError::BrainDied.class(), coded_error::ErrorClass::Infrastructure);
+        assert_eq!(
+            SpineError::LlmStalled("x".into()).class(),
+            coded_error::ErrorClass::Transient
+        );
+        assert_eq!(
+            SpineError::BrainDied.class(),
+            coded_error::ErrorClass::Infrastructure
+        );
         assert_eq!(SpineError::BrainDied.code(), "gait.spine.brain_died");
     }
 }

@@ -289,10 +289,9 @@ async fn session_delete_emits_session_disposed() {
     .await
     .expect("delete succeeds");
 
-    let event = capture
-        .single_event_where::<gait_events::gait::events::v1::SessionDisposed>(|e| {
-            e.gait_session_id == session_id
-        });
+    let event = capture.single_event_where::<gait_events::gait::events::v1::SessionDisposed>(|e| {
+        e.gait_session_id == session_id
+    });
     assert_eq!(
         event.disposition,
         gait_events::gait::events::v1::Disposition::Discarded as i32

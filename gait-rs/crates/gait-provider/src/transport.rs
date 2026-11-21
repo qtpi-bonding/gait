@@ -508,7 +508,12 @@ where
                     || (!cfg.retry_429 && matches!(e, ProviderError::Http { status: 429, .. }))
                     || attempts_used >= cfg.max_attempts as u32
                 {
-                    crate::telemetry::report_failed(&e, attempts_used, cfg.max_attempts as u32, false);
+                    crate::telemetry::report_failed(
+                        &e,
+                        attempts_used,
+                        cfg.max_attempts as u32,
+                        false,
+                    );
                     return Err(e);
                 }
                 crate::telemetry::report_failed(&e, attempts_used, cfg.max_attempts as u32, true);
@@ -594,8 +599,7 @@ mod tests {
             }
             bytes.extend_from_slice(&chunk[..read]);
             if expected_len.is_none() {
-                if let Some(head_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
-                {
+                if let Some(head_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
                     let head = String::from_utf8_lossy(&bytes[..head_end]);
                     let content_len = head
                         .lines()

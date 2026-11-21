@@ -16,7 +16,10 @@ fn flush_returns_promptly_when_the_collector_is_unreachable() {
     let began = Instant::now();
     gait_core::telemetry::flush();
     let took = began.elapsed();
-    assert!(took < Duration::from_secs(10), "flush held the process for {took:?}");
+    assert!(
+        took < Duration::from_secs(10),
+        "flush held the process for {took:?}"
+    );
     let again = Instant::now();
     gait_core::telemetry::flush();
     assert!(again.elapsed() < Duration::from_secs(1));

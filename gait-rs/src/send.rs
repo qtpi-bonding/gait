@@ -49,7 +49,9 @@ pub struct SendMessageTool {
 
 impl SendMessageTool {
     pub fn new() -> Self {
-        Self { parameters: message_attestation::send_message_tool().input_schema }
+        Self {
+            parameters: message_attestation::send_message_tool().input_schema,
+        }
     }
 }
 
@@ -85,7 +87,12 @@ impl Tool for SendMessageTool {
         let targets = args
             .get("to")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
         let body = args.get("body").and_then(Value::as_str).unwrap_or_default();
         let preview: String = body.chars().take(200).collect();
@@ -115,7 +122,9 @@ mod tests {
     fn tool_is_permission_gated_with_a_meaningful_display() {
         let tool = SendMessageTool::new();
         let p = tool.permission(&serde_json::json!({"to": ["room:r1"], "body": "hello"}));
-        let ToolPermission::RequiresApproval(reqs) = p else { panic!("not gated") };
+        let ToolPermission::RequiresApproval(reqs) = p else {
+            panic!("not gated")
+        };
         assert_eq!(reqs[0].patterns, vec!["send_message".to_string()]);
         assert!(reqs[0].display.contains("room:r1") && reqs[0].display.contains("hello"));
     }

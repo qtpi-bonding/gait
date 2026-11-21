@@ -163,7 +163,10 @@ pub(super) async fn execute_capability_raw(
                     {
                         let (session_id, turn_id) = crate::trace::brain_ids();
                         concord_telemetry::event!(gait_events::gait::events::v1::SandboxDenied {
-                            source_record_id: format!("{session_id}:{turn_id}:{}", crate::trace::next_seq()),
+                            source_record_id: format!(
+                                "{session_id}:{turn_id}:{}",
+                                crate::trace::next_seq()
+                            ),
                             gait_session_id: session_id,
                             turn_id,
                             tool: sd.tool_name.clone(),
@@ -283,9 +286,9 @@ pub(super) async fn execute_tool_call(
                             crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
-                                        "relayed tool result missing a valid full-output reference: {}",
-                                        unarchived_result_text(&v)
-                                    )
+                                "relayed tool result missing a valid full-output reference: {}",
+                                unarchived_result_text(&v)
+                            )
                                 })?;
                         (v, Some(full_output))
                     } else if relay.is_none() {
@@ -310,9 +313,9 @@ pub(super) async fn execute_tool_call(
                             crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
-                                        "archived tool result missing a valid full-output reference: {}",
-                                        unarchived_result_text(&v)
-                                    )
+                                "archived tool result missing a valid full-output reference: {}",
+                                unarchived_result_text(&v)
+                            )
                                 })?;
                         (v, Some(full_output))
                     };
@@ -1396,8 +1399,15 @@ mod spine_routing_tests {
 
     #[test]
     fn spine_run_tools_are_routed_through_the_spine() {
-        for name in ["spawn_agent", "run_workflow", message_attestation::SEND_MESSAGE_TOOL] {
-            assert!(runs_in_spine(name), "{name} must be fired through the spine, not run in the brain");
+        for name in [
+            "spawn_agent",
+            "run_workflow",
+            message_attestation::SEND_MESSAGE_TOOL,
+        ] {
+            assert!(
+                runs_in_spine(name),
+                "{name} must be fired through the spine, not run in the brain"
+            );
         }
         for name in ["read", "shell", "structured_done", "clarify"] {
             assert!(!runs_in_spine(name), "{name} is not a spine-run tool");

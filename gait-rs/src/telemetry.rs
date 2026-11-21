@@ -40,7 +40,11 @@ pub fn init(service: &'static str, agent_id: Option<String>, local_json: bool) {
         use concord_telemetry::{Config, LocalOutput, Principal, PrincipalKind};
         let mut config = Config::new(service, concord_telemetry::version!())
             .with_build_info(concord_telemetry::build_info!());
-        config.local = if local_json { LocalOutput::Json } else { LocalOutput::Off };
+        config.local = if local_json {
+            LocalOutput::Json
+        } else {
+            LocalOutput::Off
+        };
         config.principal = agent_id.map(|id| Principal::new(PrincipalKind::Agent, id));
         match concord_telemetry::init(config) {
             Ok(guard) => {
@@ -108,8 +112,14 @@ mod tests {
     fn each_role_subprocess_is_its_own_telemetry_service() {
         assert_eq!(service_for_argv(Some("__brain"), "gait"), "gait-brain");
         assert_eq!(service_for_argv(Some("__run-tool"), "gait"), "gait-hand");
-        assert_eq!(service_for_argv(Some("__daemon-exit"), "gait"), "gait-daemon-exit");
-        assert_eq!(service_for_argv(Some("__local-runner"), "gait"), "gait-local-runner");
+        assert_eq!(
+            service_for_argv(Some("__daemon-exit"), "gait"),
+            "gait-daemon-exit"
+        );
+        assert_eq!(
+            service_for_argv(Some("__local-runner"), "gait"),
+            "gait-local-runner"
+        );
         assert_eq!(service_for_argv(Some("run"), "gait-min"), "gait-min");
         assert_eq!(service_for_argv(None, "gait"), "gait");
     }
@@ -131,7 +141,10 @@ mod adopt_tests {
             .find(|s| s.name == "adopt-probe")
             .expect("span finished");
         let has = |key: &str, value: &str| {
-            finished.attributes.iter().any(|kv| kv.key.as_str() == key && kv.value.to_string() == value)
+            finished
+                .attributes
+                .iter()
+                .any(|kv| kv.key.as_str() == key && kv.value.to_string() == value)
         };
         assert!(has("action_id", "A1"), "{:?}", finished.attributes);
         assert!(has("request_id", "mm-9"));

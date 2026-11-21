@@ -7,8 +7,8 @@ fn main() {
     let proto = proto_dir.join("gait/events/v1/events.proto");
     println!("cargo:rerun-if-changed={}", proto.display());
 
-    let descriptor = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"))
-        .join("events_descriptor.bin");
+    let descriptor =
+        PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("events_descriptor.bin");
     let includes = [proto_dir, concord_telemetry_proto::proto_include_dir()];
     let mut config = prost_build::Config::new();
     config

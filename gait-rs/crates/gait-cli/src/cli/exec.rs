@@ -144,10 +144,9 @@ fn read_single_key() -> anyhow::Result<char> {
 /// `{cmd|output}` one-off shape.
 fn resolve_custom_schema(args: &ExecArgs) -> anyhow::Result<Option<Value>> {
     if let Some(path) = &args.result_schema {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| {
-                CliError::failed_with(&format!("reading --result-schema {}", path.display()), e)
-            })?;
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            CliError::failed_with(&format!("reading --result-schema {}", path.display()), e)
+        })?;
         return Ok(Some(serde_json::from_str(&text).map_err(|e| {
             CliError::invalid_input(format!("parsing --result-schema {}: {e}", path.display()))
         })?));
@@ -209,11 +208,7 @@ pub async fn run_one_off(
     }
 }
 
-pub async fn cmd_exec(
-    args: ExecArgs,
-    gait_dir: &Path,
-    codebase: &Path,
-) -> anyhow::Result<u8> {
+pub async fn cmd_exec(args: ExecArgs, gait_dir: &Path, codebase: &Path) -> anyhow::Result<u8> {
     let custom_schema = resolve_custom_schema(&args)
         .map_err(|e| CliError::invalid_input(format!("gait -e: {e}")))?;
     let inference = args.inference;

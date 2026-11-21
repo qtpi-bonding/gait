@@ -46,7 +46,10 @@ pub async fn get(
 ) -> anyhow::Result<ConfigEntry> {
     let key = params.id.as_raw();
     let value = gait_ops::config::get(&ctx.gait_dir()?, key).map_err(infra)?;
-    Ok(ConfigEntry { key: key.to_owned(), value })
+    Ok(ConfigEntry {
+        key: key.to_owned(),
+        value,
+    })
 }
 
 /// Set one config key, keeping the file's comments and every other key.
@@ -58,7 +61,10 @@ pub async fn set(
     let key = params.id.as_raw();
     let value = parse_value(&params.value);
     gait_ops::config::set(&ctx.gait_dir()?, key, value.clone()).map_err(infra)?;
-    Ok(ConfigEntry { key: key.to_owned(), value: Some(value) })
+    Ok(ConfigEntry {
+        key: key.to_owned(),
+        value: Some(value),
+    })
 }
 
 /// Show the effective config: defaults and `gait.jsonc`, with the skills and MCP servers found on disk.

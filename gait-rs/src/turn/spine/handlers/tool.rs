@@ -83,7 +83,11 @@ fn hand_identity_deny_env(
         }
         kept.push(p);
     }
-    Ok(kept.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(":"))
+    Ok(kept
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(":"))
 }
 
 fn shell_access_and_whitelist_hit(
@@ -540,10 +544,10 @@ pub async fn run_tool_as_spine(
             // The hand is gone before it read its input: its exit status and
             // stderr are the only account of why.
             drop(stdin);
-            let died = child
-                .wait_with_output()
-                .await
-                .map_or_else(|_| "exit status unavailable".to_owned(), |o| hand_exit_detail(&o));
+            let died = child.wait_with_output().await.map_or_else(
+                |_| "exit status unavailable".to_owned(),
+                |o| hand_exit_detail(&o),
+            );
             let _ = std::fs::remove_dir_all(&jail);
             return error_feedback(&format!("write impulse failed: {e}; hand {died}"));
         }
@@ -1058,7 +1062,12 @@ mod tests {
     fn env_of(
         pairs: &'static [(&'static str, &'static str)],
     ) -> impl Fn(&str) -> Option<std::ffi::OsString> {
-        move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(*v))
+        move |k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| std::ffi::OsString::from(*v))
+        }
     }
 
     #[test]
@@ -1103,7 +1112,10 @@ mod tests {
         let gait = tempfile::TempDir::new().unwrap();
         let value = hand_identity_deny_env(
             gait.path(),
-            env_of(&[("MACHINE_IDENTITY_DIR", "/nonexistent/m/a:b"), ("HOME", "/h")]),
+            env_of(&[
+                ("MACHINE_IDENTITY_DIR", "/nonexistent/m/a:b"),
+                ("HOME", "/h"),
+            ]),
         )
         .unwrap();
         assert!(!value.contains("a:b"), "{value}");
@@ -1115,9 +1127,8 @@ mod tests {
         let base = tempfile::TempDir::new().unwrap();
         let machine = base.path().join("a:b");
         std::fs::create_dir(&machine).unwrap();
-        let var = move |k: &str| {
-            (k == "MACHINE_IDENTITY_DIR").then(|| machine.clone().into_os_string())
-        };
+        let var =
+            move |k: &str| (k == "MACHINE_IDENTITY_DIR").then(|| machine.clone().into_os_string());
         let err = hand_identity_deny_env(gait.path(), var).unwrap_err();
         assert!(format!("{err:#}").contains("':'"), "{err:#}");
     }
@@ -1150,14 +1161,21 @@ mod tests {
         let gait = tempfile::TempDir::new().unwrap();
         std::fs::create_dir(gait.path().join("identity")).unwrap();
         let err = hand_identity_deny_env(gait.path(), env_of(&[])).unwrap_err();
-        assert!(format!("{err:#}").contains("machine identity directory"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("machine identity directory"),
+            "{err:#}"
+        );
     }
 
     #[test]
     fn hand_deny_env_fails_closed_when_the_machine_dir_is_not_computable() {
-        let err = hand_identity_deny_env(Path::new("/g"), env_of(&[("GAIT_AGENT_DIR", "/agents/a")]))
-            .unwrap_err();
-        assert!(format!("{err:#}").contains("machine identity directory"), "{err:#}");
+        let err =
+            hand_identity_deny_env(Path::new("/g"), env_of(&[("GAIT_AGENT_DIR", "/agents/a")]))
+                .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("machine identity directory"),
+            "{err:#}"
+        );
     }
 
     #[test]

@@ -177,7 +177,10 @@ mod tests {
         let ws = TempDir::new().unwrap();
         let _tx = make_session(ws.path(), "sreply03");
         let err = reply(ws.path(), "sreply03", "hi".into()).unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::NotFound(_))
+        ));
     }
 
     #[test]

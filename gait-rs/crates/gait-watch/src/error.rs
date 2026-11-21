@@ -35,9 +35,7 @@ mod coded_error_tests {
         assert_eq!(parse.code(), "gait.watch.parse");
         assert_eq!(parse.class(), ErrorClass::Logical);
 
-        let session = WatchError::Session(
-            gait_state::session::SessionError::SessionRunning,
-        );
+        let session = WatchError::Session(gait_state::session::SessionError::SessionRunning);
         assert_eq!(session.code(), "gait.watch.session");
         assert_eq!(session.class(), ErrorClass::Logical);
 
@@ -50,9 +48,7 @@ mod coded_error_tests {
     fn display_texts_unchanged() {
         let io = WatchError::Io(std::io::Error::other("boom"));
         assert_eq!(io.to_string(), "io error: boom");
-        let session = WatchError::Session(
-            gait_state::session::SessionError::SessionRunning,
-        );
+        let session = WatchError::Session(gait_state::session::SessionError::SessionRunning);
         assert_eq!(
             session.to_string(),
             "session error: session is live; cannot append a registry event while a turn is running"

@@ -163,7 +163,10 @@ mod tests {
         let failed = event(
             3,
             Kind::TurnResult(pb::TurnResult {
-                timing: Some(pb::ExecutionTiming { started_ms: 77, ..Default::default() }),
+                timing: Some(pb::ExecutionTiming {
+                    started_ms: 77,
+                    ..Default::default()
+                }),
                 outcome: Some(Outcome::Failed(pb::TurnFailed {
                     reason: "error".into(),
                     error_code: Some("gait.provider.http".into()),
@@ -186,7 +189,10 @@ mod tests {
     #[test]
     fn a_failed_turn_leaves_the_messages_unserved() {
         let log = [start(1), incoming(2, "m1"), failed(3)];
-        assert!(matches!(last_turn_over(&log, &ids()), LastTurn::Unserved(Some(_))));
+        assert!(matches!(
+            last_turn_over(&log, &ids()),
+            LastTurn::Unserved(Some(_))
+        ));
     }
 
     #[test]
@@ -221,14 +227,20 @@ mod tests {
         // The retry is a Resume turn in a new run: its own failed result has no
         // IncomingMessage, and must not make the messages look superseded.
         let log = [incoming(2, "m1"), failed(3), start(4), failed(5)];
-        assert!(matches!(last_turn_over(&log, &ids()), LastTurn::Unserved(_)));
+        assert!(matches!(
+            last_turn_over(&log, &ids()),
+            LastTurn::Unserved(_)
+        ));
     }
 
     #[test]
     fn a_paused_turn_that_was_resumed_and_failed_is_unserved() {
         let paused = result(3, Outcome::Pause(Default::default()));
         let log = [incoming(2, "m1"), paused, start(4), failed(5)];
-        assert!(matches!(last_turn_over(&log, &ids()), LastTurn::Unserved(_)));
+        assert!(matches!(
+            last_turn_over(&log, &ids()),
+            LastTurn::Unserved(_)
+        ));
     }
 
     #[test]
@@ -249,6 +261,9 @@ mod tests {
     #[test]
     fn a_result_before_the_messages_does_not_count() {
         let done = result(1, Outcome::Done(Default::default()));
-        assert!(matches!(last_turn_over(&[done, incoming(2, "m1")], &ids()), LastTurn::Unserved(_)));
+        assert!(matches!(
+            last_turn_over(&[done, incoming(2, "m1")], &ids()),
+            LastTurn::Unserved(_)
+        ));
     }
 }

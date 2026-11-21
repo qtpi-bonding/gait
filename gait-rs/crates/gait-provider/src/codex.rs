@@ -65,7 +65,10 @@ impl CodexResponsesProvider {
         };
         if let Ok(value) = reqwest::header::HeaderValue::from_str(id) {
             for name in ["session-id", "thread-id", "x-client-request-id"] {
-                headers.insert(reqwest::header::HeaderName::from_static(name), value.clone());
+                headers.insert(
+                    reqwest::header::HeaderName::from_static(name),
+                    value.clone(),
+                );
             }
         }
         headers
@@ -175,14 +178,15 @@ impl Provider for CodexResponsesProvider {
             max_tokens: params.max_tokens.filter(|_| kind == RequestKind::Turn),
             model_id: self.model.clone(),
         });
-        let events = match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
-            Ok(events) => events,
-            Err(error) => {
-                let error = expired_credential_error(error);
-                call.fail(&error);
-                return Err(error);
-            }
-        };
+        let events =
+            match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
+                Ok(events) => events,
+                Err(error) => {
+                    let error = expired_credential_error(error);
+                    call.fail(&error);
+                    return Err(error);
+                }
+            };
         Ok(Box::pin(crate::responses_wire::response_stream(
             events,
             codex_failure_format,
@@ -204,7 +208,10 @@ const EXPIRED_TOKEN_CODES: [&str; 3] = ["token_expired", "invalid_token", "refre
 /// Codex login from gait's own, so the message names both. Gait never
 /// refreshes either here: a linked credential belongs to the Codex CLI.
 fn expired_credential_error(error: ProviderError) -> ProviderError {
-    let ProviderError::Http { status: 401, body, .. } = &error else {
+    let ProviderError::Http {
+        status: 401, body, ..
+    } = &error
+    else {
         return error;
     };
     let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
@@ -309,12 +316,18 @@ mod tests {
         let second = keyed.request_body("sys", &[], &[], &params, RequestKind::Turn);
         let compaction = keyed.request_body("sys", &[], &[], &params, RequestKind::Compaction);
         for body in [&first, &second, &compaction] {
-            assert_eq!(body.get("prompt_cache_key"), Some(&json!(cache_id("session-abc"))));
+            assert_eq!(
+                body.get("prompt_cache_key"),
+                Some(&json!(cache_id("session-abc")))
+            );
         }
 
         let sent = keyed.session_headers();
         for name in ["session-id", "thread-id", "x-client-request-id"] {
-            assert_eq!(sent.get(name).and_then(|v| v.to_str().ok()), Some(cache_id("session-abc").as_str()));
+            assert_eq!(
+                sent.get(name).and_then(|v| v.to_str().ok()),
+                Some(cache_id("session-abc").as_str())
+            );
         }
 
         let unkeyed = CodexResponsesProvider::new(
@@ -388,7 +401,9 @@ mod tests {
             assert_eq!(mapped.code(), "gait.auth.expired", "{body}");
             assert_eq!(mapped.class(), coded_error::ErrorClass::Logical);
             assert!(mapped.to_string().contains("codex login"));
-            assert!(mapped.to_string().contains("gait auth login --id openai-codex"));
+            assert!(mapped
+                .to_string()
+                .contains("gait auth login --id openai-codex"));
         }
     }
 
@@ -534,7 +549,9 @@ mod tests {
                             .lines()
                             .find_map(|l| {
                                 let (k, v) = l.split_once(':')?;
-                                k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok()).flatten()
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
                             })
                             .unwrap_or(0);
                         if bytes.len() >= end + 4 + len || n == 0 {
@@ -545,7 +562,10 @@ mod tests {
                 let text = String::from_utf8_lossy(&bytes).to_lowercase();
                 let sent = text
                     .lines()
-                    .find_map(|l| l.strip_prefix("x-codex-turn-state:").map(|v| v.trim().to_string()))
+                    .find_map(|l| {
+                        l.strip_prefix("x-codex-turn-state:")
+                            .map(|v| v.trim().to_string())
+                    })
                     .unwrap_or_default();
                 recorded.lock().unwrap().push(sent);
                 let body = "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
@@ -572,7 +592,10 @@ mod tests {
                 .expect("stream");
             while stream.next().await.is_some() {}
         }
-        assert_eq!(*seen.lock().unwrap(), vec!["".to_string(), "state-one".to_string()]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["".to_string(), "state-one".to_string()]
+        );
     }
 
     #[test]

@@ -43,17 +43,32 @@ mod tests {
     #[test]
     fn session_error_codes_and_classes() {
         let io = SessionError::Io(std::io::Error::other("disk"));
-        assert_eq!((io.code(), io.class()), ("gait.session.io", ErrorClass::Infrastructure));
+        assert_eq!(
+            (io.code(), io.class()),
+            ("gait.session.io", ErrorClass::Infrastructure)
+        );
         let parse = SessionError::Parse(serde_json::from_str::<u32>("x").unwrap_err());
-        assert_eq!((parse.code(), parse.class()), ("gait.session.parse", ErrorClass::Infrastructure));
+        assert_eq!(
+            (parse.code(), parse.class()),
+            ("gait.session.parse", ErrorClass::Infrastructure)
+        );
         let proto = SessionError::Proto(crate::proto::ProtoError::MissingField("f".into()));
-        assert_eq!((proto.code(), proto.class()), ("gait.session.proto", ErrorClass::Infrastructure));
-        let unsupported = SessionError::UnsupportedLogVersion { found: 1, expected: 2 };
+        assert_eq!(
+            (proto.code(), proto.class()),
+            ("gait.session.proto", ErrorClass::Infrastructure)
+        );
+        let unsupported = SessionError::UnsupportedLogVersion {
+            found: 1,
+            expected: 2,
+        };
         assert_eq!(
             (unsupported.code(), unsupported.class()),
             ("gait.session.unsupported_log_version", ErrorClass::Logical)
         );
         let running = SessionError::SessionRunning;
-        assert_eq!((running.code(), running.class()), ("gait.session.session_running", ErrorClass::Transient));
+        assert_eq!(
+            (running.code(), running.class()),
+            ("gait.session.session_running", ErrorClass::Transient)
+        );
     }
 }

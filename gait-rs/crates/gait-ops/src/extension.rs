@@ -233,7 +233,9 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
     // It never falls through to the global content-store branch below.
     if params.scope.as_deref() == Some("agent") {
         let agent_path = params.agent.clone().ok_or_else(|| {
-            coded_error::into_anyhow(OpError::Conflict("--scope agent requires --agent <path>".to_string()))
+            coded_error::into_anyhow(OpError::Conflict(
+                "--scope agent requires --agent <path>".to_string(),
+            ))
         })?;
         let list_key = match kind {
             "skill" => "skills",
@@ -273,7 +275,9 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
     // log. Never falls through to the global content-store branch below.
     if params.scope.as_deref() == Some("session") {
         let session_id = params.session.clone().ok_or_else(|| {
-            coded_error::into_anyhow(OpError::Conflict("--scope session requires --session <id>".to_string()))
+            coded_error::into_anyhow(OpError::Conflict(
+                "--scope session requires --session <id>".to_string(),
+            ))
         })?;
         let tx_path = gait_state::session::live::log_path(&params.gait_dir, &session_id);
         let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &session_id);
@@ -290,8 +294,11 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
     match kind {
         "mcp" => {
             let mcp_dir = params.gait_dir.join("mcp");
-            std::fs::create_dir_all(&mcp_dir)
-                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("could not create mcp/ dir: {e}"))))?;
+            std::fs::create_dir_all(&mcp_dir).map_err(|e| {
+                coded_error::into_anyhow(OpError::Conflict(format!(
+                    "could not create mcp/ dir: {e}"
+                )))
+            })?;
             let disk_path = mcp_dir.join(format!("{}.json", name));
             if disk_path.exists() {
                 return Err(coded_error::into_anyhow(OpError::Conflict(format!(
@@ -347,8 +354,11 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
         }
         "skill" => {
             let skills_root = params.gait_dir.join("skills");
-            std::fs::create_dir_all(&skills_root)
-                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("could not create skills/ dir: {e}"))))?;
+            std::fs::create_dir_all(&skills_root).map_err(|e| {
+                coded_error::into_anyhow(OpError::Conflict(format!(
+                    "could not create skills/ dir: {e}"
+                )))
+            })?;
             let skill_dir = skills_root.join(name);
             if skill_dir.exists() {
                 return Err(coded_error::into_anyhow(OpError::Conflict(format!(
@@ -359,11 +369,16 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
                 ))));
             }
             let description = params.description.as_deref().ok_or_else(|| {
-                coded_error::into_anyhow(OpError::Conflict("gait register skill: requires --description <text>".to_string()))
+                coded_error::into_anyhow(OpError::Conflict(
+                    "gait register skill: requires --description <text>".to_string(),
+                ))
             })?;
             let content = if let Some(path) = &params.path {
                 std::fs::read_to_string(path).map_err(|e| {
-                    coded_error::into_anyhow(OpError::Conflict(format!("failed to read skill file '{}': {}", path, e)))
+                    coded_error::into_anyhow(OpError::Conflict(format!(
+                        "failed to read skill file '{}': {}",
+                        path, e
+                    )))
                 })?
             } else if let Some(content) = &params.content {
                 content.clone()
@@ -373,7 +388,10 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
                 )));
             };
             std::fs::create_dir_all(&skill_dir).map_err(|e| {
-                coded_error::into_anyhow(OpError::Conflict(format!("could not create skills/{} dir: {e}", name)))
+                coded_error::into_anyhow(OpError::Conflict(format!(
+                    "could not create skills/{} dir: {e}",
+                    name
+                )))
             })?;
             let skill_md = skill_dir.join("SKILL.md");
             std::fs::write(
@@ -387,12 +405,17 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: skill_md,
-                hint: format!("Run `gait enable --kind skill --id {}` to activate it.", name),
+                hint: format!(
+                    "Run `gait enable --kind skill --id {}` to activate it.",
+                    name
+                ),
             })
         }
         "plugin" => {
             let wasm_src = params.wasm.as_deref().ok_or_else(|| {
-                coded_error::into_anyhow(OpError::Conflict("gait register plugin: requires --wasm <path>".to_string()))
+                coded_error::into_anyhow(OpError::Conflict(
+                    "gait register plugin: requires --wasm <path>".to_string(),
+                ))
             })?;
             let wasm_src_path = Path::new(wasm_src);
             if !wasm_src_path.exists() {
@@ -411,14 +434,23 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
                 ))));
             }
             std::fs::create_dir_all(&plugin_dir).map_err(|e| {
-                coded_error::into_anyhow(OpError::Conflict(format!("could not create plugins/{} dir: {e}", name)))
+                coded_error::into_anyhow(OpError::Conflict(format!(
+                    "could not create plugins/{} dir: {e}",
+                    name
+                )))
             })?;
-            let wasm_filename = wasm_src_path
-                .file_name()
-                .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict(format!("invalid wasm path: {}", wasm_src))))?;
+            let wasm_filename = wasm_src_path.file_name().ok_or_else(|| {
+                coded_error::into_anyhow(OpError::Conflict(format!(
+                    "invalid wasm path: {}",
+                    wasm_src
+                )))
+            })?;
             let wasm_dest = plugin_dir.join(wasm_filename);
-            std::fs::copy(wasm_src_path, &wasm_dest)
-                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("could not copy wasm file: {e}"))))?;
+            std::fs::copy(wasm_src_path, &wasm_dest).map_err(|e| {
+                coded_error::into_anyhow(OpError::Conflict(format!(
+                    "could not copy wasm file: {e}"
+                )))
+            })?;
             let wasm_rel = wasm_filename.to_string_lossy();
             let description = params.description.as_deref().unwrap_or("No description.");
             let plugin_md = plugin_dir.join("PLUGIN.md");
@@ -433,7 +465,10 @@ pub fn register(params: RegisterParams) -> anyhow::Result<RegisterOutcome> {
             Ok(RegisterOutcome {
                 scope: "global",
                 written_to: plugin_md,
-                hint: format!("Run `gait enable --kind plugin --id {}` to activate it.", name),
+                hint: format!(
+                    "Run `gait enable --kind plugin --id {}` to activate it.",
+                    name
+                ),
             })
         }
         other => Err(coded_error::into_anyhow(OpError::Conflict(format!(
@@ -455,7 +490,9 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
     // Phase 1: --scope agent only touches the agent file's frontmatter list.
     if params.scope.as_deref() == Some("agent") {
         let agent_path = params.agent.clone().ok_or_else(|| {
-            coded_error::into_anyhow(OpError::Conflict("--scope agent requires --agent <path>".to_string()))
+            coded_error::into_anyhow(OpError::Conflict(
+                "--scope agent requires --agent <path>".to_string(),
+            ))
         })?;
         let list_key = match kind {
             "skill" => "skills",
@@ -494,7 +531,9 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
     // session's own log.
     if params.scope.as_deref() == Some("session") {
         let session_id = params.session.clone().ok_or_else(|| {
-            coded_error::into_anyhow(OpError::Conflict("--scope session requires --session <id>".to_string()))
+            coded_error::into_anyhow(OpError::Conflict(
+                "--scope session requires --session <id>".to_string(),
+            ))
         })?;
         crate::session::require_session(&params.gait_dir, &session_id)?;
         let tx_path = gait_state::session::live::log_path(&params.gait_dir, &session_id);
@@ -511,7 +550,8 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
     if kind == "mcp" {
         let disk_path = params.gait_dir.join("mcp").join(format!("{}.json", name));
         if disk_path.exists() {
-            std::fs::remove_file(&disk_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
+            std::fs::remove_file(&disk_path)
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             return Ok(UnregisterOutcome {
                 scope: "global",
                 written_to: disk_path,
@@ -521,24 +561,32 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
     if kind == "plugin" {
         let plugin_dir = params.gait_dir.join("plugins").join(name);
         if plugin_dir.exists() {
-            std::fs::remove_dir_all(&plugin_dir).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
+            std::fs::remove_dir_all(&plugin_dir)
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             return Ok(UnregisterOutcome {
                 scope: "global",
                 written_to: plugin_dir,
             });
         }
-        return Err(coded_error::into_anyhow(OpError::NotFound(format!("plugin '{}' not found", name))));
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!(
+            "plugin '{}' not found",
+            name
+        ))));
     }
     if kind == "skill" {
         let skill_dir = params.gait_dir.join("skills").join(name);
         if skill_dir.exists() {
-            std::fs::remove_dir_all(&skill_dir).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
+            std::fs::remove_dir_all(&skill_dir)
+                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
             return Ok(UnregisterOutcome {
                 scope: "global",
                 written_to: skill_dir,
             });
         }
-        return Err(coded_error::into_anyhow(OpError::NotFound(format!("skill '{}' not found", name))));
+        return Err(coded_error::into_anyhow(OpError::NotFound(format!(
+            "skill '{}' not found",
+            name
+        ))));
     }
 
     // Fall back to gait.jsonc for legacy entries.
@@ -553,8 +601,8 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
         }
     };
     let config_path = params.gait_dir.join("gait.jsonc");
-    let mut val =
-        read_config_as_value(&config_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
+    let mut val = read_config_as_value(&config_path)
+        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     let removed = match val[array_key].as_array_mut() {
         Some(arr) => {
             let before = arr.len();
@@ -570,7 +618,8 @@ pub fn unregister(params: UnregisterParams) -> anyhow::Result<UnregisterOutcome>
     }
     std::fs::write(
         &config_path,
-        serde_json::to_string_pretty(&val).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
+        serde_json::to_string_pretty(&val)
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
     )
     .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     Ok(UnregisterOutcome {
@@ -650,11 +699,11 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> anyhow::Result
     if let Some(path) = disk_path {
         match params.kind.as_str() {
             "mcp" => {
-                let mut val: serde_json::Value = serde_json::from_str(
-                    &std::fs::read_to_string(&path)
-                        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
-                )
-                .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
+                let mut val: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| {
+                        coded_error::into_anyhow(OpError::Conflict(format!("{e}")))
+                    })?)
+                    .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
                 val["enabled"] = serde_json::Value::Bool(enabled);
                 std::fs::write(
                     &path,
@@ -699,16 +748,14 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> anyhow::Result
         }
     };
     let config_path = params.gait_dir.join("gait.jsonc");
-    let mut val =
-        read_config_as_value(&config_path).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
-    let arr = val[array_key]
-        .as_array_mut()
-        .ok_or_else(|| {
-            coded_error::into_anyhow(OpError::NotFound(format!(
-                "{} '{}' not found; run `gait register --kind {} --id {}` first",
-                params.kind, params.name, params.kind, params.name
-            )))
-        })?;
+    let mut val = read_config_as_value(&config_path)
+        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
+    let arr = val[array_key].as_array_mut().ok_or_else(|| {
+        coded_error::into_anyhow(OpError::NotFound(format!(
+            "{} '{}' not found; run `gait register --kind {} --id {}` first",
+            params.kind, params.name, params.kind, params.name
+        )))
+    })?;
     let entry = arr
         .iter_mut()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(params.name.as_str()))
@@ -721,7 +768,8 @@ pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> anyhow::Result
     entry["enabled"] = serde_json::Value::Bool(enabled);
     std::fs::write(
         &config_path,
-        serde_json::to_string_pretty(&val).map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
+        serde_json::to_string_pretty(&val)
+            .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?,
     )
     .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("{e}"))))?;
     Ok(EnableOutcome {

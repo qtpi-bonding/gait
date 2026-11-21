@@ -129,7 +129,12 @@ pub async fn add(
         params.description.as_deref().unwrap_or(""),
     )
     .map_err(infra)?;
-    Ok(ModeAdded { name: info.name, allow: info.allow, deny: info.deny, action: "added".into() })
+    Ok(ModeAdded {
+        name: info.name,
+        allow: info.allow,
+        deny: info.deny,
+        action: "added".into(),
+    })
 }
 
 fn apply(ctx: &GaitContext, session: &str, name: &str) -> anyhow::Result<ModeSelected> {
@@ -143,7 +148,10 @@ fn apply(ctx: &GaitContext, session: &str, name: &str) -> anyhow::Result<ModeSel
         vec![selection.event_body],
     )
     .map_err(infra)?;
-    Ok(ModeSelected { session: session.to_owned(), name: selection.info.name })
+    Ok(ModeSelected {
+        session: session.to_owned(),
+        name: selection.info.name,
+    })
 }
 
 /// Use a mode for a session from its next turn.

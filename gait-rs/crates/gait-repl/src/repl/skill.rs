@@ -127,7 +127,10 @@ pub(crate) fn load_or_unload(
         None
     };
     let Some(kind) = kind else {
-        return Err(format!("/skill {}: '{}' not found in any registry", verb, name));
+        return Err(format!(
+            "/skill {}: '{}' not found in any registry",
+            verb, name
+        ));
     };
     let ext_kind = match kind {
         "skill" => gait_ops::extension::ExtKind::Skill,

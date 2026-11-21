@@ -24,7 +24,14 @@ pub mod launch;
 pub(crate) fn env_passes_to_children(key: &str) -> bool {
     matches!(
         key,
-        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "SHELL"
+            | "TERM"
+            | "LANG"
+            | "LC_ALL"
+            | "TMPDIR"
             | "TRACEPARENT"
             | "BAGGAGE"
             | "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -33,9 +40,9 @@ pub(crate) fn env_passes_to_children(key: &str) -> bool {
     )
 }
 pub mod modes;
-pub mod telemetry;
 pub mod port;
 pub mod profile;
+pub mod telemetry;
 
 // State modules extracted into `gait-state`; re-exported here so every internal
 // `crate::<state module>` path and every external `gait_core::<state module>`
@@ -63,9 +70,9 @@ mod permissions_invariant_tests;
 pub(crate) mod prompt;
 pub use prompt::{install_self_identity, SelfIdentity};
 pub mod send;
-pub(crate) mod trace;
 #[cfg(test)]
 mod test_utils;
+pub(crate) mod trace;
 pub(crate) mod wasm_plugins;
 pub use types::{
     AssistantContent, AssistantPart, ContentPart, ExecutionMode, ExecutionSignal, Hook, HookAction,

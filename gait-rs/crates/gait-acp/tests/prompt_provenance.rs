@@ -8,19 +8,19 @@ use gait_acp::attestation::Attestor;
 use gait_acp::session_map::SessionMap;
 use gait_proto::gait::log::v1::{Event, Provenance, event, payload};
 use identity_crypto::jwk_duo::{GenerationService, KeyDuo};
+use identity_crypto::now_unix;
 use identity_crypto::{
     PrincipalId, PublicKey, PublicKeyDuo, SessionCredential, Timestamp, delegate_device,
     mint_session, pb, principal_id, signing_public,
 };
 use identity_keyfile::testkit::TempIdentityDir;
 use message_attestation::{
-    DEFAULT_META_KEY, FileReplayStore, OutgoingMessage, ReplayStore as _, UnsignedDelivery,
-    attach, sign_delivery, sign_message,
+    DEFAULT_META_KEY, FileReplayStore, OutgoingMessage, ReplayStore as _, UnsignedDelivery, attach,
+    sign_delivery, sign_message,
 };
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::Arc;
-use identity_crypto::now_unix;
 
 fn git(dir: &Path, args: &[&str]) {
     let out = std::process::Command::new("git")
@@ -183,7 +183,9 @@ async fn gait_provenance_meta_key_is_ignored_as_plain_user_text() {
 }
 
 fn room(id: &str) -> pb::Target {
-    pb::Target { target: Some(pb::target::Target::RoomId(id.to_owned())) }
+    pb::Target {
+        target: Some(pb::target::Target::RoomId(id.to_owned())),
+    }
 }
 
 struct Author {
@@ -202,18 +204,33 @@ fn new_author(now: i64) -> Author {
     let root = GenerationService::generate_key_duo();
     let device = GenerationService::generate_key_duo();
     let id = principal_id(&root);
-    let delegation = delegate_device(&root, &id, &PublicKeyDuo::from(&device), now, now + 86_400).unwrap();
-    let session =
-        mint_session(device.signing_key_pair(), &signing_public(&root), now, now + 3600).unwrap();
-    Author { id, session, delegation }
+    let delegation =
+        delegate_device(&root, &id, &PublicKeyDuo::from(&device), now, now + 86_400).unwrap();
+    let session = mint_session(
+        device.signing_key_pair(),
+        &signing_public(&root),
+        now,
+        now + 3600,
+    )
+    .unwrap();
+    Author {
+        id,
+        session,
+        delegation,
+    }
 }
 
 fn new_deliverer(now: i64) -> Deliverer {
     let root = GenerationService::generate_key_duo();
     let device = GenerationService::generate_key_duo();
     let id = principal_id(&root);
-    let delegation = delegate_device(&root, &id, &PublicKeyDuo::from(&device), now, now + 86_400).unwrap();
-    Deliverer { id, device, delegation }
+    let delegation =
+        delegate_device(&root, &id, &PublicKeyDuo::from(&device), now, now + 86_400).unwrap();
+    Deliverer {
+        id,
+        device,
+        delegation,
+    }
 }
 
 /// One agent's fixtures: a real agent directory (its device is the recipient),
@@ -261,7 +278,13 @@ impl Fixture {
     /// (message ids m1, m2, ...) at `sequence`, addressed to this agent.
     fn meta(&self, sequence: u64, bodies: &[&str]) -> Map<String, Value> {
         let ids: Vec<String> = (1..=bodies.len()).map(|i| format!("m{i}")).collect();
-        self.meta_with(sequence, bodies, &ids, &self.deliverer.id, &self.agent.load().unwrap().principal_id)
+        self.meta_with(
+            sequence,
+            bodies,
+            &ids,
+            &self.deliverer.id,
+            &self.agent.load().unwrap().principal_id,
+        )
     }
 
     /// Full control: message ids, the audience the author signs for, and the
@@ -301,7 +324,10 @@ impl Fixture {
                     reply_to: None,
                     references: vec![],
                     mentions: vec![],
-                    authored_at: Some(Timestamp { seconds: now, nanos: 0 }),
+                    authored_at: Some(Timestamp {
+                        seconds: now,
+                        nanos: 0,
+                    }),
                     body: (*body).to_owned(),
                 };
                 OutgoingMessage {
@@ -325,7 +351,10 @@ impl Fixture {
                 recipient_id: recipient.clone(),
                 recipient_devices: vec![self.own_device()],
                 sequence,
-                attested_at: Timestamp { seconds: now, nanos: 0 },
+                attested_at: Timestamp {
+                    seconds: now,
+                    nanos: 0,
+                },
                 messages,
                 names: vec![],
             },
@@ -357,10 +386,17 @@ impl Fixture {
 
     fn replay_last_seen(&self) -> Option<u64> {
         let store = FileReplayStore::open(
-            &self.state.path().join("attestation").join(self.scope()).join("replay.json"),
+            &self
+                .state
+                .path()
+                .join("attestation")
+                .join(self.scope())
+                .join("replay.json"),
         )
         .unwrap();
-        store.last_seen(&self.scope(), &self.deliverer.id.to_string()).unwrap()
+        store
+            .last_seen(&self.scope(), &self.deliverer.id.to_string())
+            .unwrap()
     }
 }
 
@@ -432,7 +468,10 @@ async fn invalid_multimatrix_attestation_is_logged_but_not_folded() {
             .any(|(content, rejected, _)| content == text && *rejected),
         "the rejected input should remain in the log"
     );
-    assert!(verified(&events).is_empty(), "a rejected attestation verifies nothing");
+    assert!(
+        verified(&events).is_empty(),
+        "a rejected attestation verifies nothing"
+    );
     let messages = gait_state::session::retrace::messages(&events).unwrap();
     assert!(messages.iter().all(|message| match message {
         gait_core::types::Message::User {
@@ -491,7 +530,10 @@ async fn attested_delivery_uses_verified_body_text_never_the_differing_prompt() 
     let batch = verified(&events);
     assert_eq!(batch.len(), 1, "exactly the one verified message is logged");
     let (content, provenance) = &batch[0];
-    assert_eq!(content, "hello", "the logged body is the verified body_text");
+    assert_eq!(
+        content, "hello",
+        "the logged body is the verified body_text"
+    );
     assert_eq!(
         provenance.author_id.as_deref(),
         Some(fixture.author.id.to_string().as_str()),
@@ -509,8 +551,14 @@ async fn attested_delivery_uses_verified_body_text_never_the_differing_prompt() 
         .expect("the structured message is logged");
     assert_eq!(structured.to, vec![room("room-general")]);
     assert_eq!(structured.via, vec![room("room-general")]);
-    assert_eq!(structured.render_version, message_attestation::RENDER_VERSION);
-    assert!(provenance.signed_message.is_none(), "attested provenance carries no signed message");
+    assert_eq!(
+        structured.render_version,
+        message_attestation::RENDER_VERSION
+    );
+    assert!(
+        provenance.signed_message.is_none(),
+        "attested provenance carries no signed message"
+    );
     assert_eq!(
         fixture.replay_last_seen(),
         Some(1),
@@ -549,14 +597,17 @@ async fn confirm_not_called_when_append_fails() {
                 std::fs::remove_file(&path).unwrap();
             }
             std::fs::create_dir_all(&path).unwrap();
-            let request =
-                PromptRequest::new(sid.clone(), vec!["hello".to_string().into()]).meta(meta.clone());
+            let request = PromptRequest::new(sid.clone(), vec!["hello".to_string().into()])
+                .meta(meta.clone());
             let ok = cx.send_request(request).block_task().await.is_ok();
             Ok((sid, ok))
         })
         .await
         .expect("connection stays up");
-    assert!(!first_ok, "the prompt fails when its batch cannot be appended");
+    assert!(
+        !first_ok,
+        "the prompt fails when its batch cannot be appended"
+    );
     assert_eq!(
         fixture.replay_last_seen(),
         None,
@@ -585,8 +636,7 @@ async fn confirm_not_called_when_append_fails() {
         .await
         .expect("retry succeeds");
     let events =
-        gait_proto::wire::read_events(&gait_state::session::live::log_path(&home, &sid.0))
-            .unwrap();
+        gait_proto::wire::read_events(&gait_state::session::live::log_path(&home, &sid.0)).unwrap();
     assert_eq!(
         verified(&events).len(),
         1,
@@ -603,7 +653,10 @@ async fn idempotency_key_is_released_when_the_append_fails() {
     let (_temp, home, repo) = workspace(Path::new("/tmp"));
     bake_say_hi(&home);
     let mut meta = Map::new();
-    meta.insert("gait/idempotency_key".to_string(), Value::String("retry-k1".into()));
+    meta.insert(
+        "gait/idempotency_key".to_string(),
+        Value::String("retry-k1".into()),
+    );
 
     let map = SessionMap::new();
     let (channel, server) =
@@ -632,7 +685,10 @@ async fn idempotency_key_is_released_when_the_append_fails() {
         })
         .await
         .expect("connection stays up");
-    assert!(!first_ok, "the prompt fails when its trigger cannot be appended");
+    assert!(
+        !first_ok,
+        "the prompt fails when its trigger cannot be appended"
+    );
     assert!(
         !seen_after_failure,
         "a prompt that never ran must not keep its idempotency key"
@@ -662,9 +718,12 @@ async fn same_batch_to_two_sessions_is_accepted_once() {
     let fixture = Fixture::new();
     let meta = fixture.meta(1, &["hello"]);
 
-    let (channel, server) =
-        gait_acp::handlers::build_agent_with_attestation(SessionMap::new(), false, Some(fixture.attestor()))
-            .into_channel_and_future();
+    let (channel, server) = gait_acp::handlers::build_agent_with_attestation(
+        SessionMap::new(),
+        false,
+        Some(fixture.attestor()),
+    )
+    .into_channel_and_future();
     tokio::spawn(server);
     let (first, second) = Client
         .connect_with(channel, async |cx| {
@@ -719,9 +778,12 @@ async fn replay_of_a_confirmed_batch_is_rejected() {
     let fixture = Fixture::new();
     let meta = fixture.meta(1, &["hello"]);
 
-    let (channel, server) =
-        gait_acp::handlers::build_agent_with_attestation(SessionMap::new(), false, Some(fixture.attestor()))
-            .into_channel_and_future();
+    let (channel, server) = gait_acp::handlers::build_agent_with_attestation(
+        SessionMap::new(),
+        false,
+        Some(fixture.attestor()),
+    )
+    .into_channel_and_future();
     tokio::spawn(server);
     let first = Client
         .connect_with(channel, async |cx| {
@@ -730,8 +792,8 @@ async fn replay_of_a_confirmed_batch_is_rejected() {
                 .block_task()
                 .await?
                 .session_id;
-            let request =
-                PromptRequest::new(sid.clone(), vec!["hello".to_string().into()]).meta(meta.clone());
+            let request = PromptRequest::new(sid.clone(), vec!["hello".to_string().into()])
+                .meta(meta.clone());
             cx.send_request(request).block_task().await?;
             Ok(sid)
         })
@@ -763,7 +825,8 @@ async fn replay_of_a_confirmed_batch_is_rejected() {
         .await
         .expect("the prompt itself completes");
     let events =
-        gait_proto::wire::read_events(&gait_state::session::live::log_path(&home, &second.0)).unwrap();
+        gait_proto::wire::read_events(&gait_state::session::live::log_path(&home, &second.0))
+            .unwrap();
     assert!(
         verified(&events).is_empty(),
         "the replayed batch is not verified in the restarted process"
@@ -789,7 +852,8 @@ async fn deliver(attestor: Arc<Attestor>, meta: Map<String, Value>) -> Vec<Event
                 .await?
                 .session_id;
             let request =
-                PromptRequest::new(sid.clone(), vec!["untrusted text".to_string().into()]).meta(meta);
+                PromptRequest::new(sid.clone(), vec!["untrusted text".to_string().into()])
+                    .meta(meta);
             let _ = cx.send_request(request).block_task().await;
             Ok(sid)
         })
@@ -806,14 +870,22 @@ fn assert_rejected(fixture: &Fixture, events: &[Event]) {
         incoming(events).iter().any(|(_, rejected, _)| *rejected),
         "the claim stays in the log as rejected"
     );
-    assert_eq!(fixture.replay_last_seen(), None, "a rejected delivery burns no sequence");
+    assert_eq!(
+        fixture.replay_last_seen(),
+        None,
+        "a rejected delivery burns no sequence"
+    );
 }
 
 #[tokio::test]
 async fn delivery_from_an_untrusted_deliverer_is_rejected() {
     let fixture = Fixture::new();
     let other = new_deliverer(now_unix());
-    let events = deliver(fixture.attestor_trusting(vec![other.id]), fixture.meta(1, &["hello"])).await;
+    let events = deliver(
+        fixture.attestor_trusting(vec![other.id]),
+        fixture.meta(1, &["hello"]),
+    )
+    .await;
     assert_rejected(&fixture, &events);
 }
 
@@ -831,7 +903,13 @@ async fn message_signed_for_another_audience_is_rejected() {
 async fn delivery_addressed_to_another_agent_id_is_rejected_even_on_my_device() {
     let fixture = Fixture::new();
     let someone_else = new_author(now_unix()).id;
-    let meta = fixture.meta_with(1, &["hello"], &["m1".into()], &fixture.deliverer.id, &someone_else);
+    let meta = fixture.meta_with(
+        1,
+        &["hello"],
+        &["m1".into()],
+        &fixture.deliverer.id,
+        &someone_else,
+    );
     let events = deliver(fixture.attestor(), meta).await;
     assert_rejected(&fixture, &events);
 }
@@ -845,8 +923,15 @@ async fn a_redelivered_message_in_a_new_sequence_is_logged_once() {
     let first = deliver(attestor.clone(), fixture.meta(1, &["hello"])).await;
     assert_eq!(verified(&first).len(), 1);
     let second = deliver(attestor, fixture.meta(2, &["hello"])).await;
-    assert!(verified(&second).is_empty(), "the repeated (author, message_id) is not logged again");
-    assert_eq!(fixture.replay_last_seen(), Some(2), "the redelivery still advances the sequence");
+    assert!(
+        verified(&second).is_empty(),
+        "the repeated (author, message_id) is not logged again"
+    );
+    assert_eq!(
+        fixture.replay_last_seen(),
+        Some(2),
+        "the redelivery still advances the sequence"
+    );
 }
 
 /// The model sees the shared renderer's text, built from the logged structured
@@ -861,13 +946,21 @@ async fn the_model_sees_the_rendered_message_not_the_prompt_text() {
         .iter()
         .find_map(|m| match m {
             gait_core::types::Message::User {
-                content: gait_core::types::MessageContent::Text(t), ..
+                content: gait_core::types::MessageContent::Text(t),
+                ..
             } if t.starts_with("<incoming-message ") => Some(t.clone()),
             _ => None,
         })
         .expect("the rendered message reaches the model");
-    assert!(text.contains("id=\"m1\"") && text.contains("trust=\"verified\""), "{text}");
-    assert_eq!(text.matches("<incoming-message ").count(), 1, "body cannot forge a tag: {text}");
+    assert!(
+        text.contains("id=\"m1\"") && text.contains("trust=\"verified\""),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("<incoming-message ").count(),
+        1,
+        "body cannot forge a tag: {text}"
+    );
     assert!(!text.contains("untrusted text"));
 }
 
@@ -877,7 +970,8 @@ fn rendered_incoming(events: &[Event]) -> String {
         .iter()
         .find_map(|m| match m {
             gait_core::types::Message::User {
-                content: gait_core::types::MessageContent::Text(t), ..
+                content: gait_core::types::MessageContent::Text(t),
+                ..
             } if t.starts_with("<incoming-message ") => Some(t.clone()),
             _ => None,
         })
@@ -919,7 +1013,10 @@ async fn incoming_message_logs_and_renders_from_name_end_to_end() {
     assert_eq!(logged.render_version, 2);
     let text = rendered_incoming(&events);
     assert!(
-        text.contains(&format!("from=\"{}\" from-name=\"gp\" to=", fixture.author.id)),
+        text.contains(&format!(
+            "from=\"{}\" from-name=\"gp\" to=",
+            fixture.author.id
+        )),
         "{text}"
     );
 }
@@ -956,7 +1053,10 @@ async fn a_hostile_signed_name_is_rejected_at_verify() {
 async fn owner_from_meta_renders_owner_true_for_that_author_only() {
     let fixture = Fixture::new();
     let mut meta = fixture.meta(1, &["hello"]);
-    meta.insert("structmux/owner".into(), Value::String(fixture.author.id.to_string()));
+    meta.insert(
+        "structmux/owner".into(),
+        Value::String(fixture.author.id.to_string()),
+    );
     let events = deliver(fixture.attestor(), meta).await;
     assert_eq!(
         logged_incoming(&events).owner_id.as_deref(),
@@ -967,7 +1067,10 @@ async fn owner_from_meta_renders_owner_true_for_that_author_only() {
     let stranger = new_author(now_unix()).id;
     let other = Fixture::new();
     let mut meta = other.meta(1, &["hello"]);
-    meta.insert("structmux/owner".into(), Value::String(stranger.to_string()));
+    meta.insert(
+        "structmux/owner".into(),
+        Value::String(stranger.to_string()),
+    );
     let events = deliver(other.attestor(), meta).await;
     assert!(!rendered_incoming(&events).contains("owner="));
 }
@@ -1002,7 +1105,10 @@ fn bake_failed(home: &Path) {
     use prost::Message;
     let encoded = Signal {
         corr_id: 0,
-        body: Some(signal::Body::Terminated(Terminated { turn: None, failed: true })),
+        body: Some(signal::Body::Terminated(Terminated {
+            turn: None,
+            failed: true,
+        })),
     }
     .encode_to_vec();
     let mut bytes = vec![1];
@@ -1059,7 +1165,8 @@ async fn redeliver(
             let request = PromptRequest::new(sid.clone(), vec!["x".to_string().into()]).meta(first);
             let _ = cx.send_request(request).block_task().await;
             bake_say_hi(&home_for_client);
-            let request = PromptRequest::new(sid.clone(), vec!["x".to_string().into()]).meta(second);
+            let request =
+                PromptRequest::new(sid.clone(), vec!["x".to_string().into()]).meta(second);
             let _ = cx.send_request(request).block_task().await;
             Ok(sid)
         })
@@ -1076,7 +1183,9 @@ async fn all_seen_redelivery_after_a_successful_turn_runs_no_turn() {
     let events = redeliver(&fixture, bake_say_hi, fixture.meta(2, &["hello"])).await;
     assert!(
         capture
-            .events_where::<gait_events::gait::events::v1::RedeliveryRetried>(|e| e.delivery_id == "d2")
+            .events_where::<gait_events::gait::events::v1::RedeliveryRetried>(
+                |e| e.delivery_id == "d2"
+            )
             .is_empty(),
         "no retry event when the turn had succeeded"
     );
@@ -1092,14 +1201,19 @@ async fn all_seen_redelivery_after_a_failed_turn_runs_a_turn() {
     let capture = concord_telemetry::testing::capture_exclusive();
     let fixture = Fixture::new();
     let events = redeliver(&fixture, bake_failed, fixture.meta(2, &["hello"])).await;
-    let retried = capture
-        .events_where::<gait_events::gait::events::v1::RedeliveryRetried>(|e| e.delivery_id == "d2");
+    let retried = capture.events_where::<gait_events::gait::events::v1::RedeliveryRetried>(|e| {
+        e.delivery_id == "d2"
+    });
     assert_eq!(retried.len(), 1, "the retry is a typed event");
     assert_eq!(retried[0].deliverer, fixture.deliverer.id.to_string());
     assert!(!retried[0].gait_session_id.is_empty());
     assert_eq!(turn_starts(&events), 2, "the retry ran a turn: {events:?}");
     assert_eq!(verified(&events).len(), 1, "the message is logged once");
-    assert_eq!(assistant_texts(&events), 1, "the retry turn produced the reply");
+    assert_eq!(
+        assistant_texts(&events),
+        1,
+        "the retry turn produced the reply"
+    );
     assert_eq!(fixture.replay_last_seen(), Some(2));
 }
 

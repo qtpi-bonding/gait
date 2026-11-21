@@ -352,8 +352,16 @@ mod tests {
     fn auth_error_variant_codes_and_classes() {
         use coded_error::{CodedError, ErrorClass};
         let cases = [
-            (AuthError::MissingProviderId, "gait.auth.missing_provider_id", ErrorClass::Logical),
-            (AuthError::MissingApiKey, "gait.auth.missing_api_key", ErrorClass::Logical),
+            (
+                AuthError::MissingProviderId,
+                "gait.auth.missing_provider_id",
+                ErrorClass::Logical,
+            ),
+            (
+                AuthError::MissingApiKey,
+                "gait.auth.missing_api_key",
+                ErrorClass::Logical,
+            ),
             (
                 AuthError::UnsupportedCompletion("api-key"),
                 "gait.auth.unsupported_completion",
@@ -369,7 +377,11 @@ mod tests {
                 "gait.auth.login_required",
                 ErrorClass::Logical,
             ),
-            (AuthError::Other("m".into()), "gait.auth.other", ErrorClass::Unknown),
+            (
+                AuthError::Other("m".into()),
+                "gait.auth.other",
+                ErrorClass::Unknown,
+            ),
             (
                 AuthError::Retryable("m".into()),
                 "gait.auth.retryable",

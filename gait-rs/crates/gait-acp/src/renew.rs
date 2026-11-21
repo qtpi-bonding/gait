@@ -27,11 +27,16 @@ pub fn tick(ctx: &IdentityContext, verifier: &DirectVerifier, now: i64) {
 /// sibling `identity-root`; otherwise an error (device-only folder: no renewal).
 fn split_layout_of(ctx: &IdentityContext) -> anyhow::Result<identity_keyfile::IdentityLayout> {
     let device = ctx.agent_dir();
-    let parent = device.parent().ok_or_else(|| anyhow::anyhow!("no parent"))?;
+    let parent = device
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("no parent"))?;
     if device.file_name().and_then(|n| n.to_str()) != Some("identity") {
         anyhow::bail!("not a minted folder");
     }
-    Ok(identity_keyfile::IdentityLayout::split(&parent.join("identity-root"), device)?)
+    Ok(identity_keyfile::IdentityLayout::split(
+        &parent.join("identity-root"),
+        device,
+    )?)
 }
 
 pub fn spawn(ctx: Arc<IdentityContext>, verifier: Arc<DirectVerifier>) {
@@ -55,7 +60,10 @@ mod tests {
         let later = identity_crypto::DEFAULT_DELEGATION_SECONDS;
         tick(&ctx, &verifier, later);
         let layout = split_layout_of(&ctx).unwrap();
-        assert!(!gait_identity::renew_minted(&layout, later).unwrap(), "already renewed");
+        assert!(
+            !gait_identity::renew_minted(&layout, later).unwrap(),
+            "already renewed"
+        );
     }
 
     #[test]

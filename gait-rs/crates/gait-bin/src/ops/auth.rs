@@ -2,9 +2,9 @@
 //! another tool's credentials) and the model catalog. Thin over `gait_ops::auth`.
 //! No op ever returns or prints key material.
 use gait_cli::cli::error::CliError;
-use op_registry::{CallOptions, OpParams, Ref, UsageError};
 #[cfg(feature = "full")]
 use op_registry::SecretFile;
+use op_registry::{CallOptions, OpParams, Ref, UsageError};
 use std::path::PathBuf;
 
 const SIGNIN: &str = "openai-signin";
@@ -168,7 +168,11 @@ pub async fn list(
     Ok(gait_ops::auth::list()
         .map_err(failed)?
         .into_iter()
-        .map(|e| AuthEntry { provider: e.provider, kind: e.kind, status: e.status })
+        .map(|e| AuthEntry {
+            provider: e.provider,
+            kind: e.kind,
+            status: e.status,
+        })
         .collect())
 }
 
@@ -180,7 +184,10 @@ pub async fn status(
 ) -> anyhow::Result<AuthStatus> {
     let provider = params.id.as_raw();
     let status = gait_ops::auth::status(provider).map_err(failed)?;
-    Ok(AuthStatus { provider: provider.to_owned(), status })
+    Ok(AuthStatus {
+        provider: provider.to_owned(),
+        status,
+    })
 }
 
 #[cfg(feature = "full")]
@@ -205,7 +212,11 @@ pub async fn add(
     let key = first_line(params.key_file.bytes(), "API key")?;
     opts.redact(key.as_bytes());
     let out = gait_ops::auth::add(provider, key).map_err(failed)?;
-    Ok(AuthSaved { provider: out.provider, display: out.display, action: "saved".into() })
+    Ok(AuthSaved {
+        provider: out.provider,
+        display: out.display,
+        action: "saved".into(),
+    })
 }
 
 /// The first line of a secret file, trimmed: what the old stdin read took, so a
@@ -223,8 +234,13 @@ pub async fn link(
     params: AuthLinkParams,
     _opts: CallOptions,
 ) -> anyhow::Result<AuthSaved> {
-    let out = gait_ops::auth::link(params.id.as_raw(), &params.source, params.home).map_err(failed)?;
-    Ok(AuthSaved { provider: out.provider, display: out.display, action: "linked".into() })
+    let out =
+        gait_ops::auth::link(params.id.as_raw(), &params.source, params.home).map_err(failed)?;
+    Ok(AuthSaved {
+        provider: out.provider,
+        display: out.display,
+        action: "linked".into(),
+    })
 }
 
 /// Drop the link to another tool's credentials; that tool's own credentials are not touched.
@@ -234,7 +250,10 @@ pub async fn unlink(
     _opts: CallOptions,
 ) -> anyhow::Result<AuthRemoved> {
     let out = gait_ops::auth::unlink(params.id.as_raw()).map_err(failed)?;
-    Ok(AuthRemoved { provider: out.provider, action: "unlinked".into() })
+    Ok(AuthRemoved {
+        provider: out.provider,
+        action: "unlinked".into(),
+    })
 }
 
 /// Remove a stored API key. Removing a provider with no key still succeeds.
@@ -244,7 +263,10 @@ pub async fn remove(
     _opts: CallOptions,
 ) -> anyhow::Result<AuthRemoved> {
     let out = gait_ops::auth::remove(params.id.as_raw()).map_err(failed)?;
-    Ok(AuthRemoved { provider: out.provider, action: "removed".into() })
+    Ok(AuthRemoved {
+        provider: out.provider,
+        action: "removed".into(),
+    })
 }
 
 #[cfg(feature = "full")]
@@ -277,13 +299,21 @@ pub async fn login(
             opts.redact(file.bytes());
             let callback = first_line(file.bytes(), "callback URL")?;
             opts.redact(callback.as_bytes());
-            return gait_ops::auth::login_complete(provider, callback).await.map(saved).map_err(failed);
+            return gait_ops::auth::login_complete(provider, callback)
+                .await
+                .map(saved)
+                .map_err(failed);
         }
-        let start = gait_ops::auth::login_begin(provider).await.map_err(failed)?;
+        let start = gait_ops::auth::login_begin(provider)
+            .await
+            .map_err(failed)?;
         opts.notices.notice(start.authorization_url.clone());
         if let Some(secret) = opts.prompt_secret("callback URL") {
             let callback = secret.expose().trim().to_owned();
-            return gait_ops::auth::login_complete(provider, callback).await.map(saved).map_err(failed);
+            return gait_ops::auth::login_complete(provider, callback)
+                .await
+                .map(saved)
+                .map_err(failed);
         }
         return Ok(AuthLogin {
             provider: start.provider,
@@ -300,8 +330,14 @@ pub async fn login(
     }
     let notices = opts.notices.clone();
     gait_ops::auth::login_codex(|flow| match flow {
-        gait_auth::LoginFlow::DeviceCode { verification_url, user_code, .. } => {
-            notices.notice(format!("Open {verification_url} and enter code: {user_code}"));
+        gait_auth::LoginFlow::DeviceCode {
+            verification_url,
+            user_code,
+            ..
+        } => {
+            notices.notice(format!(
+                "Open {verification_url} and enter code: {user_code}"
+            ));
             notices.notice("Waiting for approval...");
         }
         _ => unreachable!("Codex subscription login uses a device code"),
@@ -325,11 +361,18 @@ pub async fn logout(
         }));
     }
     if provider == SIGNIN {
-        let out = gait_ops::auth::logout_signin(params.forget).await.map_err(failed)?;
+        let out = gait_ops::auth::logout_signin(params.forget)
+            .await
+            .map_err(failed)?;
         if !out.revoked {
-            opts.notices.notice("Disconnect the app in ChatGPT Settings.");
+            opts.notices
+                .notice("Disconnect the app in ChatGPT Settings.");
         }
-        return Ok(AuthLogout { provider: out.provider, action: "logged_out".into(), revoked: Some(out.revoked) });
+        return Ok(AuthLogout {
+            provider: out.provider,
+            action: "logged_out".into(),
+            revoked: Some(out.revoked),
+        });
     }
     if provider != CODEX {
         return Err(CliError::invalid_input(format!(
@@ -337,7 +380,11 @@ pub async fn logout(
         )));
     }
     let out = gait_ops::auth::logout_codex().await.map_err(failed)?;
-    Ok(AuthLogout { provider: out.provider, action: "logged_out".into(), revoked: None })
+    Ok(AuthLogout {
+        provider: out.provider,
+        action: "logged_out".into(),
+        revoked: None,
+    })
 }
 
 /// List the models of the models.dev catalog, optionally filtered by `--filter`.
@@ -360,4 +407,3 @@ pub async fn models(
         })
         .collect())
 }
-

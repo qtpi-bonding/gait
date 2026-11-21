@@ -111,8 +111,10 @@ async fn stream_ending_without_message_stop_yields_incomplete() {
         "claude-x".into(),
         Some(server.url()),
         false,
-        gait_core::transport::ProviderTransport::new(gait_core::transport::TransportConfig::default())
-            .expect("transport"),
+        gait_core::transport::ProviderTransport::new(
+            gait_core::transport::TransportConfig::default(),
+        )
+        .expect("transport"),
     );
     let mut stream = provider
         .stream(
@@ -172,8 +174,10 @@ async fn partial_usage_then_incomplete_is_accounted_once() {
         "claude-x".into(),
         Some(server.url()),
         false,
-        gait_core::transport::ProviderTransport::new(gait_core::transport::TransportConfig::default())
-            .expect("transport"),
+        gait_core::transport::ProviderTransport::new(
+            gait_core::transport::TransportConfig::default(),
+        )
+        .expect("transport"),
     );
     let mut stream = provider
         .stream(

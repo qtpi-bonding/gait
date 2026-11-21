@@ -176,7 +176,8 @@ impl CodexSubscriptionAuth {
             .map_err(map_reqwest)?;
         if !response.status().is_success() {
             return Err(AuthError::LoginRequired(
-                "Codex subscription credentials expired; run `gait auth login --id openai-codex`".into(),
+                "Codex subscription credentials expired; run `gait auth login --id openai-codex`"
+                    .into(),
             ));
         }
         let refreshed: RefreshResponse = response.json().await.map_err(map_reqwest)?;

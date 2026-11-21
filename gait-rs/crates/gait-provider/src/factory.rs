@@ -99,9 +99,7 @@ pub fn load_provider_with_credential_and_params(
     credential: Option<ResolvedCredential>,
     params: &gait_types::config::LlmParamsConfig,
 ) -> Result<Box<dyn Provider>, FactoryError> {
-    load_provider_with_credential_params_and_gait_dir(
-        model_str, credential, params, None, None,
-    )
+    load_provider_with_credential_params_and_gait_dir(model_str, credential, params, None, None)
 }
 
 pub fn load_provider_with_credential_params_and_gait_dir(
@@ -154,14 +152,16 @@ pub fn load_provider_with_credential_params_and_gait_dir(
                 Wire::CodexResponses => {
                     CodexResponsesProvider::new(subscription, model_id, base, transport)
                         .map(|provider| {
-                            Box::new(provider.with_prompt_cache_key(prompt_cache_key)) as Box<dyn Provider>
+                            Box::new(provider.with_prompt_cache_key(prompt_cache_key))
+                                as Box<dyn Provider>
                         })
                         .map_err(FactoryError::InvalidCredential)
                 }
                 Wire::ResponsesPlan => {
                     PlanResponsesProvider::new(subscription, model_id, base, transport)
                         .map(|provider| {
-                            Box::new(provider.with_prompt_cache_key(prompt_cache_key)) as Box<dyn Provider>
+                            Box::new(provider.with_prompt_cache_key(prompt_cache_key))
+                                as Box<dyn Provider>
                         })
                         .map_err(FactoryError::InvalidCredential)
                 }
@@ -496,10 +496,7 @@ mod tests {
             FactoryError::InvalidCredential("x".into()).class(),
             ErrorClass::Logical
         );
-        assert_eq!(
-            FactoryError::LocalNotBuilt.class(),
-            ErrorClass::Logical
-        );
+        assert_eq!(FactoryError::LocalNotBuilt.class(), ErrorClass::Logical);
         assert_eq!(
             FactoryError::LocalModelPathMissing.class(),
             ErrorClass::Logical

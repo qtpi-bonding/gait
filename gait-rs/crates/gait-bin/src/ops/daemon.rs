@@ -51,7 +51,12 @@ pub async fn list(
     Ok(out
         .rows
         .into_iter()
-        .map(|row| DaemonItem { name: row.name, pid: row.pid, status: row.status, log_path: row.log_path })
+        .map(|row| DaemonItem {
+            name: row.name,
+            pid: row.pid,
+            status: row.status,
+            log_path: row.log_path,
+        })
         .collect())
 }
 
@@ -62,5 +67,10 @@ pub async fn stop(
     _opts: CallOptions,
 ) -> anyhow::Result<DaemonStopped> {
     let out = gait_ops::daemon::stop(&ctx.gait_dir()?, params.id.as_raw()).map_err(infra)?;
-    Ok(DaemonStopped { id: out.id, pid: out.pid, was_alive: out.was_alive, signalled: out.signalled })
+    Ok(DaemonStopped {
+        id: out.id,
+        pid: out.pid,
+        was_alive: out.was_alive,
+        signalled: out.signalled,
+    })
 }

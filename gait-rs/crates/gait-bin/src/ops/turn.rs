@@ -12,21 +12,81 @@ use std::path::PathBuf;
 /// The long flags the turn reads itself (the registry checks they do not
 /// reuse a global's name).
 pub const TURN_FLAGS: &[FallbackFlag] = &[
-    FallbackFlag { long: "session", short: Some('s'), takes_value: true },
-    FallbackFlag { long: "inference", short: None, takes_value: true },
-    FallbackFlag { long: "verified-goal", short: None, takes_value: true },
-    FallbackFlag { long: "agent", short: Some('a'), takes_value: true },
-    FallbackFlag { long: "auto-approve", short: None, takes_value: false },
-    FallbackFlag { long: "allow", short: None, takes_value: true },
-    FallbackFlag { long: "deny", short: None, takes_value: true },
-    FallbackFlag { long: "unlock", short: None, takes_value: true },
-    FallbackFlag { long: "max-iter", short: Some('n'), takes_value: true },
-    FallbackFlag { long: "result-schema", short: Some('R'), takes_value: true },
-    FallbackFlag { long: "result-schema-json", short: None, takes_value: true },
-    FallbackFlag { long: "codebase", short: Some('c'), takes_value: true },
-    FallbackFlag { long: "allow-intree", short: None, takes_value: false },
-    FallbackFlag { long: "interactive", short: Some('i'), takes_value: false },
-    FallbackFlag { long: "exec", short: Some('e'), takes_value: true },
+    FallbackFlag {
+        long: "session",
+        short: Some('s'),
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "inference",
+        short: None,
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "verified-goal",
+        short: None,
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "agent",
+        short: Some('a'),
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "auto-approve",
+        short: None,
+        takes_value: false,
+    },
+    FallbackFlag {
+        long: "allow",
+        short: None,
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "deny",
+        short: None,
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "unlock",
+        short: None,
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "max-iter",
+        short: Some('n'),
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "result-schema",
+        short: Some('R'),
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "result-schema-json",
+        short: None,
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "codebase",
+        short: Some('c'),
+        takes_value: true,
+    },
+    FallbackFlag {
+        long: "allow-intree",
+        short: None,
+        takes_value: false,
+    },
+    FallbackFlag {
+        long: "interactive",
+        short: Some('i'),
+        takes_value: false,
+    },
+    FallbackFlag {
+        long: "exec",
+        short: Some('e'),
+        takes_value: true,
+    },
 ];
 
 /// What the turn's `-i` runs: the themed REPL of full `gait`, or the plain REPL
@@ -39,7 +99,8 @@ pub enum Repl {
 }
 
 /// The one-line help the root help lists for the fallback, then its detail.
-pub const TURN_HELP: &str = "Run a task: `{bin} \"fix the login bug\"`, `-i` for the REPL, `-e` for a one-off request.\n\
+pub const TURN_HELP: &str =
+    "Run a task: `{bin} \"fix the login bug\"`, `-i` for the REPL, `-e` for a one-off request.\n\
 A first word that is a command runs the command; put `--` before a task that starts with one.";
 
 /// The turn's own flags. The registry hands over every argument after the
@@ -98,7 +159,6 @@ pub struct TurnArgs {
     /// gait-dir is inside the codebase.
     #[arg(long)]
     pub allow_intree: bool,
-
 }
 
 /// What a parsed command line asks the turn to do. `plan` is the seam the
@@ -118,12 +178,16 @@ pub enum TurnPlan {
 impl TurnArgs {
     /// Parses the arguments the fallback received (no program name).
     pub fn parse(args: &[OsString]) -> Result<TurnArgs, clap::Error> {
-        TurnArgs::try_parse_from(std::iter::once(OsString::from("gait")).chain(args.iter().cloned()))
+        TurnArgs::try_parse_from(
+            std::iter::once(OsString::from("gait")).chain(args.iter().cloned()),
+        )
     }
 
     pub fn plan(&self) -> TurnPlan {
         if let Some(prompt) = &self.exec {
-            TurnPlan::Exec { prompt: prompt.clone() }
+            TurnPlan::Exec {
+                prompt: prompt.clone(),
+            }
         } else if self.interactive {
             TurnPlan::Interactive
         } else if let Some(task) = &self.task {
@@ -136,12 +200,18 @@ impl TurnArgs {
 
 /// The fallback of the full `gait`: `-i` opens the themed REPL.
 #[cfg(feature = "rich-tui")]
-pub fn run_rich<'a>(globals: &'a Globals, args: Vec<OsString>) -> BoxFuture<'a, anyhow::Result<u8>> {
+pub fn run_rich<'a>(
+    globals: &'a Globals,
+    args: Vec<OsString>,
+) -> BoxFuture<'a, anyhow::Result<u8>> {
     Box::pin(run(Repl::Rich, globals, args))
 }
 
 /// The fallback of `gait-min`: `-i` opens the plain REPL.
-pub fn run_plain<'a>(globals: &'a Globals, args: Vec<OsString>) -> BoxFuture<'a, anyhow::Result<u8>> {
+pub fn run_plain<'a>(
+    globals: &'a Globals,
+    args: Vec<OsString>,
+) -> BoxFuture<'a, anyhow::Result<u8>> {
     Box::pin(run(Repl::Plain, globals, args))
 }
 
@@ -302,7 +372,10 @@ mod tests {
         // And the other way: no flag of the turn is missing from the table.
         for argument in command.get_arguments() {
             if let Some(long) = argument.get_long() {
-                assert!(TURN_FLAGS.iter().any(|flag| flag.long == long), "TURN_FLAGS is missing --{long}");
+                assert!(
+                    TURN_FLAGS.iter().any(|flag| flag.long == long),
+                    "TURN_FLAGS is missing --{long}"
+                );
             }
         }
     }

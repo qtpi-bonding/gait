@@ -172,7 +172,10 @@ fn turn_start_ms(events: &[Event], run: u32, turn: u32) -> Option<u64> {
         .find(|event| {
             event.run == Some(run)
                 && event.turn == Some(turn)
-                && matches!(crate::turn::event_kind(event), Some(payload::Kind::TurnStart(_)))
+                && matches!(
+                    crate::turn::event_kind(event),
+                    Some(payload::Kind::TurnStart(_))
+                )
         })
         .map(|event| event.ts)
 }
@@ -191,8 +194,7 @@ fn repair_incomplete_tail(
     let final_outcome = if let Some(unmatched) = &active.unmatched_turn {
         let now = wall_ms();
         // The turn's real start, so its result and its telemetry agree on it.
-        let started_ms =
-            turn_start_ms(&log.events(), active.index, unmatched.index).unwrap_or(now);
+        let started_ms = turn_start_ms(&log.events(), active.index, unmatched.index).unwrap_or(now);
         let result = pb::TurnResult {
             turn_id: unmatched.turn_id.clone(),
             index: unmatched.index,
@@ -857,24 +859,34 @@ mod tests {
         )
         .unwrap();
         let started = started.expect("it reports the start time of the turn it closed");
-        let result_started = log
-            .events()
-            .iter()
-            .find_map(|event| match crate::turn::event_kind(event) {
-                Some(payload::Kind::TurnResult(result)) => result.timing.as_ref().map(|t| t.started_ms),
-                _ => None,
-            });
-        assert_eq!(result_started, Some(started), "the result and the report agree on the start");
+        let result_started =
+            log.events()
+                .iter()
+                .find_map(|event| match crate::turn::event_kind(event) {
+                    Some(payload::Kind::TurnResult(result)) => {
+                        result.timing.as_ref().map(|t| t.started_ms)
+                    }
+                    _ => None,
+                });
+        assert_eq!(
+            result_started,
+            Some(started),
+            "the result and the report agree on the start"
+        );
 
         let failed = failed_results(&log);
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].reason, "error");
-        assert_eq!(failed[0].error_code.as_deref(), Some("gait.spine.brain_died"));
+        assert_eq!(
+            failed[0].error_code.as_deref(),
+            Some("gait.spine.brain_died")
+        );
         assert!(failed[0].error_class.is_some());
         assert!(
-            log.events()
-                .iter()
-                .any(|event| matches!(crate::turn::event_kind(event), Some(payload::Kind::RunFailed(_)))),
+            log.events().iter().any(|event| matches!(
+                crate::turn::event_kind(event),
+                Some(payload::Kind::RunFailed(_))
+            )),
             "the run ends too"
         );
     }
@@ -884,10 +896,21 @@ mod tests {
         let log = log_with_started_turn();
         let codebase = TempDir::new().unwrap();
         let cause = FailureCause::recovery();
-        fail_open_turn(&log, &crate::turn::SessionGit::null(), codebase.path(), &cause).unwrap();
+        fail_open_turn(
+            &log,
+            &crate::turn::SessionGit::null(),
+            codebase.path(),
+            &cause,
+        )
+        .unwrap();
         let before = log.events().len();
-        let again =
-            fail_open_turn(&log, &crate::turn::SessionGit::null(), codebase.path(), &cause).unwrap();
+        let again = fail_open_turn(
+            &log,
+            &crate::turn::SessionGit::null(),
+            codebase.path(),
+            &cause,
+        )
+        .unwrap();
         assert!(again.is_none());
         assert_eq!(log.events().len(), before, "no second result");
         assert_eq!(failed_results(&log).len(), 1);

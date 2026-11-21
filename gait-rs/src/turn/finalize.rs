@@ -197,7 +197,10 @@ pub(crate) async fn finalize(
             let (code, class) = if facts.code == coded_error::UNKNOWN_CODE {
                 (None, None)
             } else {
-                (Some(facts.code.to_string()), Some(facts.class.as_str().to_string()))
+                (
+                    Some(facts.code.to_string()),
+                    Some(facts.class.as_str().to_string()),
+                )
             };
             Ok(TurnResult::Failed {
                 ended: "error".into(),
@@ -785,7 +788,10 @@ mod tests {
         let env = env_from(&fx);
         let persist = unsealed(&fx);
         let mut state = TurnState::new(&crate::profile::ResolvedProfile::for_test(
-            fx.provider.clone(), vec![], vec![], vec![],
+            fx.provider.clone(),
+            vec![],
+            vec![],
+            vec![],
         ));
         let typed = ProviderError::Overloaded;
         let error = coded_error::attach(anyhow::anyhow!("provider overloaded"), &typed);
@@ -807,7 +813,10 @@ mod tests {
         let env = env_from(&fx);
         let persist = unsealed(&fx);
         let mut state = TurnState::new(&crate::profile::ResolvedProfile::for_test(
-            fx.provider.clone(), vec![], vec![], vec![],
+            fx.provider.clone(),
+            vec![],
+            vec![],
+            vec![],
         ));
         let result = finalize(
             &env,

@@ -58,7 +58,9 @@ pub fn owner_from_meta(
     meta: &Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {
     let raw = meta.as_ref()?.get(OWNER_META_KEY)?.as_str()?;
-    PrincipalId::parse_canonical(raw).ok().map(|id| id.to_string())
+    PrincipalId::parse_canonical(raw)
+        .ok()
+        .map(|id| id.to_string())
 }
 
 /// Process-wide attestation state for the agent this process runs as. The
@@ -203,7 +205,12 @@ impl Attestor {
             messages,
             delivery_id: delivery.delivery_id().to_string(),
             deliverer,
-            confirmation: Confirmation { pending, state: self.state.clone(), seen, claim },
+            confirmation: Confirmation {
+                pending,
+                state: self.state.clone(),
+                seen,
+                claim,
+            },
         }))
     }
 
@@ -212,7 +219,10 @@ impl Attestor {
         if !lock(&self.in_flight).insert(key.clone()) {
             bail!("attested batch {deliverer}#{sequence} is already in flight (possible replay)");
         }
-        Ok(InFlight { set: self.in_flight.clone(), key })
+        Ok(InFlight {
+            set: self.in_flight.clone(),
+            key,
+        })
     }
 }
 
@@ -235,7 +245,11 @@ impl VerifiedBatch {
     }
 
     pub fn delivered_ids(&self) -> Vec<String> {
-        self.confirmation.seen.iter().map(|(_, id)| id.clone()).collect()
+        self.confirmation
+            .seen
+            .iter()
+            .map(|(_, id)| id.clone())
+            .collect()
     }
 
     /// Splits the batch into its messages and the closure that confirms it.
@@ -245,7 +259,12 @@ impl VerifiedBatch {
     /// `messages` is empty when every message was already delivered; the
     /// caller still runs the closure so the sequence advances.
     pub fn into_parts(self) -> (Vec<VerifiedIncoming>, OnDurable) {
-        let Confirmation { pending, state, seen, claim } = self.confirmation;
+        let Confirmation {
+            pending,
+            state,
+            seen,
+            claim,
+        } = self.confirmation;
         let on_durable: OnDurable = Box::new(move || {
             let _claim = claim;
             match confirm(state.replay().as_ref(), pending) {
@@ -253,10 +272,9 @@ impl VerifiedBatch {
                 Err(AttestationError::Replay { last, got, .. }) => {
                     // Already confirmed and logged: the turn goes on, and the record
                     // says it happened.
-                    let error = coded_error::into_anyhow(crate::error::PromptError::AttestationReplayConfirmed {
-                        last,
-                        got,
-                    });
+                    let error = coded_error::into_anyhow(
+                        crate::error::PromptError::AttestationReplayConfirmed { last, got },
+                    );
                     concord_telemetry::error_anyhow!(&error, source = "gait-acp.attestation");
                 }
                 Err(error @ AttestationError::Store(_)) => {
@@ -286,74 +304,79 @@ pub fn verify_prompt(
     if !meta.contains_key(DEFAULT_META_KEY) {
         return Ok(None);
     }
-    let attestor = attestor.ok_or_else(|| {
-        coded_error::into_anyhow(PromptError::AttestationMissingOwnDevices)
-    })?;
-    attestor.verify(meta).map_err(|error| map_attestation_error(error, &attestor.state.replay_path()))
+    let attestor = attestor
+        .ok_or_else(|| coded_error::into_anyhow(PromptError::AttestationMissingOwnDevices))?;
+    attestor
+        .verify(meta)
+        .map_err(|error| map_attestation_error(error, &attestor.state.replay_path()))
 }
 
 /// Types a library failure met while verifying a delivery. A store failure
 /// becomes the coded attestation-state error naming `replay_path`; anything not
 /// listed passes through unchanged.
 fn map_attestation_error(error: anyhow::Error, replay_path: &Path) -> anyhow::Error {
-        let typed = match coded_error::downcast_ref::<AttestationError>(&error) {
-            Some(AttestationError::UnknownDeliverer(who)) => {
-                PromptError::AttestationUnknownDeliverer(who.clone())
-            }
-            Some(
-                AttestationError::BadSignature
-                | AttestationError::DelivererDevice(_)
-                | AttestationError::MessageSignature { .. }
-                | AttestationError::WrongBodyType { .. },
-            ) => PromptError::AttestationBadSignature,
-            Some(AttestationError::NotARecipient) => PromptError::AttestationNotRecipient,
-            Some(AttestationError::WrongRecipient) => PromptError::AttestationRecipientIdMismatch,
-            Some(AttestationError::WrongAudience { index }) => {
-                PromptError::AttestationAudienceMismatch { index: *index }
-            }
-            Some(
-                AttestationError::InvalidMessage { .. }
-                | AttestationError::InvalidDeliveryId
-                | AttestationError::InvalidVia { .. },
-            ) => PromptError::AttestationInvalidMessage(
-                coded_error::downcast_ref::<AttestationError>(&error)
-                    .map(|e| e.to_string())
-                    .unwrap_or_default(),
-            ),
-            Some(AttestationError::Stale { age, max }) => {
-                PromptError::AttestationStale(format!("age {age}s, max {max}s"))
-            }
-            Some(AttestationError::Replay { principal, last, got }) => {
-                PromptError::AttestationReplay(format!("replay for {principal}: last {last}, got {got}"))
-            }
-            Some(AttestationError::EmptyMessages | AttestationError::NoRecipients) => {
-                PromptError::AttestationEmpty
-            }
-            Some(AttestationError::OwnDevicesMissing) => PromptError::AttestationMissingOwnDevices,
-            Some(AttestationError::TooManyMessages { count, max }) => {
-                PromptError::TooManyMessages { count: *count, max: *max }
-            }
-            Some(AttestationError::InvalidRecipientDevice { index }) => {
-                PromptError::InvalidRecipientDevice { index: *index }
-            }
-            Some(AttestationError::InvalidName { reason }) => {
-                PromptError::InvalidName((*reason).to_owned())
-            }
-            Some(AttestationError::StrayName { principal }) => {
-                PromptError::StrayName(principal.clone())
-            }
-            Some(AttestationError::SessionExpired { not_after, now }) => {
-                PromptError::SessionExpired { not_after: *not_after, now: *now }
-            }
-            Some(AttestationError::Randomness(source)) => {
-                PromptError::Randomness(source.to_string())
-            }
-            Some(store @ AttestationError::Store(_)) => {
-                return coded_error::into_anyhow(AttestationStateError::from_store(replay_path, store));
-            }
-            _ => return error,
-        };
-        coded_error::into_anyhow(typed)
+    let typed = match coded_error::downcast_ref::<AttestationError>(&error) {
+        Some(AttestationError::UnknownDeliverer(who)) => {
+            PromptError::AttestationUnknownDeliverer(who.clone())
+        }
+        Some(
+            AttestationError::BadSignature
+            | AttestationError::DelivererDevice(_)
+            | AttestationError::MessageSignature { .. }
+            | AttestationError::WrongBodyType { .. },
+        ) => PromptError::AttestationBadSignature,
+        Some(AttestationError::NotARecipient) => PromptError::AttestationNotRecipient,
+        Some(AttestationError::WrongRecipient) => PromptError::AttestationRecipientIdMismatch,
+        Some(AttestationError::WrongAudience { index }) => {
+            PromptError::AttestationAudienceMismatch { index: *index }
+        }
+        Some(
+            AttestationError::InvalidMessage { .. }
+            | AttestationError::InvalidDeliveryId
+            | AttestationError::InvalidVia { .. },
+        ) => PromptError::AttestationInvalidMessage(
+            coded_error::downcast_ref::<AttestationError>(&error)
+                .map(|e| e.to_string())
+                .unwrap_or_default(),
+        ),
+        Some(AttestationError::Stale { age, max }) => {
+            PromptError::AttestationStale(format!("age {age}s, max {max}s"))
+        }
+        Some(AttestationError::Replay {
+            principal,
+            last,
+            got,
+        }) => PromptError::AttestationReplay(format!(
+            "replay for {principal}: last {last}, got {got}"
+        )),
+        Some(AttestationError::EmptyMessages | AttestationError::NoRecipients) => {
+            PromptError::AttestationEmpty
+        }
+        Some(AttestationError::OwnDevicesMissing) => PromptError::AttestationMissingOwnDevices,
+        Some(AttestationError::TooManyMessages { count, max }) => PromptError::TooManyMessages {
+            count: *count,
+            max: *max,
+        },
+        Some(AttestationError::InvalidRecipientDevice { index }) => {
+            PromptError::InvalidRecipientDevice { index: *index }
+        }
+        Some(AttestationError::InvalidName { reason }) => {
+            PromptError::InvalidName((*reason).to_owned())
+        }
+        Some(AttestationError::StrayName { principal }) => {
+            PromptError::StrayName(principal.clone())
+        }
+        Some(AttestationError::SessionExpired { not_after, now }) => PromptError::SessionExpired {
+            not_after: *not_after,
+            now: *now,
+        },
+        Some(AttestationError::Randomness(source)) => PromptError::Randomness(source.to_string()),
+        Some(store @ AttestationError::Store(_)) => {
+            return coded_error::into_anyhow(AttestationStateError::from_store(replay_path, store));
+        }
+        _ => return error,
+    };
+    coded_error::into_anyhow(typed)
 }
 
 /// A replay-store failure outside `verify_prompt`'s match, coded.
@@ -381,11 +404,31 @@ mod tests {
     fn attestation_errors_map_to_coded_prompt_errors() {
         let boxed = || -> Box<dyn std::error::Error + Send + Sync> { "boom".into() };
         let table: Vec<(AttestationError, &str)> = vec![
-            (AttestationError::TooManyMessages { count: 9, max: 8 }, "too_many_messages"),
-            (AttestationError::InvalidRecipientDevice { index: 1 }, "invalid_recipient_device"),
-            (AttestationError::InvalidName { reason: "empty" }, "invalid_name"),
-            (AttestationError::StrayName { principal: "p256:aa".into() }, "stray_name"),
-            (AttestationError::SessionExpired { not_after: 1, now: 2 }, "session_expired"),
+            (
+                AttestationError::TooManyMessages { count: 9, max: 8 },
+                "too_many_messages",
+            ),
+            (
+                AttestationError::InvalidRecipientDevice { index: 1 },
+                "invalid_recipient_device",
+            ),
+            (
+                AttestationError::InvalidName { reason: "empty" },
+                "invalid_name",
+            ),
+            (
+                AttestationError::StrayName {
+                    principal: "p256:aa".into(),
+                },
+                "stray_name",
+            ),
+            (
+                AttestationError::SessionExpired {
+                    not_after: 1,
+                    now: 2,
+                },
+                "session_expired",
+            ),
             (AttestationError::Randomness(boxed()), "randomness"),
         ];
         for (error, want) in table {
@@ -415,14 +458,24 @@ mod tests {
     fn open_refuses_a_loose_attestation_dir_with_a_coded_error() {
         let keys = identity_keyfile::testkit::TempIdentityDir::new(0, 86_400);
         let state = tempfile::tempdir().unwrap();
-        let public = identity_keyfile::DeviceKeys::load(keys.path()).unwrap().public();
-        let dir = state.path().join("attestation").join(public.principal_id.to_string());
+        let public = identity_keyfile::DeviceKeys::load(keys.path())
+            .unwrap()
+            .public();
+        let dir = state
+            .path()
+            .join("attestation")
+            .join(public.principal_id.to_string());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = Attestor::open(keys.path(), state.path(), Vec::new()).err().expect("refused");
+        let error = Attestor::open(keys.path(), state.path(), Vec::new())
+            .err()
+            .expect("refused");
         assert_eq!(code(&error), "gait.acp.attestation_state.insecure");
         let text = format!("{error:#}");
-        assert!(text.contains(&dir.display().to_string()) && text.contains("0755"), "{text}");
+        assert!(
+            text.contains(&dir.display().to_string()) && text.contains("0755"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -430,7 +483,9 @@ mod tests {
         let keys = identity_keyfile::testkit::TempIdentityDir::new(0, 86_400);
         std::fs::set_permissions(keys.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let state = tempfile::tempdir().unwrap();
-        let error = Attestor::open(keys.path(), state.path(), Vec::new()).err().expect("refused");
+        let error = Attestor::open(keys.path(), state.path(), Vec::new())
+            .err()
+            .expect("refused");
         assert_eq!(code(&error), "gait.identity.identity_not_private");
     }
 }

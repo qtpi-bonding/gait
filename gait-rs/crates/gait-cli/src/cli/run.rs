@@ -197,26 +197,22 @@ pub async fn cmd_run(
 
     // Entry point: surface gait.jsonc parse errors instead of silently
     // defaulting. CLI args layered on top still take precedence below.
-    let loaded = gait_core::config::load_config_with(
-        &gait_dir,
-        gait_core::config::ConfigLoadPolicy::Strict,
-    )
-    .map_err(|e| CliError::invalid_input(format!("[gait] {e}")))?;
+    let loaded =
+        gait_core::config::load_config_with(&gait_dir, gait_core::config::ConfigLoadPolicy::Strict)
+            .map_err(|e| CliError::invalid_input(format!("[gait] {e}")))?;
     let config = apply_cli_overrides(loaded, &args);
 
     // `--mode <name>` activates a mode overlay for this run by appending a
     // `Mode` event to the session log before the turn starts.
     if let Some(name) = &args.mode {
         let log_path = gait_core::session::live::log_path(&gait_dir, &session_id);
-        gait_core::modes::activate_mode(&log_path, &gait_dir, name).map_err(|e| {
-            CliError::invalid_input(format!("[gait] --mode {name}: {e}"))
-        })?;
+        gait_core::modes::activate_mode(&log_path, &gait_dir, name)
+            .map_err(|e| CliError::invalid_input(format!("[gait] --mode {name}: {e}")))?;
     }
     let inference_selection = match args.inference.as_deref() {
         Some(name) => Some(
-            gait_ops::inference::resolve_selection(&gait_dir, name).map_err(|e| {
-                CliError::invalid_input(format!("[gait] --inference {name}: {e}"))
-            })?,
+            gait_ops::inference::resolve_selection(&gait_dir, name)
+                .map_err(|e| CliError::invalid_input(format!("[gait] --inference {name}: {e}")))?,
         ),
         None => None,
     };
@@ -287,9 +283,8 @@ pub async fn cmd_run(
                 CliError::invalid_input(format!("[gait] --result-schema-json: {e}"))
             })?)
         } else if let Some(path) = args.result_schema_path.as_deref() {
-            let raw = std::fs::read_to_string(path).map_err(|e| {
-                CliError::failed(format!("[gait] --result-schema {path}: {e}"))
-            })?;
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| CliError::failed(format!("[gait] --result-schema {path}: {e}")))?;
             Some(serde_json::from_str(&raw).map_err(|e| {
                 CliError::invalid_input(format!("[gait] --result-schema {path}: {e}"))
             })?)
@@ -481,7 +476,10 @@ fn failure_error(run_result: &gait_core::proto::gait::log::v1::RunResult) -> Opt
     let code = failed.error_code.as_deref()?;
     Some(coded_error::from_remote(
         Some(code),
-        failed.error_class.as_deref().and_then(|class| class.parse().ok()),
+        failed
+            .error_class
+            .as_deref()
+            .and_then(|class| class.parse().ok()),
         failed.message.clone(),
     ))
 }
@@ -498,7 +496,9 @@ mod tests {
         error_code: Option<&str>,
         error_class: Option<&str>,
     ) -> gait_core::proto::gait::log::v1::RunResult {
-        use gait_core::proto::gait::log::v1::{turn_result::Outcome, RunResult, TurnFailed, TurnResult};
+        use gait_core::proto::gait::log::v1::{
+            turn_result::Outcome, RunResult, TurnFailed, TurnResult,
+        };
         RunResult {
             turns: vec![TurnResult {
                 outcome: Some(Outcome::Failed(TurnFailed {
@@ -524,7 +524,9 @@ mod tests {
     fn failure_error_is_none_without_a_code() {
         assert!(failure_error(&run_failed(None, None)).is_none());
         assert_eq!(
-            coded_error::cli::exit_code_anyhow(&CliError::failed("[gait] run failed; see the diagnostic above")),
+            coded_error::cli::exit_code_anyhow(&CliError::failed(
+                "[gait] run failed; see the diagnostic above"
+            )),
             69
         );
     }

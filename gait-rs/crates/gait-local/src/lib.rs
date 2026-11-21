@@ -61,7 +61,14 @@ pub enum GenerationChunk {
 }
 
 #[derive(
-    Debug, thiserror::Error, coded_error::CodedError, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+    Debug,
+    thiserror::Error,
+    coded_error::CodedError,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[coded(namespace = "gait.local")]
 pub enum GenerationError {

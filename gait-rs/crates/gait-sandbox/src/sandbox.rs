@@ -104,7 +104,9 @@ impl Sandbox for LandlockSandbox {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = scope;
-            Ok(SandboxStatus::Unavailable { reason: "Landlock is Linux-only".into() })
+            Ok(SandboxStatus::Unavailable {
+                reason: "Landlock is Linux-only".into(),
+            })
         }
     }
 }
@@ -182,7 +184,9 @@ pub fn platform_system_reads() -> &'static [&'static str] {
     }
     #[cfg(target_os = "linux")]
     {
-        &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev"]
+        &[
+            "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev",
+        ]
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -483,14 +487,25 @@ mod tests {
             writable: vec![PathBuf::from("/repo")],
             network: NetworkPolicy::Deny,
             local_bind: false,
-            read_deny: DenyPolicy { subpaths: vec![PathBuf::from("/secret/id")], globs: vec![] },
-            write_deny: DenyPolicy { subpaths: vec![PathBuf::from("/repo/.git")], globs: vec![] },
+            read_deny: DenyPolicy {
+                subpaths: vec![PathBuf::from("/secret/id")],
+                globs: vec![],
+            },
+            write_deny: DenyPolicy {
+                subpaths: vec![PathBuf::from("/repo/.git")],
+                globs: vec![],
+            },
         };
         let p = build_sbpl(&scope);
         let allow = p.find("(allow file-read*)").unwrap();
-        let deny = p.find("(deny file-read* file-write* (subpath \"/secret/id\"))").unwrap();
+        let deny = p
+            .find("(deny file-read* file-write* (subpath \"/secret/id\"))")
+            .unwrap();
         assert!(deny > allow, "{p}");
-        assert!(p.contains("(deny file-write* (subpath \"/repo/.git\"))"), "{p}");
+        assert!(
+            p.contains("(deny file-write* (subpath \"/repo/.git\"))"),
+            "{p}"
+        );
     }
 
     /// A real kernel seal: a process under the generated profile cannot read a
@@ -510,7 +525,10 @@ mod tests {
             writable: vec![],
             network: NetworkPolicy::Deny,
             local_bind: false,
-            read_deny: DenyPolicy { subpaths: vec![secret.clone()], globs: vec![] },
+            read_deny: DenyPolicy {
+                subpaths: vec![secret.clone()],
+                globs: vec![],
+            },
             write_deny: DenyPolicy::default(),
         };
         let profile = build_sbpl(&scope);
@@ -522,7 +540,11 @@ mod tests {
                 .unwrap()
         };
         let allowed = run(&open);
-        assert!(allowed.status.success(), "control read failed: {}", String::from_utf8_lossy(&allowed.stderr));
+        assert!(
+            allowed.status.success(),
+            "control read failed: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
         assert_eq!(allowed.stdout, b"fine");
         let denied = run(&secret.join("device.jwk.json"));
         assert!(!denied.status.success(), "the denied folder was readable");
@@ -1286,7 +1308,12 @@ pub(crate) mod sbpl {
         // rule decides), so they are emitted after the read and write allows.
         for p in &scope.read_deny.subpaths {
             let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-            writeln!(s, r#"(deny file-read* file-write* (subpath "{}"))"#, sbpl_escape(&c)).unwrap();
+            writeln!(
+                s,
+                r#"(deny file-read* file-write* (subpath "{}"))"#,
+                sbpl_escape(&c)
+            )
+            .unwrap();
         }
         for p in &scope.write_deny.subpaths {
             let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());

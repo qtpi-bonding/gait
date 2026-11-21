@@ -110,20 +110,28 @@ fn validate_register(p: &ExtensionRegisterParams) -> Result<(), UsageError> {
     match p.kind {
         Kind::Mcp => {
             if p.url.is_none() && p.command.is_none() {
-                return Err(UsageError::AtLeastOne { group: "url or command".into() });
+                return Err(UsageError::AtLeastOne {
+                    group: "url or command".into(),
+                });
             }
         }
         Kind::Skill => {
             if p.description.is_none() {
-                return Err(UsageError::MissingField { name: "description".into() });
+                return Err(UsageError::MissingField {
+                    name: "description".into(),
+                });
             }
             if p.content.is_none() && p.path.is_none() {
-                return Err(UsageError::AtLeastOne { group: "content or path".into() });
+                return Err(UsageError::AtLeastOne {
+                    group: "content or path".into(),
+                });
             }
         }
         Kind::Plugin => {
             if p.wasm.is_none() {
-                return Err(UsageError::MissingField { name: "wasm".into() });
+                return Err(UsageError::MissingField {
+                    name: "wasm".into(),
+                });
             }
         }
     }

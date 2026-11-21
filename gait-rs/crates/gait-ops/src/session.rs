@@ -330,7 +330,10 @@ impl UndoOutcome {
 /// commit of that run. `turn 0` is the state before the first request and
 /// restores code only (see `undo_with`).
 pub fn undo(params: UndoParams) -> anyhow::Result<UndoOutcome> {
-    undo_with(params, gait_state::git::Repos::production().checkpoints.as_ref())
+    undo_with(
+        params,
+        gait_state::git::Repos::production().checkpoints.as_ref(),
+    )
 }
 
 fn undo_with(
@@ -363,7 +366,10 @@ fn undo_with(
         if let Some(event::Body::Payload(p)) = &e.body {
             match &p.kind {
                 Some(payload::Kind::RunStart(start)) => {
-                    if first_baseline.as_ref().is_none_or(|(i, _)| start.index < *i) {
+                    if first_baseline
+                        .as_ref()
+                        .is_none_or(|(i, _)| start.index < *i)
+                    {
                         first_baseline = Some((
                             start.index,
                             start.baseline_checkpoint.clone().filter(|s| !s.is_empty()),
@@ -372,7 +378,9 @@ fn undo_with(
                 }
                 Some(payload::Kind::RunComplete(complete)) => {
                     let run = e.run.ok_or_else(|| {
-                        coded_error::into_anyhow(OpError::Conflict("RunComplete event has no run ordinal".to_string()))
+                        coded_error::into_anyhow(OpError::Conflict(
+                            "RunComplete event has no run ordinal".to_string(),
+                        ))
                     })?;
                     let idx = turns.len() as u32 + 1;
                     let message = turn_done_message_before(&events, e.seq, e.run);
@@ -380,8 +388,7 @@ fn undo_with(
                         .final_state
                         .as_ref()
                         .and_then(|state| state.checkpoint.clone());
-                    let checkpoint_short =
-                        full.as_deref().map(|s| s[..s.len().min(8)].to_string());
+                    let checkpoint_short = full.as_deref().map(|s| s[..s.len().min(8)].to_string());
                     turns.push(UndoTurn {
                         turn: idx,
                         summary: message,
@@ -404,9 +411,11 @@ fn undo_with(
         });
     }
 
-    let turn = params
-        .turn
-        .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict("--turn <n> is required (or use --list)".to_string())))?;
+    let turn = params.turn.ok_or_else(|| {
+        coded_error::into_anyhow(OpError::Conflict(
+            "--turn <n> is required (or use --list)".to_string(),
+        ))
+    })?;
 
     let do_code = params.code || !params.transcript;
     let do_transcript = params.transcript || !params.code;
@@ -425,7 +434,9 @@ fn undo_with(
             )));
         }
         let sha = first_baseline.and_then(|(_, sha)| sha).ok_or_else(|| {
-            coded_error::into_anyhow(OpError::Conflict("no baseline checkpoint recorded before the first request".to_string()))
+            coded_error::into_anyhow(OpError::Conflict(
+                "no baseline checkpoint recorded before the first request".to_string(),
+            ))
         })?;
         let short = Some(sha[..sha.len().min(8)].to_string());
         (Some(sha), short, None)
@@ -439,7 +450,11 @@ fn undo_with(
         }
         let target = if do_transcript {
             let dir = gait_state::session::live::worktree_dir(&params.gait_dir, &params.session_id);
-            Some(find_transcript_commit(&dir, &params.session_id, run_ids[turn_idx])?)
+            Some(find_transcript_commit(
+                &dir,
+                &params.session_id,
+                run_ids[turn_idx],
+            )?)
         } else {
             None
         };
@@ -456,7 +471,9 @@ fn undo_with(
                 .codebase_path
                 .map(std::path::PathBuf::from)
                 .ok_or_else(|| {
-                    coded_error::into_anyhow(OpError::Conflict("session has no codebase_path; cannot undo code".to_string()))
+                    coded_error::into_anyhow(OpError::Conflict(
+                        "session has no codebase_path; cannot undo code".to_string(),
+                    ))
                 })?,
         ),
         _ => None,
@@ -465,7 +482,10 @@ fn undo_with(
     // Acquire the lock; refuse if a turn is in progress.
     let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &params.session_id);
     let _lock = gait_state::session::SessionLock::acquire(&session_dir).map_err(|e| {
-        coded_error::into_anyhow(OpError::SessionBusy(format!("cannot undo: {} (is a turn in progress?)", e)))
+        coded_error::into_anyhow(OpError::SessionBusy(format!(
+            "cannot undo: {} (is a turn in progress?)",
+            e
+        )))
     })?;
 
     let mut code_undone = false;
@@ -741,18 +761,22 @@ pub fn bulk_act(
     force: bool,
 ) -> anyhow::Result<BulkOutcome> {
     if plan.verb == BulkVerb::Discard && plan.eligible.len() > 1 && !force {
-        return Err(coded_error::into_anyhow(OpError::ConfirmationRequired(format!(
-            "bulk discard of {} sessions requires --force (a second, distinct flag from \
+        return Err(coded_error::into_anyhow(OpError::ConfirmationRequired(
+            format!(
+                "bulk discard of {} sessions requires --force (a second, distinct flag from \
              confirmation) — review the eligible list above, then re-run with --force",
-            plan.eligible.len()
-        ))));
+                plan.eligible.len()
+            ),
+        )));
     }
     if !confirmed {
-        return Err(coded_error::into_anyhow(OpError::ConfirmationRequired(format!(
-            "{} {} session(s) requires confirmation",
-            plan.verb.label(),
-            plan.eligible.len()
-        ))));
+        return Err(coded_error::into_anyhow(OpError::ConfirmationRequired(
+            format!(
+                "{} {} session(s) requires confirmation",
+                plan.verb.label(),
+                plan.eligible.len()
+            ),
+        )));
     }
 
     for id in &plan.eligible {
@@ -1173,7 +1197,10 @@ mod tests {
         write_empty_log(ws.path(), "sbulk02");
         let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
         let err = bulk_act(ws.path(), &plan, false, false).unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::ConfirmationRequired(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::ConfirmationRequired(_))
+        ));
         // Still present: the act loop never ran.
         assert!(gait_state::session::live::worktree_dir(ws.path(), "sbulk02").exists());
     }
@@ -1233,11 +1260,18 @@ mod tests {
         write_empty_log(ws.path(), "sforce02");
 
         let plan = classify_bulk(ws.path(), BulkVerb::Discard).unwrap();
-        assert_eq!(plan.eligible.len(), 2, "fixture must have 2 eligible sessions");
+        assert_eq!(
+            plan.eligible.len(),
+            2,
+            "fixture must have 2 eligible sessions"
+        );
 
         // confirmed=true, force=false: refused, nothing touched.
         let err = bulk_act(ws.path(), &plan, true, false).unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::ConfirmationRequired(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::ConfirmationRequired(_))
+        ));
         assert!(gait_state::session::live::worktree_dir(ws.path(), "sforce01").exists());
         assert!(gait_state::session::live::worktree_dir(ws.path(), "sforce02").exists());
 
@@ -1327,7 +1361,10 @@ mod tests {
             list: true,
         })
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::Conflict(_))
+        ));
     }
 
     #[test]
@@ -1342,7 +1379,10 @@ mod tests {
             list: false,
         })
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::Conflict(_))
+        ));
     }
 
     // -- undo (real restores) --
@@ -1459,8 +1499,7 @@ mod tests {
     }
 
     fn head_summary(ws: &Path, id: &str) -> String {
-        let repo =
-            git2::Repository::open(gait_state::session::live::worktree_dir(ws, id)).unwrap();
+        let repo = git2::Repository::open(gait_state::session::live::worktree_dir(ws, id)).unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
         head.summary().unwrap().to_string()
     }
@@ -1494,11 +1533,16 @@ mod tests {
         let out = undo_with(undo_params(ws.path(), id, 1, false, true), &cp).unwrap();
 
         assert!(out.transcript_undone && !out.code_undone);
-        assert_eq!(head_summary(ws.path(), id), format!("session({id}): run 0 turn 1"));
+        assert_eq!(
+            head_summary(ws.path(), id),
+            format!("session({id}): run 0 turn 1")
+        );
         // The log really went back: run 1's events are gone.
-        let events =
-            gait_state::session::log::read_events(&gait_state::session::live::log_path(ws.path(), id))
-                .unwrap();
+        let events = gait_state::session::log::read_events(&gait_state::session::live::log_path(
+            ws.path(),
+            id,
+        ))
+        .unwrap();
         let starts = events
             .iter()
             .filter(|e| {
@@ -1526,8 +1570,15 @@ mod tests {
         commit_turn(ws.path(), id, 10, 0);
 
         // Turn 1 is run 1; the newer "run 10 turn 0" commit must not satisfy it.
-        undo_with(undo_params(ws.path(), id, 1, false, true), &StubCheckpoints::default()).unwrap();
-        assert_eq!(head_summary(ws.path(), id), format!("session({id}): run 1 turn 0"));
+        undo_with(
+            undo_params(ws.path(), id, 1, false, true),
+            &StubCheckpoints::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            head_summary(ws.path(), id),
+            format!("session({id}): run 1 turn 0")
+        );
     }
 
     #[test]
@@ -1549,8 +1600,15 @@ mod tests {
         commit_turn(ws.path(), id, 3, 0);
 
         // The second completed run is run 2, not run 1.
-        undo_with(undo_params(ws.path(), id, 2, false, true), &StubCheckpoints::default()).unwrap();
-        assert_eq!(head_summary(ws.path(), id), format!("session({id}): run 2 turn 0"));
+        undo_with(
+            undo_params(ws.path(), id, 2, false, true),
+            &StubCheckpoints::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            head_summary(ws.path(), id),
+            format!("session({id}): run 2 turn 0")
+        );
     }
 
     #[test]
@@ -1565,7 +1623,13 @@ mod tests {
         let cp = StubCheckpoints::default();
         let err = undo_with(undo_params(ws.path(), id, 1, false, false), &cp).unwrap_err();
 
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "{err:?}");
+        assert!(
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::NotFound(_))
+            ),
+            "{err:?}"
+        );
         assert!(
             cp.restored.lock().unwrap().is_empty(),
             "code must not be restored when the transcript target is missing"
@@ -1607,7 +1671,13 @@ mod tests {
         let cp = StubCheckpoints::default();
         for (code, transcript) in [(false, false), (false, true)] {
             let err = undo_with(undo_params(ws.path(), id, 0, code, transcript), &cp).unwrap_err();
-            assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))), "{err:?}");
+            assert!(
+                matches!(
+                    coded_error::downcast_ref::<OpError>(&err),
+                    Some(OpError::Conflict(_))
+                ),
+                "{err:?}"
+            );
         }
         assert!(cp.restored.lock().unwrap().is_empty());
     }
@@ -1625,7 +1695,13 @@ mod tests {
             &StubCheckpoints::default(),
         )
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))), "{err:?}");
+        assert!(
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::Conflict(_))
+            ),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -1641,7 +1717,13 @@ mod tests {
             &StubCheckpoints::default(),
         )
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "{err:?}");
+        assert!(
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::NotFound(_))
+            ),
+            "{err:?}"
+        );
     }
 
     // -- shared renderer (golden tests) --
@@ -1816,7 +1898,10 @@ mod tests {
             list: false,
         })
         .unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::NotFound(_))
+        ));
     }
 
     // -- summary (cmd_log) --
@@ -1953,8 +2038,11 @@ mod telemetry_tests {
             .unwrap();
         let log_path = gait_state::session::live::log_path(ws.path(), id);
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-        gait_state::proto::wire::append(&log_path, gait_state::proto::events::user_text("x".into()))
-            .unwrap();
+        gait_state::proto::wire::append(
+            &log_path,
+            gait_state::proto::events::user_text("x".into()),
+        )
+        .unwrap();
         ws
     }
 
@@ -2005,7 +2093,11 @@ mod telemetry_tests {
             let mut builder = repo.treebuilder(None).unwrap();
             builder.insert("conflict.txt", blob, 0o100644).unwrap();
             let tree = repo.find_tree(builder.write().unwrap()).unwrap();
-            let parent = repo.find_reference(refname).unwrap().peel_to_commit().unwrap();
+            let parent = repo
+                .find_reference(refname)
+                .unwrap()
+                .peel_to_commit()
+                .unwrap();
             repo.commit(Some(refname), &sig, &sig, "c", &tree, &[&parent])
                 .unwrap();
         };

@@ -19,9 +19,9 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Client, ConnectionTo, Responder};
 use gait_ops::session::BulkVerb;
 
+use crate::error::{self, PromptError};
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::replay_updates;
-use crate::error::{self, PromptError};
 
 /// Resolve a persisted session against the request's claimed workspace.
 ///
@@ -52,9 +52,12 @@ fn validate_load_options(
     mcp_servers_empty: bool,
     additional_directories_empty: bool,
 ) -> anyhow::Result<()> {
-    let invalid = |why: &str| coded_error::into_anyhow(PromptError::InvalidRequest(why.to_string()));
+    let invalid =
+        |why: &str| coded_error::into_anyhow(PromptError::InvalidRequest(why.to_string()));
     if !mcp_servers_empty {
-        return Err(invalid("ACP MCP servers are not supported for session load/resume"));
+        return Err(invalid(
+            "ACP MCP servers are not supported for session load/resume",
+        ));
     }
     if !additional_directories_empty {
         return Err(invalid(
@@ -107,12 +110,22 @@ pub fn load_session(
         &gait_dir, &sid,
     )) {
         Ok(events) => events,
-        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(e), error::LOAD_SESSION)),
+        Err(e) => {
+            return responder.respond_with_error(error::acp_error(
+                &coded_error::into_anyhow(e),
+                error::LOAD_SESSION,
+            ));
+        }
     };
     let updates = replay_updates(&events);
     let inserted = match map.attach_existing(gait_dir.clone(), sid.clone(), req.cwd.clone()) {
         Ok(inserted) => inserted,
-        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::InvalidRequest(e)), error::LOAD_SESSION)),
+        Err(e) => {
+            return responder.respond_with_error(error::acp_error(
+                &coded_error::into_anyhow(PromptError::InvalidRequest(e)),
+                error::LOAD_SESSION,
+            ));
+        }
     };
     for update in updates {
         if let Err(e) =
@@ -121,7 +134,10 @@ pub fn load_session(
             if inserted {
                 map.remove(&sid);
             }
-            return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::ReplayFailed(e.to_string())), error::LOAD_SESSION));
+            return responder.respond_with_error(error::acp_error(
+                &coded_error::into_anyhow(PromptError::ReplayFailed(e.to_string())),
+                error::LOAD_SESSION,
+            ));
         }
     }
     responder.respond(LoadSessionResponse::new().modes(Some(restored_modes(&gait_dir, &events))))
@@ -148,10 +164,18 @@ pub fn resume_session(
         &gait_dir, &sid,
     )) {
         Ok(events) => events,
-        Err(e) => return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(e), error::RESUME_SESSION)),
+        Err(e) => {
+            return responder.respond_with_error(error::acp_error(
+                &coded_error::into_anyhow(e),
+                error::RESUME_SESSION,
+            ));
+        }
     };
     if let Err(e) = map.attach_existing(gait_dir.clone(), sid, req.cwd) {
-        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::InvalidRequest(e)), error::RESUME_SESSION));
+        return responder.respond_with_error(error::acp_error(
+            &coded_error::into_anyhow(PromptError::InvalidRequest(e)),
+            error::RESUME_SESSION,
+        ));
     }
     responder.respond(ResumeSessionResponse::new().modes(Some(restored_modes(&gait_dir, &events))))
 }
@@ -221,7 +245,10 @@ pub fn close_session(
 ) -> Result<(), agent_client_protocol::Error> {
     let sid = req.session_id.0.to_string();
     let Some(gait_dir) = gait_dir_for_session(map, &sid) else {
-        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::CLOSE_SESSION));
+        return responder.respond_with_error(error::acp_error(
+            &coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())),
+            error::CLOSE_SESSION,
+        ));
     };
 
     // Cancel + join any live turn on this connection FIRST — bulk_act takes
@@ -240,14 +267,22 @@ pub fn close_session(
             .find(|(id, _)| id == &sid)
             .map(|(_, r)| r.clone())
             .unwrap_or_else(|| "session is not eligible to persist".to_string());
-        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::CannotClose { sid: sid.clone(), why }), error::CLOSE_SESSION));
+        return responder.respond_with_error(error::acp_error(
+            &coded_error::into_anyhow(PromptError::CannotClose {
+                sid: sid.clone(),
+                why,
+            }),
+            error::CLOSE_SESSION,
+        ));
     }
     let one = gait_ops::session::BulkPlan {
         verb: BulkVerb::Persist,
         eligible: vec![sid.clone()],
         skipped: Vec::new(),
     };
-    match gait_ops::session::bulk_act(&gait_dir, &one, /* confirmed */ true, /* force */ true) {
+    match gait_ops::session::bulk_act(
+        &gait_dir, &one, /* confirmed */ true, /* force */ true,
+    ) {
         Ok(_) => responder.respond(CloseSessionResponse::new()),
         Err(e) => responder.respond_with_error(error::acp_error(&e, error::CLOSE_SESSION)),
     }
@@ -262,7 +297,10 @@ pub fn delete_session(
 ) -> Result<(), agent_client_protocol::Error> {
     let sid = req.session_id.0.to_string();
     let Some(gait_dir) = gait_dir_for_session(map, &sid) else {
-        return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())), error::DELETE_SESSION));
+        return responder.respond_with_error(error::acp_error(
+            &coded_error::into_anyhow(PromptError::SessionUnknown(sid.clone())),
+            error::DELETE_SESSION,
+        ));
     };
 
     map.remove(&sid); // cancel + join any live turn
@@ -286,9 +324,15 @@ mod tests {
     fn load_validation_errors_stay_readable_on_the_wire() {
         let err = validate_load_options(false, true).unwrap_err();
         let wire = error::acp_error(&err, error::LOAD_SESSION);
-        assert_eq!(wire.message, "ACP MCP servers are not supported for session load/resume");
+        assert_eq!(
+            wire.message,
+            "ACP MCP servers are not supported for session load/resume"
+        );
         assert_eq!(wire.data.as_ref().unwrap()["class"], "logical");
-        assert_eq!(wire.data.as_ref().unwrap()["code"], "gait.acp.prompt.invalid_request");
+        assert_eq!(
+            wire.data.as_ref().unwrap()["code"],
+            "gait.acp.prompt.invalid_request"
+        );
 
         let err = persisted_session_for_cwd("s", Path::new("relative/dir")).unwrap_err();
         let wire = error::acp_error(&err, error::RESUME_SESSION);

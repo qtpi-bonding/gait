@@ -409,7 +409,10 @@ mod tests {
         let target = t.path().join("not-a-repo");
         std::fs::create_dir_all(&target).unwrap(); // no .git
         let err = link(t.path(), &target).unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))));
+        assert!(matches!(
+            coded_error::downcast_ref::<OpError>(&err),
+            Some(OpError::NotFound(_))
+        ));
     }
 
     // -- init helpers --------------------------------------------------------

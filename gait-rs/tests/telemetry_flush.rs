@@ -36,7 +36,9 @@ fn stub_collector() -> (String, std::sync::mpsc::Receiver<String>) {
                     .unwrap_or_default()
                     .to_owned();
                 let _ = sender.send(request_line);
-                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                );
             });
         }
     });

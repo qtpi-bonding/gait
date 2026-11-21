@@ -5,7 +5,10 @@ fn main() -> ExitCode {
     // `--agent-dir` must reach the environment before any thread exists.
     gait_bin::apply_agent_dir_flag(&raw);
     let identity = gait_identity::IdentityContext::from_env();
-    let agent_id = identity.as_ref().ok().and_then(|value| value.as_ref())
+    let agent_id = identity
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
         .map(|ctx| ctx.agent_id().to_string());
     if let Err(error) = gait_bin::install_agent_identity(identity) {
         return gait_bin::report(&error);
@@ -16,8 +19,7 @@ fn main() -> ExitCode {
     // The hand is the exception: it seals itself with Landlock, so its telemetry
     // starts after the seal and it runs on the main thread alone.
     let _guard = gait_bin::start_telemetry(&raw, "gait-min", agent_id);
-    gait_bin::build_runtime(&raw)
-        .block_on(run(raw))
+    gait_bin::build_runtime(&raw).block_on(run(raw))
 }
 
 async fn run(raw: Vec<String>) -> ExitCode {

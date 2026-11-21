@@ -728,7 +728,9 @@ mod tests {
             coded_error::downcast_ref::<OpError>(&error),
             Some(OpError::Conflict(message)) if message.contains("logout --id openai-signin --forget")
         ));
-        assert!(gait_state::auth::list_credentials_from(&path).unwrap().contains_key(SIGNIN_PROVIDER_ID));
+        assert!(gait_state::auth::list_credentials_from(&path)
+            .unwrap()
+            .contains_key(SIGNIN_PROVIDER_ID));
     }
 
     #[test]
@@ -775,11 +777,17 @@ mod tests {
     }
 
     fn assert_no_key_text(rendered: &str, key: &str) {
-        assert!(!rendered.contains(&key[..8]), "8-char prefix leaked: {rendered}");
+        assert!(
+            !rendered.contains(&key[..8]),
+            "8-char prefix leaked: {rendered}"
+        );
         let chars: Vec<char> = key.chars().collect();
         for window in chars.windows(4) {
             let w: String = window.iter().collect();
-            assert!(!rendered.contains(&w), "4-char window {w:?} of the key leaked: {rendered}");
+            assert!(
+                !rendered.contains(&w),
+                "4-char window {w:?} of the key leaked: {rendered}"
+            );
         }
     }
 
@@ -802,13 +810,19 @@ mod tests {
     #[test]
     fn list_entries_carry_a_status_word_for_subscriptions() {
         let entries = entries_from(
-            [("openai-signin".to_string(), "subscription (ada@example.test)".to_string())]
-                .into_iter()
-                .collect(),
+            [(
+                "openai-signin".to_string(),
+                "subscription (ada@example.test)".to_string(),
+            )]
+            .into_iter()
+            .collect(),
         );
         assert_eq!(entries[0].provider, "openai-signin");
         assert_eq!(entries[0].kind, "subscription");
-        assert_eq!(entries[0].status.as_deref(), Some("subscription (ada@example.test)"));
+        assert_eq!(
+            entries[0].status.as_deref(),
+            Some("subscription (ada@example.test)")
+        );
     }
 
     // -- remove --
@@ -841,14 +855,20 @@ mod tests {
             // A host whose real credential directory is still loose (permissions
             // not yet tightened) fails closed instead of listing it.
             Err(error) => {
-                assert!(error.to_string().contains("tighten the permissions"), "{error}");
+                assert!(
+                    error.to_string().contains("tighten the permissions"),
+                    "{error}"
+                );
                 return;
             }
         };
         // Insertion-order check is too strict (depends on the host's real
         // auth.json), so just assert the value is a well-formed map.
         for e in &out {
-            assert!(!e.kind.is_empty(), "list entry kind must be non-empty: {e:?}");
+            assert!(
+                !e.kind.is_empty(),
+                "list entry kind must be non-empty: {e:?}"
+            );
         }
     }
 

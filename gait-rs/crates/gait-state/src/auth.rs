@@ -18,12 +18,16 @@ impl AuthError {
             hint,
         };
         match error {
-            KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
-                insecure(path, gait_identity::mode_detail(path), gait_identity::MODE_HINT_SUFFIX)
-            }
-            KeyfileError::WrongOwner(path) => {
-                insecure(path, gait_identity::owner_detail(path), gait_identity::OWNER_HINT_SUFFIX)
-            }
+            KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => insecure(
+                path,
+                gait_identity::mode_detail(path),
+                gait_identity::MODE_HINT_SUFFIX,
+            ),
+            KeyfileError::WrongOwner(path) => insecure(
+                path,
+                gait_identity::owner_detail(path),
+                gait_identity::OWNER_HINT_SUFFIX,
+            ),
             KeyfileError::NotAFile(path) => insecure(path, "not a regular file".to_string(), ""),
             KeyfileError::TooLarge { path, cap } => AuthError::TooLarge {
                 path: path.clone(),
@@ -45,7 +49,11 @@ pub enum AuthError {
     Corrupt { path: PathBuf, detail: String },
     #[error("authentication state {} is not private ({detail}){hint}", .path.display())]
     #[coded(code = "insecure", class = Logical)]
-    Insecure { path: PathBuf, detail: String, hint: &'static str },
+    Insecure {
+        path: PathBuf,
+        detail: String,
+        hint: &'static str,
+    },
     #[error("authentication file {} is larger than {cap} bytes", .path.display())]
     #[coded(code = "too_large", class = Logical)]
     TooLarge { path: PathBuf, cap: usize },
@@ -182,7 +190,8 @@ pub fn resolve_credential_lease_with(
         let auth_path = auth_path_for(platform)?;
         if !auth_path.exists() {
             return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
-                "openai-signin uses ChatGPT sign-in; run `gait auth login --id openai-signin`".into(),
+                "openai-signin uses ChatGPT sign-in; run `gait auth login --id openai-signin`"
+                    .into(),
             )));
         }
     }
@@ -328,9 +337,7 @@ fn auth_path_for(platform: &dyn Platform) -> Result<PathBuf, AuthError> {
     Ok(GaitHome::resolve_with(platform)?.auth_file())
 }
 
-fn read_raw_auth(
-    path: &std::path::Path,
-) -> Result<HashMap<String, serde_json::Value>, AuthError> {
+fn read_raw_auth(path: &std::path::Path) -> Result<HashMap<String, serde_json::Value>, AuthError> {
     crate::auth_file::load_auth_map(path).map(|m| m.into_iter().collect())
 }
 
@@ -531,9 +538,7 @@ pub fn remove_api_key_with(platform: &dyn Platform, provider: &str) -> Result<()
 }
 
 /// Returns provider → masked_display string for `auth list`.
-pub fn list_credentials_from(
-    path: &std::path::Path,
-) -> Result<HashMap<String, String>, AuthError> {
+pub fn list_credentials_from(path: &std::path::Path) -> Result<HashMap<String, String>, AuthError> {
     Ok(read_raw_auth(path)?
         .into_iter()
         .map(|(k, v)| {
@@ -699,7 +704,10 @@ mod tests {
         let error = resolve_credential_lease_with(&platform, "openai-signin")
             .expect_err("environment credentials must not satisfy sign-in");
         let text = error.to_string();
-        assert!(text.contains("gait auth login --id openai-signin"), "{text}");
+        assert!(
+            text.contains("gait auth login --id openai-signin"),
+            "{text}"
+        );
         assert!(!text.contains("must-not-be-used"));
     }
 
@@ -919,7 +927,9 @@ mod tests {
             AuthLocation::File(codex_home.join("auth.json"))
         );
         assert_eq!(
-            list_credentials_from(&gait_auth_path).unwrap().get("openai-codex"),
+            list_credentials_from(&gait_auth_path)
+                .unwrap()
+                .get("openai-codex"),
             Some(&"external (codex)".to_string())
         );
     }
@@ -930,7 +940,9 @@ mod tests {
         let path = dir.path().join("auth.json");
         write_external_binding_to(&path, "openai-codex", "codex", None).unwrap();
         unlink_external_binding_from(&path, "openai-codex").unwrap();
-        assert!(external_binding_from(&path, "openai-codex").unwrap().is_none());
+        assert!(external_binding_from(&path, "openai-codex")
+            .unwrap()
+            .is_none());
 
         write_api_key_to(&path, "openai", "sk-test").unwrap();
         assert!(matches!(
@@ -1002,7 +1014,10 @@ mod tests {
                 "secret": {"tokens": {"refresh_token": "refresh-secret"}}
             }
         });
-        crate::auth_test_support::write_private(&path, serde_json::to_vec(&original_value).unwrap());
+        crate::auth_test_support::write_private(
+            &path,
+            serde_json::to_vec(&original_value).unwrap(),
+        );
         let original = std::fs::read(&path).unwrap();
         let other = gait_auth::SubscriptionCredential {
             provider_id: "openai-signin".into(),
@@ -1083,20 +1098,43 @@ mod tests {
     fn the_permission_hint_is_for_mode_and_owner_only_and_a_symlink_is_named() {
         use identity_keyfile::KeyfileError as K;
         let p = || PathBuf::from("/g/auth.json");
-        for key in [K::InsecureFile(p()), K::InsecureDir(p()), K::WrongOwner(p())] {
+        for key in [
+            K::InsecureFile(p()),
+            K::InsecureDir(p()),
+            K::WrongOwner(p()),
+        ] {
             let text = AuthError::from_keyfile(&key).to_string();
-            assert!(text.contains(if matches!(key, K::WrongOwner(_)) { "must be owned by the current user" } else { "tighten the permissions" }), "{text}");
+            assert!(
+                text.contains(if matches!(key, K::WrongOwner(_)) {
+                    "must be owned by the current user"
+                } else {
+                    "tighten the permissions"
+                }),
+                "{text}"
+            );
         }
         let text = AuthError::from_keyfile(&K::NotAFile(p())).to_string();
-        assert!(!text.contains("tighten the permissions") && !text.contains("owned by the current user") && text.contains("/g/auth.json"), "{text}");
+        assert!(
+            !text.contains("tighten the permissions")
+                && !text.contains("owned by the current user")
+                && text.contains("/g/auth.json"),
+            "{text}"
+        );
         let text = AuthError::from_keyfile(&K::TooLarge { path: p(), cap: 3 }).to_string();
-        assert!(!text.contains("tighten the permissions") && !text.contains("owned by the current user"), "{text}");
+        assert!(
+            !text.contains("tighten the permissions")
+                && !text.contains("owned by the current user"),
+            "{text}"
+        );
 
         let tmp = tempfile::tempdir().unwrap();
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(tmp.path(), &link).unwrap();
         let text = AuthError::from_keyfile(&K::InsecureDir(link.clone())).to_string();
-        assert!(text.contains("symlink") && text.contains(&link.display().to_string()), "{text}");
+        assert!(
+            text.contains("symlink") && text.contains(&link.display().to_string()),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1107,9 +1145,15 @@ mod tests {
         crate::auth_test_support::write_private(&path, br#"{"x":{"type":"api","key":"k"}}"#);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let text = list_credentials_from(&path).unwrap_err().to_string();
-        assert!(text.contains("0644") && text.contains("tighten the permissions"), "{text}");
+        assert!(
+            text.contains("0644") && text.contains("tighten the permissions"),
+            "{text}"
+        );
         let text = external_binding_from(&path, "x").unwrap_err().to_string();
-        assert!(text.contains("0644") && text.contains("tighten the permissions"), "{text}");
+        assert!(
+            text.contains("0644") && text.contains("tighten the permissions"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1150,26 +1194,59 @@ mod coded_tests {
     #[test]
     fn auth_store_error_codes_and_classes() {
         let io = AuthError::Io(std::io::Error::other("disk"));
-        assert_eq!((io.code(), io.class()), ("gait.auth_store.io", ErrorClass::Infrastructure));
-        let corrupt = AuthError::Corrupt { path: "a".into(), detail: "bad".into() };
-        assert_eq!((corrupt.code(), corrupt.class()), ("gait.auth_store.corrupt", ErrorClass::Infrastructure));
+        assert_eq!(
+            (io.code(), io.class()),
+            ("gait.auth_store.io", ErrorClass::Infrastructure)
+        );
+        let corrupt = AuthError::Corrupt {
+            path: "a".into(),
+            detail: "bad".into(),
+        };
+        assert_eq!(
+            (corrupt.code(), corrupt.class()),
+            ("gait.auth_store.corrupt", ErrorClass::Infrastructure)
+        );
         let lock = AuthError::LockTimeout;
-        assert_eq!((lock.code(), lock.class()), ("gait.auth_store.lock_timeout", ErrorClass::Transient));
+        assert_eq!(
+            (lock.code(), lock.class()),
+            ("gait.auth_store.lock_timeout", ErrorClass::Transient)
+        );
         let managed = AuthError::ManagedElsewhere("x".into());
-        assert_eq!((managed.code(), managed.class()), ("gait.auth_store.managed_elsewhere", ErrorClass::Logical));
+        assert_eq!(
+            (managed.code(), managed.class()),
+            ("gait.auth_store.managed_elsewhere", ErrorClass::Logical)
+        );
         let no_parent = AuthError::NoParent("/".into());
-        assert_eq!((no_parent.code(), no_parent.class()), ("gait.auth_store.no_parent", ErrorClass::Infrastructure));
+        assert_eq!(
+            (no_parent.code(), no_parent.class()),
+            ("gait.auth_store.no_parent", ErrorClass::Infrastructure)
+        );
         let unsupported = AuthError::UnsupportedSource("x".into());
-        assert_eq!((unsupported.code(), unsupported.class()), ("gait.auth_store.unsupported_source", ErrorClass::Logical));
-        let missing = AuthError::ExternalCredentialMissing { source_id: "s".into(), provider: "p".into() };
+        assert_eq!(
+            (unsupported.code(), unsupported.class()),
+            ("gait.auth_store.unsupported_source", ErrorClass::Logical)
+        );
+        let missing = AuthError::ExternalCredentialMissing {
+            source_id: "s".into(),
+            provider: "p".into(),
+        };
         assert_eq!(
             (missing.code(), missing.class()),
-            ("gait.auth_store.external_credential_missing", ErrorClass::Logical)
+            (
+                "gait.auth_store.external_credential_missing",
+                ErrorClass::Logical
+            )
         );
         let not_bound = AuthError::NotExternalBinding("p".into());
-        assert_eq!((not_bound.code(), not_bound.class()), ("gait.auth_store.not_external_binding", ErrorClass::Logical));
+        assert_eq!(
+            (not_bound.code(), not_bound.class()),
+            ("gait.auth_store.not_external_binding", ErrorClass::Logical)
+        );
         let source = AuthError::Source(gait_auth::AuthError::Retryable("later".into()));
-        assert_eq!((source.code(), source.class()), ("gait.auth_store.source", ErrorClass::Transient));
+        assert_eq!(
+            (source.code(), source.class()),
+            ("gait.auth_store.source", ErrorClass::Transient)
+        );
         let source_login = AuthError::Source(gait_auth::AuthError::LoginRequired("again".into()));
         assert_eq!(source_login.class(), ErrorClass::Logical);
     }
@@ -1181,4 +1258,3 @@ mod coded_tests {
         assert_eq!(err.class(), ErrorClass::Logical);
     }
 }
-

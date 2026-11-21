@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use gait_proto::gait::log::v1::{DirectEventDigest, Event, Provenance};
 use identity_crypto::{
-    mint_session, message_nonce, verify_signed_message_trusted_devices, AcceptedAt, AuthorDevices,
+    message_nonce, mint_session, verify_signed_message_trusted_devices, AcceptedAt, AuthorDevices,
     PrincipalId, PublicKey, When,
 };
 use identity_keyfile::KeyfileError;
@@ -28,25 +28,54 @@ pub const OLD_FORMAT_HINT: &str = "the file is in an old format and must be conv
 pub enum IdentityError {
     #[error("load agent identity from {}", .dir.display())]
     #[coded(code = "agent_dir_unloadable", class = Logical)]
-    AgentDirUnloadable { dir: PathBuf, #[source] source: KeyfileError },
+    AgentDirUnloadable {
+        dir: PathBuf,
+        #[source]
+        source: KeyfileError,
+    },
     #[error("load agent identity from {}", .dir.display())]
     #[coded(code = "missing_keyfile", class = Logical)]
-    MissingKeyfile { dir: PathBuf, #[source] source: KeyfileError },
+    MissingKeyfile {
+        dir: PathBuf,
+        #[source]
+        source: KeyfileError,
+    },
     #[error("load agent identity from {}", .dir.display())]
     #[coded(code = "device_key_unreadable", class = Logical)]
-    DeviceKeyUnreadable { dir: PathBuf, #[source] source: KeyfileError },
+    DeviceKeyUnreadable {
+        dir: PathBuf,
+        #[source]
+        source: KeyfileError,
+    },
     #[error("load agent identity from {}", .dir.display())]
     #[coded(code = "delegation_expired", class = Logical)]
-    DelegationExpired { dir: PathBuf, #[source] source: KeyfileError },
+    DelegationExpired {
+        dir: PathBuf,
+        #[source]
+        source: KeyfileError,
+    },
     #[error("identity path {path} is not private ({detail}): it must be owned by this user, a directory 0700 or a key file 0600{hint}")]
     #[coded(code = "identity_not_private", class = Logical)]
-    IdentityNotPrivate { path: PathBuf, detail: String, hint: &'static str, #[source] source: KeyfileError },
+    IdentityNotPrivate {
+        path: PathBuf,
+        detail: String,
+        hint: &'static str,
+        #[source]
+        source: KeyfileError,
+    },
     #[error("{} holds a root key but no agent identity; restore the device folder next to it, or move the root folder aside to mint a new identity", .root.display())]
     #[coded(code = "orphan_root", class = Logical)]
-    OrphanRoot { root: PathBuf, #[source] source: KeyfileError },
+    OrphanRoot {
+        root: PathBuf,
+        #[source]
+        source: KeyfileError,
+    },
     #[error("the machine identity directory cannot be resolved: set MACHINE_IDENTITY_DIR, XDG_DATA_HOME or HOME to an absolute path (the hand's deny list must name it)")]
     #[coded(code = "machine_dir_unresolved", class = Logical)]
-    MachineDirUnresolved { #[source] source: KeyfileError },
+    MachineDirUnresolved {
+        #[source]
+        source: KeyfileError,
+    },
 }
 
 impl IdentityError {
@@ -54,7 +83,12 @@ impl IdentityError {
         let dir = dir.to_path_buf();
         match &source {
             KeyfileError::InsecureDir(path) | KeyfileError::InsecureFile(path) => {
-                Self::IdentityNotPrivate { path: path.clone(), detail: mode_detail(path), hint: MODE_HINT_SUFFIX, source }
+                Self::IdentityNotPrivate {
+                    path: path.clone(),
+                    detail: mode_detail(path),
+                    hint: MODE_HINT_SUFFIX,
+                    source,
+                }
             }
             KeyfileError::WrongOwner(path) => Self::IdentityNotPrivate {
                 path: path.clone(),
@@ -80,7 +114,10 @@ impl IdentityError {
                 hint: "",
                 source,
             },
-            KeyfileError::OrphanRoot(root) => Self::OrphanRoot { root: root.clone(), source },
+            KeyfileError::OrphanRoot(root) => Self::OrphanRoot {
+                root: root.clone(),
+                source,
+            },
             KeyfileError::Missing(path) if path != &dir => Self::MissingKeyfile { dir, source },
             KeyfileError::Io { path, .. } if path != &dir => {
                 Self::DeviceKeyUnreadable { dir, source }
@@ -89,9 +126,7 @@ impl IdentityError {
             | KeyfileError::Crypto(_)
             | KeyfileError::VerifyFailed(_)
             | KeyfileError::RootMismatch
-            | KeyfileError::InvalidLayout(_) => {
-                Self::DeviceKeyUnreadable { dir, source }
-            }
+            | KeyfileError::InvalidLayout(_) => Self::DeviceKeyUnreadable { dir, source },
             KeyfileError::DelegationMismatch => Self::DelegationExpired { dir, source },
             KeyfileError::Missing(_)
             | KeyfileError::Io { .. }
@@ -133,8 +168,7 @@ pub fn load_keys(agent_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
 
 /// The split layout gait mints under its state dir.
 pub fn minted_layout(gait_dir: &Path) -> Result<identity_keyfile::IdentityLayout> {
-    std::fs::create_dir_all(gait_dir)
-        .with_context(|| format!("create {}", gait_dir.display()))?;
+    std::fs::create_dir_all(gait_dir).with_context(|| format!("create {}", gait_dir.display()))?;
     let base = std::fs::canonicalize(gait_dir)
         .with_context(|| format!("resolve {}", gait_dir.display()))?;
     let device = base.join("identity");
@@ -152,7 +186,9 @@ pub const DENY_PATHS_ENV: &str = "GAIT_IDENTITY_DENY";
 pub fn machine_dir_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf> {
     match identity_keyfile::MachineDir::locate_with(var) {
         Ok(dir) => Ok(dir.path().to_path_buf()),
-        Err(source) => Err(coded_error::into_anyhow(IdentityError::MachineDirUnresolved { source })),
+        Err(source) => Err(coded_error::into_anyhow(
+            IdentityError::MachineDirUnresolved { source },
+        )),
     }
 }
 
@@ -186,7 +222,11 @@ pub fn deny_paths_env_value_with(agent_dir: &Path, machine: &Path) -> String {
 }
 
 fn join_paths(paths: &[PathBuf]) -> String {
-    paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(":")
+    paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Renews the delegation of a folder gait minted (the layout has a root). A device-only
@@ -204,7 +244,7 @@ pub fn renew_minted(layout: &identity_keyfile::IdentityLayout, now: i64) -> Resu
         identity_crypto::DEFAULT_DELEGATION_SECONDS,
         identity_crypto::DEFAULT_RENEW_MARGIN_SECONDS,
     )
-        .map_err(wrap)
+    .map_err(wrap)
 }
 
 /// Identity material is deliberately represented by its directory, not cached keys.
@@ -241,7 +281,9 @@ impl IdentityContext {
         for dir in [layout.device_dir(), layout.root_dir()] {
             if std::fs::symlink_metadata(dir).is_ok() {
                 if let Err(source) = identity_keyfile::private_fs::check_private_dir(dir) {
-                    return Err(coded_error::into_anyhow(IdentityError::from_keyfile(dir, source)));
+                    return Err(coded_error::into_anyhow(IdentityError::from_keyfile(
+                        dir, source,
+                    )));
                 }
             }
         }
@@ -259,7 +301,10 @@ impl IdentityContext {
     pub fn new(agent_dir: impl Into<PathBuf>) -> Result<Self> {
         let agent_dir = agent_dir.into();
         let keys = load_keys(&agent_dir)?;
-        Ok(Self { agent_dir, agent_id: keys.principal_id })
+        Ok(Self {
+            agent_dir,
+            agent_id: keys.principal_id,
+        })
     }
 
     pub fn agent_id(&self) -> &PrincipalId {
@@ -288,9 +333,13 @@ pub fn sign_direct_event(
         keys.device.signing_key_pair(),
         keys.principal_id.genesis(),
         issued,
-        issued.checked_add(ttl_secs).context("session expiry overflow")?,
+        issued
+            .checked_add(ttl_secs)
+            .context("session expiry overflow")?,
     )?;
-    let digest = DirectEventDigest { content_hash: ev.content_hash.clone() };
+    let digest = DirectEventDigest {
+        content_hash: ev.content_hash.clone(),
+    };
     let signed = session.sign_message(
         Some(keys.delegation.clone()),
         audience,
@@ -300,7 +349,10 @@ pub fn sign_direct_event(
         DIRECT_BODY_TYPE,
         &digest.encode_to_vec(),
     )?;
-    Ok(Provenance { signed_message: Some(signed), ..Default::default() })
+    Ok(Provenance {
+        signed_message: Some(signed),
+        ..Default::default()
+    })
 }
 
 /// A fresh device-signed session credential and the root->device delegation that
@@ -309,13 +361,17 @@ pub fn device_session(
     ctx: &IdentityContext,
     ttl_secs: i64,
     now: i64,
-) -> Result<(identity_crypto::SessionCredential, identity_crypto::pb::KeyDelegation)> {
+) -> Result<(
+    identity_crypto::SessionCredential,
+    identity_crypto::pb::KeyDelegation,
+)> {
     let keys = ctx.keys()?;
     let session = mint_session(
         keys.device.signing_key_pair(),
         keys.principal_id.genesis(),
         now,
-        now.checked_add(ttl_secs).context("session expiry overflow")?,
+        now.checked_add(ttl_secs)
+            .context("session expiry overflow")?,
     )?;
     Ok((session, keys.delegation.clone()))
 }
@@ -336,7 +392,9 @@ pub struct DirectVerifier {
 
 impl DirectVerifier {
     pub fn from_context(ctx: &IdentityContext) -> Result<Self> {
-        Ok(Self { public: std::sync::RwLock::new(ctx.keys()?.public()) })
+        Ok(Self {
+            public: std::sync::RwLock::new(ctx.keys()?.public()),
+        })
     }
 
     /// Re-reads the folder's device history so a device renewed after start
@@ -380,9 +438,13 @@ pub fn verify_direct_provenance(
     let verified = verify_signed_message_trusted_devices(
         msg,
         session_id,
-        AuthorDevices { author_genesis, devices },
+        AuthorDevices {
+            author_genesis,
+            devices,
+        },
         When::Accepted(AcceptedAt::from_receiver_record((ev.ts / 1000) as i64)),
-    ).ok()?;
+    )
+    .ok()?;
     Some(PrincipalId::from_genesis(verified.author_genesis().clone()))
 }
 
@@ -412,12 +474,27 @@ mod tests {
     fn identity_error_display_texts_unchanged() {
         use coded_error::CodedError;
         let dir = PathBuf::from("/agents/one");
-        let keyfile = || KeyfileError::Parse { path: dir.clone(), msg: "bad".into() };
+        let keyfile = || KeyfileError::Parse {
+            path: dir.clone(),
+            msg: "bad".into(),
+        };
         let texts = [
-            IdentityError::AgentDirUnloadable { dir: dir.clone(), source: keyfile() },
-            IdentityError::MissingKeyfile { dir: dir.clone(), source: keyfile() },
-            IdentityError::DeviceKeyUnreadable { dir: dir.clone(), source: keyfile() },
-            IdentityError::DelegationExpired { dir: dir.clone(), source: keyfile() },
+            IdentityError::AgentDirUnloadable {
+                dir: dir.clone(),
+                source: keyfile(),
+            },
+            IdentityError::MissingKeyfile {
+                dir: dir.clone(),
+                source: keyfile(),
+            },
+            IdentityError::DeviceKeyUnreadable {
+                dir: dir.clone(),
+                source: keyfile(),
+            },
+            IdentityError::DelegationExpired {
+                dir: dir.clone(),
+                source: keyfile(),
+            },
         ];
         for err in &texts {
             assert_eq!(err.to_string(), "load agent identity from /agents/one");
@@ -435,8 +512,14 @@ mod tests {
             Err(err) => err,
         };
         let typed = coded_error::downcast_ref::<IdentityError>(&err).expect("typed IdentityError");
-        assert!(matches!(typed, IdentityError::MissingKeyfile { .. }), "got {typed:?}");
-        assert_eq!(coded_error::facts_anyhow(&err).code, "gait.identity.missing_keyfile");
+        assert!(
+            matches!(typed, IdentityError::MissingKeyfile { .. }),
+            "got {typed:?}"
+        );
+        assert_eq!(
+            coded_error::facts_anyhow(&err).code,
+            "gait.identity.missing_keyfile"
+        );
         assert!(format!("{err:#}").starts_with("load agent identity from "));
     }
 
@@ -515,7 +598,10 @@ mod tests {
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let signed = signed(&ctx, "event-own", 1_000_000, "hash", "session", 1_000, 60);
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
-        assert_eq!(verifier.verify_direct(&signed, "session"), Some(ctx.agent_id().clone()));
+        assert_eq!(
+            verifier.verify_direct(&signed, "session"),
+            Some(ctx.agent_id().clone())
+        );
     }
 
     #[test]
@@ -542,8 +628,12 @@ mod tests {
             60,
         );
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), now - 31);
-        assert!(verify_direct_provenance(&too_early, ctx.agent_id().genesis(), &devices, "s").is_none());
-        assert!(verify_direct_provenance(&inside, ctx.agent_id().genesis(), &devices, "s").is_some());
+        assert!(
+            verify_direct_provenance(&too_early, ctx.agent_id().genesis(), &devices, "s").is_none()
+        );
+        assert!(
+            verify_direct_provenance(&inside, ctx.agent_id().genesis(), &devices, "s").is_some()
+        );
     }
 
     #[test]
@@ -571,8 +661,12 @@ mod tests {
             ttl,
         );
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), now + ttl);
-        assert!(verify_direct_provenance(&too_late, ctx.agent_id().genesis(), &devices, "s").is_none());
-        assert!(verify_direct_provenance(&at_end, ctx.agent_id().genesis(), &devices, "s").is_some());
+        assert!(
+            verify_direct_provenance(&too_late, ctx.agent_id().genesis(), &devices, "s").is_none()
+        );
+        assert!(
+            verify_direct_provenance(&at_end, ctx.agent_id().genesis(), &devices, "s").is_some()
+        );
     }
 
     #[test]
@@ -581,8 +675,12 @@ mod tests {
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-session", 1_000_000, "hash", "right", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
-        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "wrong").is_none());
-        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "right").is_some());
+        assert!(
+            verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "wrong").is_none()
+        );
+        assert!(
+            verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "right").is_some()
+        );
     }
 
     #[test]
@@ -633,9 +731,11 @@ mod tests {
             content_hash: "hash".into(),
             ..Default::default()
         };
-        let session = mint_session(keys.device.signing_key_pair(), &other_genesis, 1_000, 1_060)
-            .unwrap();
-        let digest = DirectEventDigest { content_hash: ev.content_hash.clone() };
+        let session =
+            mint_session(keys.device.signing_key_pair(), &other_genesis, 1_000, 1_060).unwrap();
+        let digest = DirectEventDigest {
+            content_hash: ev.content_hash.clone(),
+        };
         let message = session
             .sign_message(
                 Some(keys.delegation.clone()),
@@ -648,11 +748,16 @@ mod tests {
             )
             .unwrap();
         let forged = Event {
-            provenance: vec![Provenance { signed_message: Some(message), ..Default::default() }],
+            provenance: vec![Provenance {
+                signed_message: Some(message),
+                ..Default::default()
+            }],
             ..ev
         };
         let devices = keys.public().device_keys_at(1_000);
-        assert!(verify_direct_provenance(&forged, ctx.agent_id().genesis(), &devices, "s").is_none());
+        assert!(
+            verify_direct_provenance(&forged, ctx.agent_id().genesis(), &devices, "s").is_none()
+        );
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
         assert!(verifier.verify_direct(&forged, "s").is_none());
     }
@@ -666,7 +771,10 @@ mod tests {
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-no-root", 1_000_000, "hash", "s", 1_000, 60);
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
-        assert_eq!(verifier.verify_direct(&ev, "s"), Some(ctx.agent_id().clone()));
+        assert_eq!(
+            verifier.verify_direct(&ev, "s"),
+            Some(ctx.agent_id().clone())
+        );
     }
 
     #[test]
@@ -682,7 +790,10 @@ mod tests {
         let sealed = identity_keyfile::IdentityKeys::load(fixture.path()).is_err();
         let verified = verifier.verify_direct(&ev, "s");
         std::fs::set_permissions(fixture.path(), original).unwrap();
-        assert!(sealed, "chmod 000 must make the agent dir unloadable (tests do not run as root)");
+        assert!(
+            sealed,
+            "chmod 000 must make the agent dir unloadable (tests do not run as root)"
+        );
         assert_eq!(verified, Some(ctx.agent_id().clone()));
     }
 
@@ -691,11 +802,22 @@ mod tests {
         let t = 1_000;
         let fixture = TempIdentityDir::new(t, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
-        let ev = signed(&ctx, "event-retired-before", t as u64 * 1_000, "hash", "s", t, 60);
+        let ev = signed(
+            &ctx,
+            "event-retired-before",
+            t as u64 * 1_000,
+            "hash",
+            "s",
+            t,
+            60,
+        );
         identity_keyfile::IdentityKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
         let reloaded = fixture.load().unwrap();
         let devices = identity_keyfile::device_keys_at(&reloaded, t);
-        assert_eq!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s"), Some(ctx.agent_id().clone()));
+        assert_eq!(
+            verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s"),
+            Some(ctx.agent_id().clone())
+        );
     }
 
     #[test]
@@ -703,7 +825,15 @@ mod tests {
         let t = 1_000;
         let fixture = TempIdentityDir::new(t, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
-        let ev = signed(&ctx, "event-retired-after", (t + 101) as u64 * 1_000, "hash", "s", t, 3_600);
+        let ev = signed(
+            &ctx,
+            "event-retired-after",
+            (t + 101) as u64 * 1_000,
+            "hash",
+            "s",
+            t,
+            3_600,
+        );
         identity_keyfile::IdentityKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
         let reloaded = fixture.load().unwrap();
         let devices = identity_keyfile::device_keys_at(&reloaded, t + 101);
@@ -737,8 +867,12 @@ mod tests {
         let mut garbage = signed(&ctx, "event-garbage", 1_000_000, "hash", "s", 1_000, 60);
         garbage.provenance[0].signed_message.as_mut().unwrap().body = vec![0xff, 0x00, 0x7f];
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
-        assert!(verify_direct_provenance(&empty, ctx.agent_id().genesis(), &devices, "s").is_none());
-        assert!(verify_direct_provenance(&garbage, ctx.agent_id().genesis(), &devices, "s").is_none());
+        assert!(
+            verify_direct_provenance(&empty, ctx.agent_id().genesis(), &devices, "s").is_none()
+        );
+        assert!(
+            verify_direct_provenance(&garbage, ctx.agent_id().genesis(), &devices, "s").is_none()
+        );
     }
 
     #[test]
@@ -747,7 +881,8 @@ mod tests {
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-author", 1_000_000, "hash", "s", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
-        let author = verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").unwrap();
+        let author =
+            verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").unwrap();
         assert_eq!(&author, ctx.agent_id());
         assert!(author.to_string().starts_with("p256:"));
     }
@@ -785,11 +920,17 @@ mod tests {
             identity_crypto::DEFAULT_DELEGATION_SECONDS,
         );
         let layout = identity_keyfile::IdentityLayout::split(
-            &std::fs::canonicalize(tempfile::tempdir().unwrap().keep()).unwrap().join("no-root"),
+            &std::fs::canonicalize(tempfile::tempdir().unwrap().keep())
+                .unwrap()
+                .join("no-root"),
             &std::fs::canonicalize(agent.path()).unwrap(),
         )
         .unwrap();
-        assert!(!renew_minted(&layout, identity_crypto::now_unix() + 10 * identity_crypto::DEFAULT_DELEGATION_SECONDS).unwrap());
+        assert!(!renew_minted(
+            &layout,
+            identity_crypto::now_unix() + 10 * identity_crypto::DEFAULT_DELEGATION_SECONDS
+        )
+        .unwrap());
     }
 
     #[test]
@@ -797,7 +938,11 @@ mod tests {
         let machine = Path::new("/m/mi");
         assert_eq!(
             identity_deny_paths_with(Path::new("/g/identity"), machine),
-            vec![PathBuf::from("/g/identity"), PathBuf::from("/g/identity-root"), PathBuf::from("/m/mi")]
+            vec![
+                PathBuf::from("/g/identity"),
+                PathBuf::from("/g/identity-root"),
+                PathBuf::from("/m/mi")
+            ]
         );
         assert_eq!(
             identity_deny_paths_with(Path::new("/handed/agent"), machine),
@@ -813,18 +958,35 @@ mod tests {
         );
     }
 
-    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
-        move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(*v))
+    fn env_of(
+        pairs: &'static [(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| std::ffi::OsString::from(*v))
+        }
     }
 
     #[test]
     fn machine_dir_follows_the_library_resolution_order() {
-        let both = env_of(&[("MACHINE_IDENTITY_DIR", "/x/m"), ("XDG_DATA_HOME", "/xdg"), ("HOME", "/h")]);
+        let both = env_of(&[
+            ("MACHINE_IDENTITY_DIR", "/x/m"),
+            ("XDG_DATA_HOME", "/xdg"),
+            ("HOME", "/h"),
+        ]);
         assert_eq!(machine_dir_with(both).unwrap(), PathBuf::from("/x/m"));
         let xdg = env_of(&[("XDG_DATA_HOME", "/xdg"), ("HOME", "/h")]);
-        assert_eq!(machine_dir_with(xdg).unwrap(), PathBuf::from("/xdg/machine-identity"));
+        assert_eq!(
+            machine_dir_with(xdg).unwrap(),
+            PathBuf::from("/xdg/machine-identity")
+        );
         let home = env_of(&[("HOME", "/h")]);
-        assert_eq!(machine_dir_with(home).unwrap(), PathBuf::from("/h/.local/share/machine-identity"));
+        assert_eq!(
+            machine_dir_with(home).unwrap(),
+            PathBuf::from("/h/.local/share/machine-identity")
+        );
     }
 
     #[test]
@@ -848,10 +1010,17 @@ mod tests {
             let (_, text) = mapped(source);
             assert!(text.contains(want), "{text}");
         }
-        for source in [KeyfileError::NotAFile(p()), KeyfileError::TooLarge { path: p(), cap: 10 }] {
+        for source in [
+            KeyfileError::NotAFile(p()),
+            KeyfileError::TooLarge { path: p(), cap: 10 },
+        ] {
             let (code, text) = mapped(source);
             assert_eq!(code, "gait.identity.identity_not_private");
-            assert!(!text.contains("tighten the permissions") && !text.contains("owned by the current user"), "{text}");
+            assert!(
+                !text.contains("tighten the permissions")
+                    && !text.contains("owned by the current user"),
+                "{text}"
+            );
             assert!(text.contains("/agents/one/device.jwk.json"), "{text}");
         }
     }
@@ -869,10 +1038,16 @@ mod tests {
         for detail in [mode_detail(&link), owner_detail(&link)] {
             assert!(detail.contains("symlink"), "{detail}");
             assert!(detail.contains(&link.display().to_string()), "{detail}");
-            assert!(!detail.contains("0777") && !detail.contains("mode 07"), "{detail}");
+            assert!(
+                !detail.contains("0777") && !detail.contains("mode 07"),
+                "{detail}"
+            );
         }
         let (_, text) = mapped(KeyfileError::InsecureDir(link.clone()));
-        assert!(text.contains("symlink") && text.contains(&link.display().to_string()), "{text}");
+        assert!(
+            text.contains("symlink") && text.contains(&link.display().to_string()),
+            "{text}"
+        );
     }
 
     #[cfg(unix)]
@@ -913,7 +1088,10 @@ mod tests {
             let label = format!("{source:?}");
             let (code, text) = mapped(source);
             assert_eq!(code, "gait.identity.identity_not_private", "{label}");
-            assert!(text.contains("/agents/one/device.jwk.json"), "{label}: {text}");
+            assert!(
+                text.contains("/agents/one/device.jwk.json"),
+                "{label}: {text}"
+            );
         }
         // InvalidMode carries no path: the agent dir is named instead.
         let (code, text) = mapped(KeyfileError::InvalidMode(0o644));
@@ -946,7 +1124,10 @@ mod tests {
             Ok(_) => panic!("a root without an identity must not be adopted"),
             Err(err) => err,
         };
-        assert_eq!(coded_error::facts_anyhow(&err).code, "gait.identity.orphan_root");
+        assert_eq!(
+            coded_error::facts_anyhow(&err).code,
+            "gait.identity.orphan_root"
+        );
         assert!(format!("{err:#}").contains("identity-root"), "{err:#}");
     }
 }

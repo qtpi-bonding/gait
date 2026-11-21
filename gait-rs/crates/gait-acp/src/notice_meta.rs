@@ -36,7 +36,11 @@ pub fn cancel_cause(
         "system" => CancelActorKind::System,
         _ => return None,
     };
-    let id = actor.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let id = actor
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
     let reason = actor
         .get("reason")
         .and_then(|v| v.as_str())
@@ -46,12 +50,13 @@ pub fn cancel_cause(
 }
 
 fn notice_reason(notice: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
-    let tool = notice.get("tool").and_then(|v| v.as_str()).unwrap_or("a tool");
+    let tool = notice
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .unwrap_or("a tool");
     match notice.get("kind")?.as_str()? {
         "permission_denied_by_policy" => Some(format!("a rule refused permission for `{tool}`")),
-        "permission_denied_unattended" => {
-            Some(format!("nobody was available to approve `{tool}`"))
-        }
+        "permission_denied_unattended" => Some(format!("nobody was available to approve `{tool}`")),
         "elicitation_unanswered" => Some("nobody was available to answer the question".into()),
         _ => None,
     }
@@ -109,8 +114,14 @@ mod tests {
 
     #[test]
     fn malformed_actor_is_none() {
-        assert_eq!(cancel_cause(Some(&meta(json!({ACTOR_KEY: "orchestrator"})))), None);
-        assert_eq!(cancel_cause(Some(&meta(json!({ACTOR_KEY: {"id": "x"}})))), None);
+        assert_eq!(
+            cancel_cause(Some(&meta(json!({ACTOR_KEY: "orchestrator"})))),
+            None
+        );
+        assert_eq!(
+            cancel_cause(Some(&meta(json!({ACTOR_KEY: {"id": "x"}})))),
+            None
+        );
     }
 
     #[test]
@@ -121,7 +132,9 @@ mod tests {
 
     #[test]
     fn actor_with_reason_is_read() {
-        let m = meta(json!({ACTOR_KEY: {"kind": "orchestrator", "id": "svc", "reason": "Action 7: x"}}));
+        let m = meta(
+            json!({ACTOR_KEY: {"kind": "orchestrator", "id": "svc", "reason": "Action 7: x"}}),
+        );
         let c = cancel_cause(Some(&m)).unwrap();
         assert_eq!(c.kind, CancelActorKind::Orchestrator);
         assert_eq!(c.id, "svc");
@@ -135,11 +148,19 @@ mod tests {
             cancel_cause(Some(&m)).unwrap().reason
         };
         assert_eq!(
-            fill(json!({"kind": "permission_denied_by_policy", "tool": "Bash"}), "policy").as_deref(),
+            fill(
+                json!({"kind": "permission_denied_by_policy", "tool": "Bash"}),
+                "policy"
+            )
+            .as_deref(),
             Some("a rule refused permission for `Bash`")
         );
         assert_eq!(
-            fill(json!({"kind": "permission_denied_unattended", "tool": "Bash"}), "system").as_deref(),
+            fill(
+                json!({"kind": "permission_denied_unattended", "tool": "Bash"}),
+                "system"
+            )
+            .as_deref(),
             Some("nobody was available to approve `Bash`")
         );
         assert_eq!(
@@ -152,7 +173,11 @@ mod tests {
     #[test]
     fn first_cause_wins() {
         let slot = CauseSlot::default();
-        let mk = |id: &str| CancelCause { kind: CancelActorKind::System, id: id.into(), reason: None };
+        let mk = |id: &str| CancelCause {
+            kind: CancelActorKind::System,
+            id: id.into(),
+            reason: None,
+        };
         record_cause(&slot, Some(mk("a")));
         record_cause(&slot, Some(mk("b")));
         assert_eq!(slot.lock().unwrap().as_ref().unwrap().id, "a");

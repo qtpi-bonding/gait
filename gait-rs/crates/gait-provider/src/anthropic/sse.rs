@@ -204,14 +204,23 @@ mod tests {
     #[tokio::test]
     async fn a_message_delta_that_repeats_start_usage_is_not_counted_twice() {
         let events = futures_util::stream::iter(vec![
-            ev("message_start", serde_json::json!({"type":"message_start","message":{"usage":{
-                "input_tokens": 10, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50}}})),
-            ev("message_delta", serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{
-                "input_tokens": 10, "output_tokens": 7, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50}})),
+            ev(
+                "message_start",
+                serde_json::json!({"type":"message_start","message":{"usage":{
+                "input_tokens": 10, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50}}}),
+            ),
+            ev(
+                "message_delta",
+                serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{
+                "input_tokens": 10, "output_tokens": 7, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50}}),
+            ),
             ev("message_stop", serde_json::json!({"type":"message_stop"})),
         ]);
         let mut total = Usage::default();
-        let stream = body_stream(events, crate::telemetry::ModelCall::begin(&Default::default()));
+        let stream = body_stream(
+            events,
+            crate::telemetry::ModelCall::begin(&Default::default()),
+        );
         tokio::pin!(stream);
         while let Some(chunk) = stream.next().await {
             if let StreamChunk::StepUsage(u) = chunk.expect("chunk") {
@@ -219,7 +228,12 @@ mod tests {
             }
         }
         assert_eq!(
-            (total.input_tokens, total.output_tokens, total.cache_read_tokens, total.cache_write_tokens),
+            (
+                total.input_tokens,
+                total.output_tokens,
+                total.cache_read_tokens,
+                total.cache_write_tokens
+            ),
             (10, 7, 900, 50)
         );
     }

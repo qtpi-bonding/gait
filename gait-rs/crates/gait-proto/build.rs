@@ -29,7 +29,10 @@ fn main() {
     config
         .compile_protos(
             &protos,
-            &[&proto_dir, &PathBuf::from(identity_crypto::proto_include_dir())],
+            &[
+                &proto_dir,
+                &PathBuf::from(identity_crypto::proto_include_dir()),
+            ],
         )
         .expect("compile protos");
 

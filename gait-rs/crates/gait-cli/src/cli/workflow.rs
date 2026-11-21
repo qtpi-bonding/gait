@@ -141,9 +141,8 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Res
             CliError::failed(message)
         }
     })?;
-    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content).map_err(|e| {
-        CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e))
-    })?;
+    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content)
+        .map_err(|e| CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e)))?;
 
     let run_id = gait_workflow::convert::mint_run_id(&wf.name);
     eprintln!("[gait workflow] starting {} as session {}", name, run_id);
@@ -236,9 +235,8 @@ pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) -
         )));
     }
 
-    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content).map_err(|e| {
-        CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e))
-    })?;
+    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content)
+        .map_err(|e| CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e)))?;
     let proto = gait_workflow::convert::to_proto(&wf);
     let errors = gait_workflow::validate::validate_graph(&proto);
     let valid = errors.is_empty();
@@ -748,7 +746,11 @@ mod validate_tests {
         // schema_shape_errors returns None) and then fails serde_yaml parsing.
         let td = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(td.path().join("workflows")).unwrap();
-        std::fs::write(td.path().join("workflows").join("junk.yaml"), "- [unclosed\n").unwrap();
+        std::fs::write(
+            td.path().join("workflows").join("junk.yaml"),
+            "- [unclosed\n",
+        )
+        .unwrap();
         let err = cmd_workflow_validate(&["junk".to_string()], td.path().to_path_buf(), false)
             .expect_err("unparseable workflow is an error");
         assert!(matches!(
@@ -784,9 +786,12 @@ mod validate_tests {
     #[tokio::test]
     async fn continue_with_an_unknown_flag_is_a_usage_error() {
         let td = tempfile::TempDir::new().unwrap();
-        let err = cmd_workflow_continue(&["run-1".to_string(), "--bogus".to_string()], td.path().to_path_buf())
-            .await
-            .expect_err("unknown flag is an error");
+        let err = cmd_workflow_continue(
+            &["run-1".to_string(), "--bogus".to_string()],
+            td.path().to_path_buf(),
+        )
+        .await
+        .expect_err("unknown flag is an error");
         assert!(matches!(
             coded_error::downcast_ref::<CliError>(&err),
             Some(CliError::Usage(_))
@@ -830,7 +835,8 @@ mod validate_tests {
     #[test]
     fn log_without_an_id_is_a_usage_error() {
         let td = tempfile::TempDir::new().unwrap();
-        let err = cmd_workflow_log(&[], td.path().to_path_buf()).expect_err("missing id is an error");
+        let err =
+            cmd_workflow_log(&[], td.path().to_path_buf()).expect_err("missing id is an error");
         assert!(matches!(
             coded_error::downcast_ref::<CliError>(&err),
             Some(CliError::Usage(_))

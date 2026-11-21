@@ -42,7 +42,13 @@ mod tests {
             .arg(gait_dir)
             .arg("--codebase")
             .arg(codebase)
-            .args(["--session", "landlock-enforce-test", "--tool", "shell", "--output-spool"])
+            .args([
+                "--session",
+                "landlock-enforce-test",
+                "--tool",
+                "shell",
+                "--output-spool",
+            ])
             .arg(spool.path());
         // Telemetry threads change the hand's thread layout, so a test gets
         // them only by asking for them, whatever the outer environment is.
@@ -57,8 +63,15 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap_or_else(|e| panic!("failed to spawn gait ({exe:?}): {e}\nSet GAIT_BIN to a fresh build"));
-        child.stdin.take().unwrap().write_all(&impulse.encode_to_vec()).unwrap();
+            .unwrap_or_else(|e| {
+                panic!("failed to spawn gait ({exe:?}): {e}\nSet GAIT_BIN to a fresh build")
+            });
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&impulse.encode_to_vec())
+            .unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(
             out.status.success(),
@@ -83,18 +96,27 @@ mod tests {
         writable: &[&Path],
         network: Mode,
     ) -> Impulse {
-        let paths = |ps: &[&Path]| ps.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let paths = |ps: &[&Path]| {
+            ps.iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        };
         Impulse {
             tool: "shell".into(),
             args: Some(
-                serde_json::from_value(serde_json::json!({ "cmd": cmd, "reason": "landlock enforcement test" }))
-                    .expect("valid shell args"),
+                serde_json::from_value(
+                    serde_json::json!({ "cmd": cmd, "reason": "landlock enforcement test" }),
+                )
+                .expect("valid shell args"),
             ),
             requested: Some(Scope {
                 read_all,
                 readable: paths(readable),
                 writable: paths(writable),
-                network: Some(NetworkScope { mode: network as i32, hosts: vec![] }),
+                network: Some(NetworkScope {
+                    mode: network as i32,
+                    hosts: vec![],
+                }),
                 local_bind: false,
                 read_deny: None,
                 write_deny: None,
@@ -126,8 +148,14 @@ mod tests {
             Mode::Deny,
         );
         let (_fb, out) = run_hand(code.path(), code.path(), impulse, &[]);
-        assert!(out.contains("hi-confined"), "echo must run under the seal — got: {out}");
-        assert!(out.contains("devnull-ok"), "/dev/null must be writable — got: {out}");
+        assert!(
+            out.contains("hi-confined"),
+            "echo must run under the seal — got: {out}"
+        );
+        assert!(
+            out.contains("devnull-ok"),
+            "/dev/null must be writable — got: {out}"
+        );
     }
 
     // A file outside the readable scope is denied; the control run grants the
@@ -142,14 +170,30 @@ mod tests {
         std::fs::write(&file, marker).unwrap();
         let cat = format!("cat {}", file.display());
 
-        let wide = shell_impulse(&cat, false, &[code.path(), outside.path()], &[code.path()], Mode::Deny);
+        let wide = shell_impulse(
+            &cat,
+            false,
+            &[code.path(), outside.path()],
+            &[code.path()],
+            Mode::Deny,
+        );
         let (_fb, control) = run_hand(code.path(), code.path(), wide, &[]);
-        assert!(control.contains(marker), "control: a granted file must be readable — got: {control}");
+        assert!(
+            control.contains(marker),
+            "control: a granted file must be readable — got: {control}"
+        );
 
         let narrow = shell_impulse(&cat, false, &[code.path()], &[code.path()], Mode::Deny);
         let (fb, denied) = run_hand(code.path(), code.path(), narrow, &[]);
-        assert!(!denied.contains(marker), "out-of-scope read must not return the content — got: {denied}");
-        assert!(denial_shown(&denied, &fb), "the denial must show up — got: {denied}, denied={:?}", fb.denied);
+        assert!(
+            !denied.contains(marker),
+            "out-of-scope read must not return the content — got: {denied}"
+        );
+        assert!(
+            denial_shown(&denied, &fb),
+            "the denial must show up — got: {denied}, denied={:?}",
+            fb.denied
+        );
     }
 
     // A write outside the writable scope is denied while one inside works; the
@@ -164,19 +208,36 @@ mod tests {
         // the hand gets its own gait dir, as in real use.
         let gait_dir = tempfile::tempdir().unwrap();
         let target = outside.path().join("written.txt");
-        let cmd = format!("echo inside > {}/in.txt; echo outside > {}", code.path().display(), target.display());
+        let cmd = format!(
+            "echo inside > {}/in.txt; echo outside > {}",
+            code.path().display(),
+            target.display()
+        );
 
         let wide = shell_impulse(&cmd, true, &[], &[code.path(), outside.path()], Mode::Deny);
         let (_fb, _) = run_hand(code.path(), gait_dir.path(), wide, &[]);
-        assert!(target.exists(), "control: a writable directory must accept the write");
+        assert!(
+            target.exists(),
+            "control: a writable directory must accept the write"
+        );
         std::fs::remove_file(&target).unwrap();
         std::fs::remove_file(code.path().join("in.txt")).unwrap();
 
         let narrow = shell_impulse(&cmd, true, &[], &[code.path()], Mode::Deny);
         let (fb, out) = run_hand(code.path(), gait_dir.path(), narrow, &[]);
-        assert!(code.path().join("in.txt").exists(), "the in-scope write must succeed — got: {out}");
-        assert!(!target.exists(), "the out-of-scope write must not create the file");
-        assert!(denial_shown(&out, &fb), "the denial must show up — got: {out}, denied={:?}", fb.denied);
+        assert!(
+            code.path().join("in.txt").exists(),
+            "the in-scope write must succeed — got: {out}"
+        );
+        assert!(
+            !target.exists(),
+            "the out-of-scope write must not create the file"
+        );
+        assert!(
+            denial_shown(&out, &fb),
+            "the denial must show up — got: {out}, denied={:?}",
+            fb.denied
+        );
     }
 
     // The machine identity dir is denied under a blanket-read scope, where only
@@ -199,11 +260,26 @@ mod tests {
         let impulse = || shell_impulse(&cat, true, &[], &[code.path()], Mode::Deny);
 
         let (_fb, control) = run_hand(code.path(), code.path(), impulse(), &[]);
-        assert!(control.contains(marker), "control: without MACHINE_IDENTITY_DIR the file must be readable — got: {control}");
+        assert!(
+            control.contains(marker),
+            "control: without MACHINE_IDENTITY_DIR the file must be readable — got: {control}"
+        );
 
-        let (fb, denied) = run_hand(code.path(), code.path(), impulse(), &[("MACHINE_IDENTITY_DIR", machine.path())]);
-        assert!(!denied.contains(marker), "the machine dir must not be readable through the shell — got: {denied}");
-        assert!(denial_shown(&denied, &fb), "the denial must show up — got: {denied}, denied={:?}", fb.denied);
+        let (fb, denied) = run_hand(
+            code.path(),
+            code.path(),
+            impulse(),
+            &[("MACHINE_IDENTITY_DIR", machine.path())],
+        );
+        assert!(
+            !denied.contains(marker),
+            "the machine dir must not be readable through the shell — got: {denied}"
+        );
+        assert!(
+            denial_shown(&denied, &fb),
+            "the denial must show up — got: {denied}, denied={:?}",
+            fb.denied
+        );
     }
 
     // A folder listed under `sandbox.deny.read` in gait.jsonc is denied by the
@@ -236,11 +312,21 @@ mod tests {
         };
 
         let (_fb, control) = run(plain.path());
-        assert!(control.contains(marker), "control: without the config the file must be readable — got: {control}");
+        assert!(
+            control.contains(marker),
+            "control: without the config the file must be readable — got: {control}"
+        );
 
         let (fb, denied) = run(configured.path());
-        assert!(!denied.contains(marker), "a configured deny path must not be readable through the shell — got: {denied}");
-        assert!(denial_shown(&denied, &fb), "the denial must show up — got: {denied}, denied={:?}", fb.denied);
+        assert!(
+            !denied.contains(marker),
+            "a configured deny path must not be readable through the shell — got: {denied}"
+        );
+        assert!(
+            denial_shown(&denied, &fb),
+            "the denial must show up — got: {denied}, denied={:?}",
+            fb.denied
+        );
     }
 
     // With the network denied, a TCP connect to a live local listener fails;
@@ -252,7 +338,12 @@ mod tests {
     fn network_deny_blocks_tcp_connect() {
         // SAFETY: a pure query; null attr and zero size with the VERSION flag.
         let abi = unsafe {
-            libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<libc::c_void>(), 0usize, 1u32)
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                std::ptr::null::<libc::c_void>(),
+                0usize,
+                1u32,
+            )
         };
         if abi < 4 {
             eprintln!("SKIP network_deny_blocks_tcp_connect: Landlock ABI {abi} < 4 (TCP rules need kernel 6.7+)");
@@ -265,11 +356,20 @@ mod tests {
         let impulse = |mode| shell_impulse(&cmd, false, &[code.path()], &[code.path()], mode);
 
         let (_fb, control) = run_hand(code.path(), code.path(), impulse(Mode::All), &[]);
-        assert!(control.contains("CONNECTED-OK"), "control: network All must connect to the live listener — got: {control}");
+        assert!(
+            control.contains("CONNECTED-OK"),
+            "control: network All must connect to the live listener — got: {control}"
+        );
 
         let (fb, denied) = run_hand(code.path(), code.path(), impulse(Mode::Deny), &[]);
-        assert!(!denied.contains("CONNECTED-OK"), "network Deny must block the connect — got: {denied}");
-        assert!(denial_shown(&denied, &fb), "the failure must be a denial, not a refusal — got: {denied}");
+        assert!(
+            !denied.contains("CONNECTED-OK"),
+            "network Deny must block the connect — got: {denied}"
+        );
+        assert!(
+            denial_shown(&denied, &fb),
+            "the failure must be a denial, not a refusal — got: {denied}"
+        );
         drop(listener);
     }
 
@@ -291,14 +391,29 @@ mod tests {
             "cat {}; n=0; for t in $(ls /proc/$PPID/task); do [ $t -gt $PPID ] && [ $t -lt $$ ] && n=$((n+1)); done; echo preseal=$n",
             target.display()
         );
-        let wide = shell_impulse(&cmd, false, &[code.path(), outside.path()], &[code.path()], Mode::Deny);
+        let wide = shell_impulse(
+            &cmd,
+            false,
+            &[code.path(), outside.path()],
+            &[code.path()],
+            Mode::Deny,
+        );
         let (_fb, control) = run_hand(code.path(), code.path(), wide, &[]);
-        assert!(control.contains("THREAD-SCOPE-MARKER"), "control must read the file: {control}");
+        assert!(
+            control.contains("THREAD-SCOPE-MARKER"),
+            "control must read the file: {control}"
+        );
 
         let narrow = shell_impulse(&cmd, false, &[code.path()], &[code.path()], Mode::Deny);
         let (_fb, sealed) = run_hand(code.path(), code.path(), narrow, &[]);
-        assert!(!sealed.contains("THREAD-SCOPE-MARKER"), "denied file was read: {sealed}");
-        assert!(sealed.contains("preseal=0"), "the hand must seal before any other thread exists: {sealed}");
+        assert!(
+            !sealed.contains("THREAD-SCOPE-MARKER"),
+            "denied file was read: {sealed}"
+        );
+        assert!(
+            sealed.contains("preseal=0"),
+            "the hand must seal before any other thread exists: {sealed}"
+        );
     }
 
     // With telemetry configured, an exporter thread started before the seal
@@ -311,7 +426,10 @@ mod tests {
     fn hand_has_no_unsealed_thread_with_otel_configured() {
         let collector = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         collector.set_nonblocking(true).unwrap();
-        let endpoint = format!("http://127.0.0.1:{}", collector.local_addr().unwrap().port());
+        let endpoint = format!(
+            "http://127.0.0.1:{}",
+            collector.local_addr().unwrap().port()
+        );
         let otel: [(&str, &Path); 2] = [
             ("OTEL_EXPORTER_OTLP_ENDPOINT", Path::new(&endpoint)),
             ("OTEL_RESOURCE_ATTRIBUTES", Path::new("service.name=x")),
@@ -327,10 +445,17 @@ mod tests {
         let impulse = |mode| shell_impulse("echo hi", false, &[code.path()], &[code.path()], mode);
 
         run_hand(code.path(), code.path(), impulse(Mode::All), &otel);
-        assert!(connections() > 0, "control: with network All the hand's exporter must reach the collector");
+        assert!(
+            connections() > 0,
+            "control: with network All the hand's exporter must reach the collector"
+        );
 
         run_hand(code.path(), code.path(), impulse(Mode::Deny), &otel);
-        assert_eq!(connections(), 0, "a sealed hand must not export from a thread that predates the seal");
+        assert_eq!(
+            connections(),
+            0,
+            "a sealed hand must not export from a thread that predates the seal"
+        );
     }
 
     // Why the order matters, demonstrated on the kernel itself: a thread that
@@ -353,7 +478,11 @@ mod tests {
             let old = std::thread::spawn(move || {
                 up_tx.send(()).unwrap();
                 go_rx.recv().unwrap();
-                let ok = Command::new("cat").arg(&f).output().map(|o| o.status.success()).unwrap_or(false);
+                let ok = Command::new("cat")
+                    .arg(&f)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
                 res_tx.send(ok).unwrap();
             });
             up_rx.recv().unwrap(); // the thread exists before the seal
@@ -366,10 +495,17 @@ mod tests {
             };
             let status = platform_sandbox().apply(&scope).unwrap();
             assert!(
-                matches!(status, SandboxStatus::Active | SandboxStatus::ActiveWithNotes { .. }),
+                matches!(
+                    status,
+                    SandboxStatus::Active | SandboxStatus::ActiveWithNotes { .. }
+                ),
                 "{status:?}"
             );
-            let sealing = Command::new("cat").arg(&denied_file).output().map(|o| o.status.success()).unwrap_or(false);
+            let sealing = Command::new("cat")
+                .arg(&denied_file)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
             go_tx.send(()).unwrap();
             let pre_seal = res_rx.recv().unwrap();
             old.join().unwrap();
@@ -394,7 +530,11 @@ mod tests {
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "child failed: {stdout} {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "child failed: {stdout} {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(
             stdout.contains("RESULT sealing_thread_read=false pre_seal_thread_read=true"),
             "sealing thread must be denied and a pre-seal thread unconfined — got: {stdout}"

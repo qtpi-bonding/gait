@@ -168,8 +168,7 @@ mod overlay_tests {
         let deny = vec![];
         let mode_allow = vec!["shell:cargo *".to_string()];
         let mode_deny = vec!["write".to_string()];
-        let (ea2, deny2) =
-            overlay_mode_permissions(ea, deny, Some(&mode_allow), Some(&mode_deny));
+        let (ea2, deny2) = overlay_mode_permissions(ea, deny, Some(&mode_allow), Some(&mode_deny));
         assert_eq!(ea2, vec!["read:*".to_string(), "shell:cargo *".to_string()]);
         assert_eq!(deny2, vec!["write".to_string()]);
     }

@@ -88,7 +88,11 @@ async fn runner(
     let name = params.id.as_ref().map(Ref::as_raw).unwrap_or(DEFAULT_NAME);
     gait_ops::inference::show(&dir, name).map_err(infra)?;
     let inference = gait_core::inferences::load_inference(&dir, name).map_err(infra)?;
-    let not_local = || CliError::invalid_input(format!("inference '{name}' is not a configured local profile"));
+    let not_local = || {
+        CliError::invalid_input(format!(
+            "inference '{name}' is not a configured local profile"
+        ))
+    };
     let llm = inference
         .llm_params
         .as_ref()
@@ -110,9 +114,14 @@ async fn runner(
         local.gpu_layers.or(Some(0))
     ));
     let socket = dir.join("local-runners").join(format!("{key}.sock"));
-    let state = |status: &str, model_key: Option<String>| LocalRunner { status: status.into(), model_key };
+    let state = |status: &str, model_key: Option<String>| LocalRunner {
+        status: status.into(),
+        model_key,
+    };
     match runner_command(&socket, action).await {
-        Ok(Some(gait_local::RunnerResponse::Status { model_key })) => Ok(state("running", Some(model_key))),
+        Ok(Some(gait_local::RunnerResponse::Status { model_key })) => {
+            Ok(state("running", Some(model_key)))
+        }
         Ok(Some(gait_local::RunnerResponse::Stopped)) => Ok(state("stopped", None)),
         Ok(_) => Ok(state("not running", None)),
         Err(_) if action == "status" => Ok(state("not running", None)),
@@ -132,7 +141,11 @@ async fn runner_command(
         gait_local::RunnerRequest::Status
     };
     stream
-        .write_all(serde_json::to_string(&request).expect("runner request serializes").as_bytes())
+        .write_all(
+            serde_json::to_string(&request)
+                .expect("runner request serializes")
+                .as_bytes(),
+        )
         .await?;
     stream.write_all(b"\n").await?;
     let mut lines = tokio::io::BufReader::new(stream).lines();
@@ -159,4 +172,3 @@ pub async fn stop(
 ) -> anyhow::Result<LocalRunner> {
     runner(ctx, params, "stop").await
 }
-

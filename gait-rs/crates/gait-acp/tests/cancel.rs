@@ -310,10 +310,17 @@ fn meta(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
 }
 
 /// The session's CancellationSignals and the retrace text of its last message.
-fn cancel_record(gait_dir: &Path, sid: &str) -> (Vec<gait_core::proto::gait::log::v1::CancellationSignal>, String) {
+fn cancel_record(
+    gait_dir: &Path,
+    sid: &str,
+) -> (
+    Vec<gait_core::proto::gait::log::v1::CancellationSignal>,
+    String,
+) {
     use gait_core::proto::gait::log::v1::payload::Kind;
-    let events = gait_core::session::log::read_events(&gait_core::session::live::log_path(gait_dir, sid))
-        .expect("read log");
+    let events =
+        gait_core::session::log::read_events(&gait_core::session::live::log_path(gait_dir, sid))
+            .expect("read log");
     let signals = events
         .iter()
         .filter_map(|e| match gait_core::proto::event_kind(e) {
@@ -321,7 +328,10 @@ fn cancel_record(gait_dir: &Path, sid: &str) -> (Vec<gait_core::proto::gait::log
             _ => None,
         })
         .collect();
-    let text = match gait_state::session::retrace::transcript(&events).expect("retrace").last() {
+    let text = match gait_state::session::retrace::transcript(&events)
+        .expect("retrace")
+        .last()
+    {
         Some(gait_core::types::Message::User {
             content: gait_core::types::MessageContent::Text(t),
             ..
@@ -332,12 +342,16 @@ fn cancel_record(gait_dir: &Path, sid: &str) -> (Vec<gait_core::proto::gait::log
 }
 
 /// Runs a prompt against a hanging brain and cancels it with `cancel_meta`.
-async fn cancel_hanging_turn(cancel_meta: Option<serde_json::Map<String, serde_json::Value>>) -> (std::path::PathBuf, String, tempfile::TempDir) {
+async fn cancel_hanging_turn(
+    cancel_meta: Option<serde_json::Map<String, serde_json::Value>>,
+) -> (std::path::PathBuf, String, tempfile::TempDir) {
     let (t, gait_dir, repo) = workspace();
     write_frames(
         &gait_dir,
         0,
-        &[forward_event(gait_core::proto::events::assistant_text("working".into()))],
+        &[forward_event(gait_core::proto::events::assistant_text(
+            "working".into(),
+        ))],
     );
     std::fs::write(gait_dir.join("mock_hang_ms"), "10000").unwrap();
     let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
@@ -345,7 +359,11 @@ async fn cancel_hanging_turn(cancel_meta: Option<serde_json::Map<String, serde_j
     let (stop, sid) = Client
         .builder()
         .connect_with(channel, async |cx| {
-            let sid = cx.send_request(NewSessionRequest::new(repo.clone())).block_task().await?.session_id;
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
             let (cx2, sid2) = (cx.clone(), sid.clone());
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -354,7 +372,10 @@ async fn cancel_hanging_turn(cancel_meta: Option<serde_json::Map<String, serde_j
                 let _ = cx2.send_notification(n);
             });
             let resp = cx
-                .send_request(PromptRequest::new(sid.clone(), vec!["run it".to_string().into()]))
+                .send_request(PromptRequest::new(
+                    sid.clone(),
+                    vec!["run it".to_string().into()],
+                ))
                 .block_task()
                 .await?;
             Ok((resp.stop_reason, sid.0.to_string()))
@@ -382,7 +403,9 @@ async fn initialize_advertises_session_notices() {
         .await
         .expect("initialize");
     assert_eq!(
-        resp.meta.as_ref().and_then(|m| m.get("qtpi.app/sessionNotices")),
+        resp.meta
+            .as_ref()
+            .and_then(|m| m.get("qtpi.app/sessionNotices")),
         Some(&serde_json::Value::Bool(true))
     );
 }
@@ -395,7 +418,10 @@ async fn a_cancel_with_actor_meta_records_who_and_why() {
     let (signals, text) = cancel_record(&gait_dir, &sid);
     assert_eq!(signals.len(), 1, "exactly one CancellationSignal");
     let s = &signals[0];
-    assert_eq!(s.actor_kind, gait_core::proto::gait::log::v1::CancelActorKind::Orchestrator as i32);
+    assert_eq!(
+        s.actor_kind,
+        gait_core::proto::gait::log::v1::CancelActorKind::Orchestrator as i32
+    );
     assert_eq!(s.actor_id, "svc");
     assert_eq!(s.reason.as_deref(), Some("Action 7: x"));
     assert_eq!(text, "[turn cancelled by orchestrator: Action 7: x]");
@@ -406,7 +432,10 @@ async fn a_cancel_without_meta_records_no_cause() {
     let (gait_dir, sid, _t) = cancel_hanging_turn(None).await;
     let (signals, text) = cancel_record(&gait_dir, &sid);
     assert_eq!(signals.len(), 1, "exactly one CancellationSignal");
-    assert_eq!(signals[0].actor_kind, gait_core::proto::gait::log::v1::CancelActorKind::Unspecified as i32);
+    assert_eq!(
+        signals[0].actor_kind,
+        gait_core::proto::gait::log::v1::CancelActorKind::Unspecified as i32
+    );
     assert_eq!(text, "[turn interrupted by user]");
 }
 
@@ -417,7 +446,11 @@ async fn a_permission_cancelled_by_policy_records_the_policy_cause() {
         &gait_dir,
         0,
         &[
-            append_event(gait_core::proto::events::permissions(&[perm_item("tc1", "ls", &["ls"])])),
+            append_event(gait_core::proto::events::permissions(&[perm_item(
+                "tc1",
+                "ls",
+                &["ls"],
+            )])),
             terminated(r#"{"permissions":{}}"#),
         ],
     );
@@ -451,6 +484,12 @@ async fn a_permission_cancelled_by_policy_records_the_policy_cause() {
     assert_eq!(stop, StopReason::Cancelled);
     let (signals, text) = cancel_record(&gait_dir, &sid);
     assert_eq!(signals.len(), 1);
-    assert_eq!(signals[0].reason.as_deref(), Some("a rule refused permission for `Bash`"));
-    assert_eq!(text, "[turn cancelled by policy: a rule refused permission for `Bash`]");
+    assert_eq!(
+        signals[0].reason.as_deref(),
+        Some("a rule refused permission for `Bash`")
+    );
+    assert_eq!(
+        text,
+        "[turn cancelled by policy: a rule refused permission for `Bash`]"
+    );
 }

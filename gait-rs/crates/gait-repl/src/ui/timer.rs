@@ -297,13 +297,19 @@ mod tests {
     #[test]
     fn two_row_overlay_does_not_drift_across_ticks() {
         let mut total = cursor_row_delta(&overlay_draw_seq("f", "thinking…", "0s", "ctx"));
-        assert_eq!(total, 2, "draw leaves the cursor two rows below the overlay start");
+        assert_eq!(
+            total, 2,
+            "draw leaves the cursor two rows below the overlay start"
+        );
         for _ in 0..50 {
             total += cursor_row_delta(&overlay_tick_seq("f", "thinking…", "1s", "ctx"));
         }
         assert_eq!(total, 2, "ticks must repaint in place, not creep down");
         total += cursor_row_delta(overlay_erase_seq(true));
-        assert_eq!(total, 0, "erase returns the cursor to the overlay's first row");
+        assert_eq!(
+            total, 0,
+            "erase returns the cursor to the overlay's first row"
+        );
     }
 
     #[test]
@@ -315,7 +321,10 @@ mod tests {
 
     #[test]
     fn one_row_overlay_rests_on_its_row() {
-        assert_eq!(cursor_row_delta(&overlay_draw_seq("f", "thinking…", "0s", "")), 0);
+        assert_eq!(
+            cursor_row_delta(&overlay_draw_seq("f", "thinking…", "0s", "")),
+            0
+        );
         assert_eq!(cursor_row_delta(overlay_erase_seq(false)), 0);
     }
 }

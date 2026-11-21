@@ -204,7 +204,9 @@ pub struct UndoParams {
 
 fn check_bulk(id: &Option<Ref>, all: bool, yes: bool, dry_run: bool) -> Result<(), UsageError> {
     if id.is_some() == all {
-        return Err(UsageError::OneOf { group: "id or all".into() });
+        return Err(UsageError::OneOf {
+            group: "id or all".into(),
+        });
     }
     if all && !yes && !dry_run {
         return Err(UsageError::InvalidField {
@@ -347,7 +349,10 @@ pub async fn ps(
     Ok(out
         .rows
         .into_iter()
-        .map(|row| ProcessItem { session_id: row.session_id, state: row.state })
+        .map(|row| ProcessItem {
+            session_id: row.session_id,
+            state: row.state,
+        })
         .collect())
 }
 
@@ -388,7 +393,10 @@ pub async fn log(
         tools: s
             .tools
             .into_iter()
-            .map(|t| ToolCount { name: t.name, count: t.count })
+            .map(|t| ToolCount {
+                name: t.name,
+                count: t.count,
+            })
             .collect(),
     })
 }
@@ -411,7 +419,11 @@ pub async fn undo(
         turns: out
             .turns
             .into_iter()
-            .map(|t| UndoTurn { turn: t.turn, summary: t.summary, checkpoint_short: t.checkpoint_short })
+            .map(|t| UndoTurn {
+                turn: t.turn,
+                summary: t.summary,
+                checkpoint_short: t.checkpoint_short,
+            })
             .collect(),
         transcript_undone: out.transcript_undone,
         code_undone: out.code_undone,
@@ -445,16 +457,27 @@ fn act(
                 return Err(gait_ops::OpError::invalid(format!(
                     "session {} is not eligible to {}{why}",
                     id.as_raw(),
-                    if verb == BulkVerb::Persist { "persist" } else { "discard" }
+                    if verb == BulkVerb::Persist {
+                        "persist"
+                    } else {
+                        "discard"
+                    }
                 )));
             }
-            BulkPlan { verb, eligible: vec![id.as_raw().to_owned()], skipped: Vec::new() }
+            BulkPlan {
+                verb,
+                eligible: vec![id.as_raw().to_owned()],
+                skipped: Vec::new(),
+            }
         }
         None => classify_bulk(gait_dir, verb)?,
     };
     let skipped = |plan: &[(String, String)]| {
         plan.iter()
-            .map(|(id, state)| SkippedSession { session_id: id.clone(), state: state.clone() })
+            .map(|(id, state)| SkippedSession {
+                session_id: id.clone(),
+                state: state.clone(),
+            })
             .collect::<Vec<_>>()
     };
     if dry_run || plan.eligible.is_empty() {
@@ -480,12 +503,18 @@ fn act(
         failed: outcome
             .failed
             .into_iter()
-            .map(|(id, error)| FailedSession { session_id: id, error })
+            .map(|(id, error)| FailedSession {
+                session_id: id,
+                error,
+            })
             .collect(),
         warnings: outcome
             .warnings
             .into_iter()
-            .map(|(id, message)| SessionWarning { session_id: id, message })
+            .map(|(id, message)| SessionWarning {
+                session_id: id,
+                message,
+            })
             .collect(),
     })
 }
@@ -496,7 +525,13 @@ pub async fn persist(
     params: PersistParams,
     _opts: CallOptions,
 ) -> anyhow::Result<SessionAct> {
-    act(&dir(ctx)?, BulkVerb::Persist, params.id, params.dry_run, false)
+    act(
+        &dir(ctx)?,
+        BulkVerb::Persist,
+        params.id,
+        params.dry_run,
+        false,
+    )
 }
 
 /// Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
@@ -505,7 +540,13 @@ pub async fn discard(
     params: DiscardParams,
     _opts: CallOptions,
 ) -> anyhow::Result<SessionAct> {
-    act(&dir(ctx)?, BulkVerb::Discard, params.id, params.dry_run, params.force)
+    act(
+        &dir(ctx)?,
+        BulkVerb::Discard,
+        params.id,
+        params.dry_run,
+        params.force,
+    )
 }
 
 /// Approve the permission requests a session is waiting on.
@@ -523,7 +564,10 @@ pub async fn allow(
     let out = gait_ops::permission::allow(
         &dir(ctx)?,
         params.id.as_raw(),
-        gait_ops::permission::AllowParams { scope, pattern: params.pattern },
+        gait_ops::permission::AllowParams {
+            scope,
+            pattern: params.pattern,
+        },
     )?;
     Ok(AllowResult {
         session_id: params.id.as_raw().to_owned(),
@@ -539,7 +583,10 @@ pub async fn deny(
     _opts: CallOptions,
 ) -> anyhow::Result<DenyResult> {
     let out = gait_ops::permission::deny(&dir(ctx)?, params.id.as_raw())?;
-    Ok(DenyResult { session_id: params.id.as_raw().to_owned(), denied_count: out.reply_items.len() })
+    Ok(DenyResult {
+        session_id: params.id.as_raw().to_owned(),
+        denied_count: out.reply_items.len(),
+    })
 }
 
 /// Approve the sandbox unlock requests a session is waiting on.

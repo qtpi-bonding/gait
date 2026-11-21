@@ -8,17 +8,32 @@ use std::process::{Command, Stdio};
 
 fn assert_refused(dir: &Path, agent_dir_env: Option<&Path>, state: &Path) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gait-acp"));
-    cmd.arg("--state-dir").arg(state).env_remove("GAIT_DIR").stdin(Stdio::null());
+    cmd.arg("--state-dir")
+        .arg(state)
+        .env_remove("GAIT_DIR")
+        .stdin(Stdio::null());
     match agent_dir_env {
         Some(path) => cmd.env("GAIT_AGENT_DIR", path),
         None => cmd.env_remove("GAIT_AGENT_DIR"),
     };
     let output = cmd.output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(65), "config-class exit, not a panic (101): {stderr}");
-    assert!(stderr.contains(&dir.display().to_string()), "path: {stderr}");
+    assert_eq!(
+        output.status.code(),
+        Some(65),
+        "config-class exit, not a panic (101): {stderr}"
+    );
+    assert!(
+        stderr.contains(&dir.display().to_string()),
+        "path: {stderr}"
+    );
     assert!(stderr.contains("0755"), "mode: {stderr}");
-    assert!(stderr.contains("tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry"
+        ),
+        "{stderr}"
+    );
     assert!(!stderr.contains("panicked"), "{stderr}");
     let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o755, "never chmods");

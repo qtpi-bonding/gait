@@ -425,14 +425,20 @@ mod tests {
     fn with_trace_env_adds_nothing_without_a_trace() {
         let mut cmd = std::process::Command::new("gait");
         with_trace_env_from(&mut cmd, None, None);
-        assert!(cmd.get_envs().all(|(key, _)| key != "TRACEPARENT" && key != "BAGGAGE"));
+        assert!(cmd
+            .get_envs()
+            .all(|(key, _)| key != "TRACEPARENT" && key != "BAGGAGE"));
     }
 
     #[test]
     fn with_trace_env_sets_traceparent_when_present() {
         let value = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
         let mut cmd = std::process::Command::new("gait");
-        with_trace_env_from(&mut cmd, Some(value.to_string()), Some("action_id=A1".to_string()));
+        with_trace_env_from(
+            &mut cmd,
+            Some(value.to_string()),
+            Some("action_id=A1".to_string()),
+        );
         assert_eq!(
             cmd.get_envs()
                 .find(|(key, _)| *key == "TRACEPARENT")
@@ -478,7 +484,9 @@ mod tests {
         assert!(crate::env_passes_to_children("OTEL_EXPORTER_OTLP_PROTOCOL"));
         assert!(crate::env_passes_to_children("OTEL_RESOURCE_ATTRIBUTES"));
         assert!(!crate::env_passes_to_children("OTEL_EXPORTER_OTLP_HEADERS"));
-        assert!(!crate::env_passes_to_children("OTEL_EXPORTER_OTLP_TRACES_HEADERS"));
+        assert!(!crate::env_passes_to_children(
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS"
+        ));
         assert!(!crate::env_passes_to_children("AWS_SECRET_ACCESS_KEY"));
         assert!(!crate::env_passes_to_children("GAIT_AGENT_DIR"));
         assert!(!crate::env_passes_to_children("OPENAI_API_KEY"));
@@ -486,13 +494,21 @@ mod tests {
 
     #[test]
     fn brain_args_accept_hyphen_leading_name_and_instructions() {
-        let argv: Vec<String> = ["--self-name", "-Ada", "--reply-instructions", "- reply via send_message"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let argv: Vec<String> = [
+            "--self-name",
+            "-Ada",
+            "--reply-instructions",
+            "- reply via send_message",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let parsed = BrainArgs::try_parse_from(&argv).unwrap();
         assert_eq!(parsed.self_name.as_deref(), Some("-Ada"));
-        assert_eq!(parsed.reply_instructions.as_deref(), Some("- reply via send_message"));
+        assert_eq!(
+            parsed.reply_instructions.as_deref(),
+            Some("- reply via send_message")
+        );
     }
 
     #[test]

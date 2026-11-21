@@ -12,7 +12,8 @@ use tokio::net::TcpListener;
 
 static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-const FINISH: &str = r#"data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
+const FINISH: &str =
+    r#"data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
 
 async fn serve(listener: TcpListener, sse: String, hold_open: bool) {
     let (mut sock, _) = listener.accept().await.unwrap();
@@ -62,13 +63,17 @@ async fn run(lines: &[&str], hold_open: bool) -> ((u32, u32, u32), usize, usize)
     let sse: String = lines.iter().map(|l| format!("{l}\n\n")).collect();
     let server = tokio::spawn(serve(listener, sse, hold_open));
     let params = LlmParamsConfig::default();
-    let provider = load_provider_with_credential_and_params("lmstudio/some-model", None, &params).unwrap();
+    let provider =
+        load_provider_with_credential_and_params("lmstudio/some-model", None, &params).unwrap();
     let msgs = vec![Message::User {
         content: MessageContent::Text("hello".into()),
         id: "m1".into(),
         attribution: Vec::new(),
     }];
-    let mut stream = provider.stream("sys", &msgs, &[], &params, None).await.unwrap();
+    let mut stream = provider
+        .stream("sys", &msgs, &[], &params, None)
+        .await
+        .unwrap();
     let mut total = Usage::default();
     let (mut tools, mut dones) = (0, 0);
     while let Some(chunk) = stream.next().await {
@@ -83,7 +88,15 @@ async fn run(lines: &[&str], hold_open: bool) -> ((u32, u32, u32), usize, usize)
         }
     }
     server.abort();
-    ((total.input_tokens, total.output_tokens, total.cache_read_tokens), tools, dones)
+    (
+        (
+            total.input_tokens,
+            total.output_tokens,
+            total.cache_read_tokens,
+        ),
+        tools,
+        dones,
+    )
 }
 
 fn usage(input: u32, output: u32, cached: u32) -> (u32, u32, u32) {
@@ -97,25 +110,58 @@ async fn usage_is_recorded_whatever_shape_the_server_sends_it_in() {
     let std_usage = r#"data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens_details":{"reasoning_tokens":7}}}"#;
 
     // OpenAI's own shape: finish chunk, then a usage chunk with empty choices, then [DONE].
-    assert_eq!(usage_for(&[FINISH, std_usage, "data: [DONE]"]).await, usage(60, 20, 40), "usage after finish, choices []");
+    assert_eq!(
+        usage_for(&[FINISH, std_usage, "data: [DONE]"]).await,
+        usage(60, 20, 40),
+        "usage after finish, choices []"
+    );
     // choices absent entirely.
     let no_choices = r#"data: {"usage":{"prompt_tokens":10,"completion_tokens":3}}"#;
-    assert_eq!(usage_for(&[FINISH, no_choices, "data: [DONE]"]).await, usage(10, 3, 0), "choices absent");
+    assert_eq!(
+        usage_for(&[FINISH, no_choices, "data: [DONE]"]).await,
+        usage(10, 3, 0),
+        "choices absent"
+    );
     // usage on the finish chunk itself.
     let on_finish = r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#;
-    assert_eq!(usage_for(&[on_finish, "data: [DONE]"]).await, usage(10, 3, 0), "usage on the finish chunk");
+    assert_eq!(
+        usage_for(&[on_finish, "data: [DONE]"]).await,
+        usage(10, 3, 0),
+        "usage on the finish chunk"
+    );
     // null / missing completion_tokens must not drop the prompt side.
-    let null_completion = r#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":null}}"#;
-    assert_eq!(usage_for(&[FINISH, null_completion, "data: [DONE]"]).await, usage(10, 0, 0), "null completion_tokens");
+    let null_completion =
+        r#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":null}}"#;
+    assert_eq!(
+        usage_for(&[FINISH, null_completion, "data: [DONE]"]).await,
+        usage(10, 0, 0),
+        "null completion_tokens"
+    );
     let no_completion = r#"data: {"choices":[],"usage":{"prompt_tokens":10}}"#;
-    assert_eq!(usage_for(&[FINISH, no_completion, "data: [DONE]"]).await, usage(10, 0, 0), "missing completion_tokens");
+    assert_eq!(
+        usage_for(&[FINISH, no_completion, "data: [DONE]"]).await,
+        usage(10, 0, 0),
+        "missing completion_tokens"
+    );
     // extra non-standard fields next to the standard ones.
     let extra = r#"data: {"id":"x","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"peak_memory":1.5,"time_to_first_token":0.2,"generation_tokens_per_second":41.0,"prompt_tokens_details":{"cached_tokens":null}},"timings":{"x":1}}"#;
-    assert_eq!(usage_for(&[FINISH, extra, "data: [DONE]"]).await, usage(10, 3, 0), "extra fields");
+    assert_eq!(
+        usage_for(&[FINISH, extra, "data: [DONE]"]).await,
+        usage(10, 3, 0),
+        "extra fields"
+    );
     // [DONE] is the terminator: a chunk after it is not read.
-    assert_eq!(usage_for(&[FINISH, "data: [DONE]", std_usage]).await, usage(0, 0, 0), "usage after [DONE] is ignored");
+    assert_eq!(
+        usage_for(&[FINISH, "data: [DONE]", std_usage]).await,
+        usage(0, 0, 0),
+        "usage after [DONE] is ignored"
+    );
     // No [DONE] at all, the connection just closes after the usage chunk.
-    assert_eq!(usage_for(&[FINISH, std_usage]).await, usage(60, 20, 40), "no [DONE]");
+    assert_eq!(
+        usage_for(&[FINISH, std_usage]).await,
+        usage(60, 20, 40),
+        "no [DONE]"
+    );
 }
 
 #[tokio::test]
@@ -125,12 +171,26 @@ async fn repeated_finish_and_usage_chunks_count_once_and_a_held_open_socket_does
     let finish = r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#;
     let again = r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#;
     let (usage, tools, dones) = run(&[tool, finish, again, "data: [DONE]"], false).await;
-    assert_eq!((usage, tools, dones), ((10, 3, 0), 1, 1), "usage on two chunks counts once; the tool call completes once");
+    assert_eq!(
+        (usage, tools, dones),
+        ((10, 3, 0), 1, 1),
+        "usage on two chunks counts once; the tool call completes once"
+    );
 
     let started = std::time::Instant::now();
-    let (usage, _, dones) = run(&[FINISH, r#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#], true).await;
+    let (usage, _, dones) = run(
+        &[
+            FINISH,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#,
+        ],
+        true,
+    )
+    .await;
     assert_eq!((usage, dones), ((10, 3, 0), 1));
-    assert!(started.elapsed() < std::time::Duration::from_secs(5), "a server that never closes must not hold Done for long");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a server that never closes must not hold Done for long"
+    );
 }
 
 #[tokio::test]
@@ -140,7 +200,11 @@ async fn done_ends_the_stream_at_once_even_if_the_server_keeps_the_socket_open()
     let started = std::time::Instant::now();
     let (usage, _, dones) = run(&[FINISH, usage_chunk, "data: [DONE]"], true).await;
     assert_eq!((usage, dones), ((10, 3, 0), 1));
-    assert!(started.elapsed() < std::time::Duration::from_millis(500), "[DONE] is the terminator: took {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "[DONE] is the terminator: took {:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]
@@ -150,5 +214,9 @@ async fn a_finish_chunk_that_already_carried_usage_does_not_wait_for_a_trailer()
     let started = std::time::Instant::now();
     let (usage, _, dones) = run(&[on_finish], true).await;
     assert_eq!((usage, dones), ((10, 3, 0), 1));
-    assert!(started.elapsed() < std::time::Duration::from_millis(500), "took {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "took {:?}",
+        started.elapsed()
+    );
 }

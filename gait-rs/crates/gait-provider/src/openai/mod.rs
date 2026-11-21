@@ -200,10 +200,23 @@ impl StreamUsage {
     /// The normalized usage plus the reasoning tokens, which are a subset of
     /// the completion tokens (already inside `output_tokens`; never add them again).
     fn normalized(&self) -> (Usage, u32) {
-        let cached = self.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens).unwrap_or(0);
-        let reasoning = self.completion_tokens_details.as_ref().and_then(|d| d.reasoning_tokens).unwrap_or(0);
+        let cached = self
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+            .unwrap_or(0);
+        let reasoning = self
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens)
+            .unwrap_or(0);
         (
-            crate::responses_wire::normalized_usage(self.prompt_tokens, self.completion_tokens, cached, 0),
+            crate::responses_wire::normalized_usage(
+                self.prompt_tokens,
+                self.completion_tokens,
+                cached,
+                0,
+            ),
             reasoning,
         )
     }
@@ -415,13 +428,14 @@ impl Provider for OpenAIProvider {
             max_tokens: params.max_tokens,
             model_id: self.model.clone(),
         });
-        let stream = match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                call.fail(&error);
-                return Err(error);
-            }
-        };
+        let stream =
+            match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    call.fail(&error);
+                    return Err(error);
+                }
+            };
         Ok(Box::pin(body_stream(stream, call)))
     }
 
@@ -593,7 +607,11 @@ fn body_stream(
 }
 
 fn usage_server_ttft_ms(chunk: &StreamChunkData) -> Option<f64> {
-    chunk.usage.as_ref()?.time_to_first_token.map(|seconds| seconds * 1000.0)
+    chunk
+        .usage
+        .as_ref()?
+        .time_to_first_token
+        .map(|seconds| seconds * 1000.0)
 }
 
 /// How long to keep reading after the answer finished, for a usage chunk.
@@ -604,7 +622,10 @@ const TRAILER_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 fn log_unparsed_chunk(data: &str, error: &serde_json::Error) {
     #[cfg(feature = "telemetry")]
     {
-        let end = (0..=data.len().min(200)).rev().find(|i| data.is_char_boundary(*i)).unwrap_or(0);
+        let end = (0..=data.len().min(200))
+            .rev()
+            .find(|i| data.is_char_boundary(*i))
+            .unwrap_or(0);
         tracing::warn!(reason = %format!("{error}: {}", &data[..end]), "unparsed chat stream chunk");
     }
     #[cfg(not(feature = "telemetry"))]
@@ -681,7 +702,14 @@ mod tests {
         .unwrap();
         let (usage, reasoning) = chunk.usage.unwrap().normalized();
         assert_eq!(reasoning, 12);
-        assert_eq!((usage.input_tokens, usage.output_tokens, usage.cache_read_tokens), (60, 30, 40));
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens
+            ),
+            (60, 30, 40)
+        );
     }
 
     #[test]

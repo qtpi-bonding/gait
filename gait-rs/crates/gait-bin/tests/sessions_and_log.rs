@@ -1,7 +1,8 @@
 fn init_workspace(ws: &std::path::Path) {
     let exe = env!("CARGO_BIN_EXE_gait");
     let out = std::process::Command::new(exe)
-        .arg("init").arg("--gait-dir")
+        .arg("init")
+        .arg("--gait-dir")
         .arg(ws)
         .output()
         .unwrap();
@@ -64,7 +65,12 @@ fn log_without_an_id_is_a_usage_error() {
         .arg(ws.path())
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -78,7 +84,12 @@ fn the_old_positional_session_id_is_gone() {
         .arg(ws.path())
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -93,7 +104,11 @@ fn ps_on_an_empty_workspace_has_items() {
         .arg(ws.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let value: serde_json::Value =
         serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
     assert_eq!(value, serde_json::json!({"items": []}));
@@ -102,10 +117,19 @@ fn ps_on_an_empty_workspace_has_items() {
 #[test]
 fn help_lists_the_session_verbs_and_not_stop() {
     let exe = env!("CARGO_BIN_EXE_gait");
-    let out = std::process::Command::new(exe).arg("--help").output().unwrap();
+    let out = std::process::Command::new(exe)
+        .arg("--help")
+        .output()
+        .unwrap();
     let help = String::from_utf8_lossy(&out.stdout);
-    for verb in ["sessions", "ps", "stats", "log", "undo", "persist", "discard", "allow", "deny", "unlock", "reply"] {
-        assert!(help.contains(&format!("\n  {verb} ")), "help lacks {verb}: {help}");
+    for verb in [
+        "sessions", "ps", "stats", "log", "undo", "persist", "discard", "allow", "deny", "unlock",
+        "reply",
+    ] {
+        assert!(
+            help.contains(&format!("\n  {verb} ")),
+            "help lacks {verb}: {help}"
+        );
     }
     // `stop` was a stub that always failed; it is deleted, not ported.
     assert!(!help.contains("\n  stop "), "help still lists stop: {help}");

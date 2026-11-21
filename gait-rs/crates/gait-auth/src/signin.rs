@@ -727,15 +727,14 @@ impl AuthMethod for ChatGptSignIn {
             return Err(AuthError::MissingProviderId);
         }
         let mut guard = ctx.store.lock().await?;
-        let stored = guard
-            .read(provider)?
-            .ok_or_else(|| AuthError::LoginRequired("run: gait auth login --id openai-signin".into()))?;
+        let stored = guard.read(provider)?.ok_or_else(|| {
+            AuthError::LoginRequired("run: gait auth login --id openai-signin".into())
+        })?;
         let mut secret: SignInSecret = serde_json::from_value(stored.secret.clone())
             .map_err(|_| AuthError::IncompatibleCredential(SIGNIN_METHOD_ID))?;
-        let mut tokens = secret
-            .tokens
-            .clone()
-            .ok_or_else(|| AuthError::LoginRequired("run: gait auth login --id openai-signin".into()))?;
+        let mut tokens = secret.tokens.clone().ok_or_else(|| {
+            AuthError::LoginRequired("run: gait auth login --id openai-signin".into())
+        })?;
         let now = (self.now)();
         // Remaining lifetime alone decides. earliest_refresh_at is advisory and the
         // server does not enforce it (measured), so it is deliberately ignored here.
@@ -2732,9 +2731,18 @@ mod tests {
         use coded_error::{CodedError, ErrorClass};
         let cases = [
             (CallbackError::Typo("t".into()), "gait.auth.callback.typo"),
-            (CallbackError::StateMismatch, "gait.auth.callback.state_mismatch"),
-            (CallbackError::Denied("d".into()), "gait.auth.callback.denied"),
-            (CallbackError::Malformed("m".into()), "gait.auth.callback.malformed"),
+            (
+                CallbackError::StateMismatch,
+                "gait.auth.callback.state_mismatch",
+            ),
+            (
+                CallbackError::Denied("d".into()),
+                "gait.auth.callback.denied",
+            ),
+            (
+                CallbackError::Malformed("m".into()),
+                "gait.auth.callback.malformed",
+            ),
         ];
         for (error, code) in cases {
             assert_eq!(error.code(), code, "code of {error:?}");

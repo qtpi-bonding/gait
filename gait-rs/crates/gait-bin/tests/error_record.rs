@@ -86,7 +86,9 @@ async fn a_failed_turn_run_yields_one_error_record_the_turns() {
         std::env::set_var("GAIT_HOME", &gait_dir);
         std::env::set_var("LMSTUDIO_BASE_URL", "http://127.0.0.1:1/v1");
     }
-    let argv: Vec<String> = ["--task", "hi", "--inference", "m"].map(String::from).to_vec();
+    let argv: Vec<String> = ["--task", "hi", "--inference", "m"]
+        .map(String::from)
+        .to_vec();
     let error = gait_cli::cli::run::cmd_run(&argv, gait_dir.clone(), repo.clone())
         .await
         .expect_err("the turn fails");

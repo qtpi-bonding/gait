@@ -278,10 +278,7 @@ pub async fn run_loop(
                 record_session_update(&session.repos, gait_dir, session_id, bodies)?;
                 continue;
             }
-            TurnStart::Input {
-                bodies,
-                on_durable,
-            } => (bodies, on_durable),
+            TurnStart::Input { bodies, on_durable } => (bodies, on_durable),
             TurnStart::Resume => (Vec::new(), None),
         };
         let launch = driver.brain_launch(session_id);

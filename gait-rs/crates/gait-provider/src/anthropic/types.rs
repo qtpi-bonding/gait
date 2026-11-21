@@ -294,9 +294,11 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                             // the bounded/escaped attribution itself -- an
                             // empty body is fine, the real text follows as its
                             // own block(s) below.
-                            let marker =
-                                gait_types::types::render_attributed_messages(attribution, &[String::new()])
-                                    .unwrap_or_default();
+                            let marker = gait_types::types::render_attributed_messages(
+                                attribution,
+                                &[String::new()],
+                            )
+                            .unwrap_or_default();
                             blocks.push(AnthropicBlock::Text {
                                 text: marker,
                                 cache_control: None,

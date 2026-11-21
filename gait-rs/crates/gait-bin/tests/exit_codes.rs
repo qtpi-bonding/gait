@@ -2,7 +2,8 @@ use std::process::{Command, Stdio};
 
 fn gait() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gait"));
-    cmd.stdin(Stdio::null()).env_remove("OTEL_EXPORTER_OTLP_ENDPOINT");
+    cmd.stdin(Stdio::null())
+        .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT");
     cmd
 }
 
@@ -49,7 +50,11 @@ fn missing_gait_dir_flag_exits_65() {
 #[test]
 fn missing_session_exits_65() {
     let workspace = tempfile::TempDir::new().unwrap();
-    let init = gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap();
+    let init = gait()
+        .args(["init", "--gait-dir"])
+        .arg(workspace.path())
+        .status()
+        .unwrap();
     assert!(init.success());
     let status = gait()
         .args(["allow", "--id", "nosuch", "--gait-dir"])
@@ -63,7 +68,11 @@ fn missing_session_exits_65() {
 /// not-found (exit 65, "not found" on stderr), never success.
 fn assert_not_found(args: &[&str]) {
     let workspace = tempfile::TempDir::new().unwrap();
-    let init = gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap();
+    let init = gait()
+        .args(["init", "--gait-dir"])
+        .arg(workspace.path())
+        .status()
+        .unwrap();
     assert!(init.success());
     let output = gait()
         .args(args)
@@ -133,12 +142,24 @@ fn reply_unknown_session_is_not_found() {
 
 #[test]
 fn load_skill_into_unknown_session_is_not_found() {
-    assert_not_found(&["load", "--kind", "skill", "--id", "x", "--session", "nosuch"]);
+    assert_not_found(&[
+        "load",
+        "--kind",
+        "skill",
+        "--id",
+        "x",
+        "--session",
+        "nosuch",
+    ]);
 }
 
 fn assert_usage(args: &[&str]) {
     let workspace = tempfile::TempDir::new().unwrap();
-    let init = gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap();
+    let init = gait()
+        .args(["init", "--gait-dir"])
+        .arg(workspace.path())
+        .status()
+        .unwrap();
     assert!(init.success());
     let output = gait()
         .args(args)
@@ -178,8 +199,30 @@ fn bulk_persist_and_discard_need_yes() {
 
 #[test]
 fn register_with_two_sources_is_a_usage_error() {
-    assert_usage(&["register", "--id", "x", "--kind", "mcp", "--url", "http://a", "--command", "b"]);
-    assert_usage(&["register", "--id", "x", "--kind", "skill", "--description", "d", "--content", "c", "--path", "p"]);
+    assert_usage(&[
+        "register",
+        "--id",
+        "x",
+        "--kind",
+        "mcp",
+        "--url",
+        "http://a",
+        "--command",
+        "b",
+    ]);
+    assert_usage(&[
+        "register",
+        "--id",
+        "x",
+        "--kind",
+        "skill",
+        "--description",
+        "d",
+        "--content",
+        "c",
+        "--path",
+        "p",
+    ]);
     assert_usage(&["register", "--id", "x", "--kind", "mcp"]);
 }
 
@@ -191,7 +234,12 @@ fn undo_list_with_turn_is_a_usage_error() {
 #[test]
 fn bulk_on_an_empty_workspace_is_an_empty_result() {
     let workspace = tempfile::TempDir::new().unwrap();
-    assert!(gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap().success());
+    assert!(gait()
+        .args(["init", "--gait-dir"])
+        .arg(workspace.path())
+        .status()
+        .unwrap()
+        .success());
     for verb in ["persist", "discard"] {
         let output = gait()
             .arg(verb)
@@ -200,7 +248,11 @@ fn bulk_on_an_empty_workspace_is_an_empty_result() {
             .args(["--all", "--yes"])
             .output()
             .unwrap();
-        assert!(output.status.success(), "{verb}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{verb}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let value: serde_json::Value =
             serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
         assert_eq!(value["acted"], serde_json::json!([]), "{verb}: {value}");

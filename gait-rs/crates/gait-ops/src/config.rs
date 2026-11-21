@@ -56,7 +56,8 @@ pub fn get(gait_dir: &Path, key: &str) -> anyhow::Result<Option<serde_json::Valu
 /// Whether `key` is a top-level field of the config schema (set or not).
 /// `get` of an unset known key is `None`; of an unknown key, not found.
 fn is_known_key(key: &str) -> bool {
-    let defaults = serde_json::to_value(gait_state::config::GaitConfig::default()).unwrap_or_default();
+    let defaults =
+        serde_json::to_value(gait_state::config::GaitConfig::default()).unwrap_or_default();
     // Fields serialized only when set are not in the default's JSON.
     const OPTIONAL: &[&str] = &["inference", "result_schema"];
     OPTIONAL.contains(&key) || defaults.get(key).is_some()
@@ -74,11 +75,14 @@ pub fn resolve(gait_dir: &Path, codebase: &Path) -> anyhow::Result<serde_json::V
     let config = gait_state::config::load_config(gait_dir);
     let skills = gait_state::skills::scan_skills(gait_dir);
     let mcp_servers = gait_state::mcp::scan_mcp_servers(gait_dir);
-    let mut value = serde_json::to_value(&config)
-        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("config serialize error: {e}"))))?;
-    let obj = value
-        .as_object_mut()
-        .ok_or_else(|| coded_error::into_anyhow(OpError::Conflict("resolved config is not a JSON object".to_string())))?;
+    let mut value = serde_json::to_value(&config).map_err(|e| {
+        coded_error::into_anyhow(OpError::Conflict(format!("config serialize error: {e}")))
+    })?;
+    let obj = value.as_object_mut().ok_or_else(|| {
+        coded_error::into_anyhow(OpError::Conflict(
+            "resolved config is not a JSON object".to_string(),
+        ))
+    })?;
     obj.insert("skills".to_string(), serde_json::to_value(&skills).unwrap());
     obj.insert(
         "mcp_servers".to_string(),
@@ -104,7 +108,10 @@ fn read_config_object(path: &Path) -> anyhow::Result<serde_json::Map<String, ser
     let raw = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let stripped = gait_state::config::strip_jsonc_comments(&raw);
     let val: serde_json::Value = serde_json::from_str(&stripped).map_err(|e| {
-        coded_error::into_anyhow(OpError::Conflict(format!("gait.jsonc parse error in {}: {e}", path.display())))
+        coded_error::into_anyhow(OpError::Conflict(format!(
+            "gait.jsonc parse error in {}: {e}",
+            path.display()
+        )))
     })?;
     match val {
         serde_json::Value::Object(m) => Ok(m),
@@ -122,10 +129,14 @@ fn write_config_object(
     path: &Path,
     obj: serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<()> {
-    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
-        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("gait.jsonc serialize error: {e}"))))?;
-    std::fs::write(path, pretty + "\n")
-        .map_err(|e| coded_error::into_anyhow(OpError::Conflict(format!("write {}: {e}", path.display()))))
+    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj)).map_err(|e| {
+        coded_error::into_anyhow(OpError::Conflict(format!(
+            "gait.jsonc serialize error: {e}"
+        )))
+    })?;
+    std::fs::write(path, pretty + "\n").map_err(|e| {
+        coded_error::into_anyhow(OpError::Conflict(format!("write {}: {e}", path.display())))
+    })
 }
 
 fn json_root_kind(v: &serde_json::Value) -> &'static str {
@@ -259,7 +270,10 @@ mod tests {
 
         let err = set(dir.path(), "max_iter", serde_json::json!(50)).unwrap_err();
         assert!(
-            matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))),
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::Conflict(_))
+            ),
             "malformed config must surface as Conflict, got {err:?}"
         );
 
@@ -279,7 +293,10 @@ mod tests {
 
         let err = set(dir.path(), "max_iter", serde_json::json!(50)).unwrap_err();
         assert!(
-            matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::Conflict(_))),
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::Conflict(_))
+            ),
             "non-object root must surface as Conflict, got {err:?}"
         );
         let after = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
@@ -301,7 +318,13 @@ mod tests {
         let dir = ws();
         std::fs::write(dir.path().join("gait.jsonc"), "{}\n").unwrap();
         let err = get(dir.path(), "nope").unwrap_err();
-        assert!(matches!(coded_error::downcast_ref::<OpError>(&err), Some(OpError::NotFound(_))), "{err:?}");
+        assert!(
+            matches!(
+                coded_error::downcast_ref::<OpError>(&err),
+                Some(OpError::NotFound(_))
+            ),
+            "{err:?}"
+        );
         assert_eq!(get(dir.path(), "max_iter").unwrap(), None);
         assert_eq!(get(dir.path(), "inference").unwrap(), None);
     }

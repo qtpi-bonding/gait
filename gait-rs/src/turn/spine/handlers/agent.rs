@@ -309,10 +309,10 @@ mod telemetry_tests {
         let capture = concord_telemetry::testing::capture_exclusive();
         let child = format!("child-{}", std::process::id());
         emit_agent_spawned(&child, "parent", "researcher");
-        let event = capture
-            .single_event_where::<gait_events::gait::events::v1::AgentSpawned>(
-                |value| value.source_record_id == child,
-            );
+        let event =
+            capture.single_event_where::<gait_events::gait::events::v1::AgentSpawned>(|value| {
+                value.source_record_id == child
+            });
         assert_eq!(event.gait_session_id, "parent");
         assert_eq!(event.child_session_id, child);
         assert_eq!(event.agent_name, "researcher");

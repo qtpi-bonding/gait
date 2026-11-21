@@ -88,7 +88,10 @@ pub(crate) fn brain_ids() -> (String, String) {
 /// the spine's turn.
 pub(crate) fn brain_span(session_id: &str) -> Span {
     BRAIN_IDS.get_or_init(|| {
-        (session_id.to_owned(), std::env::var(TURN_ID_ENV).unwrap_or_default())
+        (
+            session_id.to_owned(),
+            std::env::var(TURN_ID_ENV).unwrap_or_default(),
+        )
     });
     #[cfg(feature = "telemetry")]
     {
@@ -184,7 +187,9 @@ pub(crate) fn tool_span(tool: &str, session_id: &str, turn_id: &str) -> Span {
 /// How a tool call ended, from what the spine can see of its feedback: a
 /// permission denial, a sandbox denial, or a tool-reported error. A command
 /// that ran and exited non-zero is an ordinary result, not a failure here.
-pub(crate) fn tool_outcome_code(feedback: &gait_proto::gait::sandbox::v1::Feedback) -> Option<&'static str> {
+pub(crate) fn tool_outcome_code(
+    feedback: &gait_proto::gait::sandbox::v1::Feedback,
+) -> Option<&'static str> {
     if feedback.denied.is_some() {
         Some("gait.tool.permission_denied")
     } else if feedback.sandbox_denied.is_some() {
@@ -277,12 +282,27 @@ mod tests {
     #[test]
     fn a_tool_outcome_names_the_denial_or_error() {
         assert_eq!(tool_outcome_code(&Feedback::default()), None);
-        let sandbox = Feedback { sandbox_denied: Some(Default::default()), ..Default::default() };
-        assert_eq!(tool_outcome_code(&sandbox), Some("gait.tool.sandbox_denied"));
-        let failed = Feedback { is_error: Some(true), ..Default::default() };
+        let sandbox = Feedback {
+            sandbox_denied: Some(Default::default()),
+            ..Default::default()
+        };
+        assert_eq!(
+            tool_outcome_code(&sandbox),
+            Some("gait.tool.sandbox_denied")
+        );
+        let failed = Feedback {
+            is_error: Some(true),
+            ..Default::default()
+        };
         assert_eq!(tool_outcome_code(&failed), Some("gait.tool.failed"));
-        let denied = Feedback { denied: Some(Default::default()), ..Default::default() };
-        assert_eq!(tool_outcome_code(&denied), Some("gait.tool.permission_denied"));
+        let denied = Feedback {
+            denied: Some(Default::default()),
+            ..Default::default()
+        };
+        assert_eq!(
+            tool_outcome_code(&denied),
+            Some("gait.tool.permission_denied")
+        );
     }
 
     #[cfg(feature = "telemetry")]
@@ -302,7 +322,10 @@ mod tests {
     #[serial_test::serial]
     fn the_hand_span_continues_the_trace_in_its_environment() {
         let _capture = concord_telemetry::testing::capture_exclusive();
-        std::env::set_var("TRACEPARENT", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+        std::env::set_var(
+            "TRACEPARENT",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        );
         let span = super::hand_span("shell", "s-hand");
         std::env::remove_var("TRACEPARENT");
         super::record_error_code(&span, &anyhow::anyhow!("plain"));
@@ -312,8 +335,14 @@ mod tests {
             .rev()
             .find(|s| s.name == "gait.hand")
             .expect("the hand span finished");
-        assert_eq!(finished.span_context.trace_id().to_string(), "0af7651916cd43dd8448eb211c80319c");
+        assert_eq!(
+            finished.span_context.trace_id().to_string(),
+            "0af7651916cd43dd8448eb211c80319c"
+        );
         assert_eq!(finished.parent_span_id.to_string(), "b7ad6b7169203331");
-        assert!(finished.attributes.iter().any(|kv| kv.key.as_str() == "error.code"));
+        assert!(finished
+            .attributes
+            .iter()
+            .any(|kv| kv.key.as_str() == "error.code"));
     }
 }

@@ -30,7 +30,14 @@ fn cmd_reply_answers_pending_clarify_via_subprocess() {
     );
     let exe = env!("CARGO_BIN_EXE_gait");
     let output = std::process::Command::new(exe)
-        .args(["reply", "--id", "scli02", "--message", "postgres", "--gait-dir"])
+        .args([
+            "reply",
+            "--id",
+            "scli02",
+            "--message",
+            "postgres",
+            "--gait-dir",
+        ])
         .arg(ws.path())
         .output()
         .unwrap();
@@ -58,7 +65,14 @@ fn cmd_reply_errors_when_nothing_pending_via_subprocess() {
     let _tx = make_session(ws.path(), "scli03");
     let exe = env!("CARGO_BIN_EXE_gait");
     let output = std::process::Command::new(exe)
-        .args(["reply", "--id", "scli03", "--message", "postgres", "--gait-dir"])
+        .args([
+            "reply",
+            "--id",
+            "scli03",
+            "--message",
+            "postgres",
+            "--gait-dir",
+        ])
         .arg(ws.path())
         .output()
         .unwrap();
@@ -76,5 +90,10 @@ fn reply_without_a_message_is_a_usage_error() {
         .arg(ws.path())
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

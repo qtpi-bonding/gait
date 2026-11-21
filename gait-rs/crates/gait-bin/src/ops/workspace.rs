@@ -61,9 +61,21 @@ fn scaffold_files() -> Vec<ScaffoldFile> {
     };
     vec![
         file("gait.jsonc", "model + tool-permission config", "committed"),
-        file("agents/default/AGENT.md", "the agent's role and instructions", "committed"),
-        file("USER.md", "your personal instructions (not shared)", "ignored"),
-        file("skills/", "installed skills (skills/<n>/SKILL.md)", "committed (empty dir; tracked once you add skills)"),
+        file(
+            "agents/default/AGENT.md",
+            "the agent's role and instructions",
+            "committed",
+        ),
+        file(
+            "USER.md",
+            "your personal instructions (not shared)",
+            "ignored",
+        ),
+        file(
+            "skills/",
+            "installed skills (skills/<n>/SKILL.md)",
+            "committed (empty dir; tracked once you add skills)",
+        ),
         file("sessions/", "turn history", "ignored"),
     ]
 }
@@ -72,14 +84,18 @@ fn scaffold_files() -> Vec<ScaffoldFile> {
 /// a usage error: neither `init` nor `link` guesses a directory.
 fn target(ctx: &GaitContext) -> anyhow::Result<PathBuf> {
     let Some(dir) = ctx.gait_dir_flag() else {
-        return Err(coded_error::into_anyhow(op_registry::UsageError::MissingField {
-            name: "gait-dir".to_owned(),
-        }));
+        return Err(coded_error::into_anyhow(
+            op_registry::UsageError::MissingField {
+                name: "gait-dir".to_owned(),
+            },
+        ));
     };
     Ok(if dir.is_absolute() {
         dir.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(dir)
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(dir)
     })
 }
 
@@ -124,4 +140,3 @@ pub async fn link(
         target: out.target.display().to_string(),
     })
 }
-

@@ -178,7 +178,10 @@ mod coded_error_tests {
     #[test]
     fn compaction_error_codes_and_classes_per_variant() {
         let cases = [
-            (Error::UnsafePendingToolCall, "gait.compaction.unsafe_pending_tool_call"),
+            (
+                Error::UnsafePendingToolCall,
+                "gait.compaction.unsafe_pending_tool_call",
+            ),
             (Error::Cancelled, "gait.compaction.cancelled"),
             (
                 Error::Provider(anyhow::anyhow!("boom")),

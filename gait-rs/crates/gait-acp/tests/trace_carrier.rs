@@ -145,7 +145,6 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     (t, gait_dir, repo)
 }
 
-
 fn meta_of(c: &TraceCarrier) -> serde_json::Map<String, serde_json::Value> {
     c.to_pairs()
         .into_iter()
@@ -183,7 +182,9 @@ async fn cancel_meta_parents_acp_cancel_and_links_from_acp_prompt() {
     write_frames(
         &gait_dir,
         0,
-        &[forward_event(gait_core::proto::events::assistant_text("working".into()))],
+        &[forward_event(gait_core::proto::events::assistant_text(
+            "working".into(),
+        ))],
     );
     std::fs::write(gait_dir.join("mock_hang_ms"), "10000").unwrap();
     let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
@@ -192,7 +193,11 @@ async fn cancel_meta_parents_acp_cancel_and_links_from_acp_prompt() {
     let stop = Client
         .builder()
         .connect_with(channel, async |cx| {
-            let sid = cx.send_request(NewSessionRequest::new(repo.clone())).block_task().await?.session_id;
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
             let (cx2, sid2) = (cx.clone(), sid.clone());
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -212,7 +217,10 @@ async fn cancel_meta_parents_acp_cancel_and_links_from_acp_prompt() {
     drop(origin);
 
     let cancel = finished!("acp.cancel");
-    assert_eq!(cancel.span_context.trace_id().to_string(), trace_id_of(&sent));
+    assert_eq!(
+        cancel.span_context.trace_id().to_string(),
+        trace_id_of(&sent)
+    );
     assert_eq!(cancel.parent_span_id.to_string(), span_id_of(&sent));
 
     let prompt = finished!("acp.prompt");
@@ -221,7 +229,11 @@ async fn cancel_meta_parents_acp_cancel_and_links_from_acp_prompt() {
         "the running prompt notes the cancel"
     );
     assert!(
-        prompt.links.links.iter().any(|l| l.span_context.span_id() == cancel.span_context.span_id()),
+        prompt
+            .links
+            .links
+            .iter()
+            .any(|l| l.span_context.span_id() == cancel.span_context.span_id()),
         "the prompt links to the cancel that stopped it"
     );
 }
@@ -236,7 +248,11 @@ async fn permission_answer_links_not_parents() {
         &gait_dir,
         0,
         &[
-            append_event(gait_core::proto::events::permissions(&[perm_item("tc1", "ls", &["ls"])])),
+            append_event(gait_core::proto::events::permissions(&[perm_item(
+                "tc1",
+                "ls",
+                &["ls"],
+            )])),
             terminated(r#"{"permissions":{}}"#),
         ],
     );
@@ -270,15 +286,31 @@ async fn permission_answer_links_not_parents() {
     drop(origin);
 
     let answer = finished!("acp.answer");
-    assert_ne!(answer.span_context.trace_id().to_string(), trace_id_of(&sent), "an answer is never parented on the answerer");
+    assert_ne!(
+        answer.span_context.trace_id().to_string(),
+        trace_id_of(&sent),
+        "an answer is never parented on the answerer"
+    );
     assert_eq!(answer.links.links.len(), 1);
-    assert_eq!(answer.links.links[0].span_context.trace_id().to_string(), trace_id_of(&sent));
+    assert_eq!(
+        answer.links.links[0].span_context.trace_id().to_string(),
+        trace_id_of(&sent)
+    );
 
     // The request gait sent to the client has a span of its own, under the prompt.
     let request = finished!("acp.request_permission");
     let prompt = finished!("acp.prompt");
-    assert_eq!(request.parent_span_id, prompt.span_context.span_id(), "the permission request sits under the prompt");
-    assert!(request.attributes.iter().any(|kv| kv.key.as_str() == "acp_session_id"));
+    assert_eq!(
+        request.parent_span_id,
+        prompt.span_context.span_id(),
+        "the permission request sits under the prompt"
+    );
+    assert!(
+        request
+            .attributes
+            .iter()
+            .any(|kv| kv.key.as_str() == "acp_session_id")
+    );
 }
 
 macro_rules! attr {
@@ -321,7 +353,9 @@ async fn no_span_repeats_a_key_or_conflicts_with_a_label() {
     write_frames(
         &gait_dir,
         0,
-        &[forward_event(gait_core::proto::events::assistant_text("working".into()))],
+        &[forward_event(gait_core::proto::events::assistant_text(
+            "working".into(),
+        ))],
     );
     std::fs::write(gait_dir.join("mock_hang_ms"), "10000").unwrap();
     let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
@@ -330,7 +364,11 @@ async fn no_span_repeats_a_key_or_conflicts_with_a_label() {
     Client
         .builder()
         .connect_with(channel, async |cx| {
-            let sid = cx.send_request(NewSessionRequest::new(repo.clone())).block_task().await?.session_id;
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
             let (cx2, sid2) = (cx.clone(), sid.clone());
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -351,23 +389,43 @@ async fn no_span_repeats_a_key_or_conflicts_with_a_label() {
     for span in &spans {
         let mut keys: Vec<&str> = span.attributes.iter().map(|kv| kv.key.as_str()).collect();
         keys.sort_unstable();
-        let repeated: Vec<&str> = keys.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0]).collect();
+        let repeated: Vec<&str> = keys
+            .windows(2)
+            .filter(|w| w[0] == w[1])
+            .map(|w| w[0])
+            .collect();
         // The same label stamped twice with one value is the library's to
         // collapse; a key with two different values is a conflict.
         for key in repeated {
             let mut values = attr!(span, key);
             values.sort_unstable();
             values.dedup();
-            assert_eq!(values.len(), 1, "span {} holds {key} with different values: {values:?}", span.name);
+            assert_eq!(
+                values.len(),
+                1,
+                "span {} holds {key} with different values: {values:?}",
+                span.name
+            );
         }
     }
     let prompt = finished!("acp.prompt");
-    assert_eq!(attr!(prompt, "request_id"), vec!["mm-1".to_owned()], "the cancel's request_id leaked onto the prompt");
+    assert_eq!(
+        attr!(prompt, "request_id"),
+        vec!["mm-1".to_owned()],
+        "the cancel's request_id leaked onto the prompt"
+    );
     assert_eq!(attr!(prompt, "session_id"), vec!["grorg-s1".to_owned()]);
     assert_eq!(attr!(prompt, "acp_session_id").len(), 1);
-    for span in spans.iter().filter(|s| s.name.starts_with("acp.") || s.name.starts_with("gait.")) {
+    for span in spans
+        .iter()
+        .filter(|s| s.name.starts_with("acp.") || s.name.starts_with("gait."))
+    {
         for value in attr!(span, "session_id") {
-            assert_eq!(value, "grorg-s1", "span {} puts a gait session id under the session_id label", span.name);
+            assert_eq!(
+                value, "grorg-s1",
+                "span {} puts a gait session id under the session_id label",
+                span.name
+            );
         }
     }
 }

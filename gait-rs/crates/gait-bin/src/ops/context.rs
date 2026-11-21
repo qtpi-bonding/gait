@@ -49,7 +49,9 @@ impl CliContext for GaitContext {
     type Globals = Globals;
 
     fn from_globals(globals: &Globals) -> anyhow::Result<Self> {
-        Ok(GaitContext { gait_dir_flag: globals.gait_dir.clone() })
+        Ok(GaitContext {
+            gait_dir_flag: globals.gait_dir.clone(),
+        })
     }
 }
 

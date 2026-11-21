@@ -14,7 +14,11 @@ fn second_init_reports_the_shared_init_failure_line() {
         return;
     }
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "second_init_reports_the_shared_init_failure_line", "--nocapture"])
+        .args([
+            "--exact",
+            "second_init_reports_the_shared_init_failure_line",
+            "--nocapture",
+        ])
         .env(CHILD, "1")
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
         .output()
@@ -29,5 +33,8 @@ fn second_init_reports_the_shared_init_failure_line() {
     assert_eq!(value["level"], "error");
     assert_eq!(value["code"], "telemetry_init_failed", "{line}");
     assert_eq!(value["service"], "gait-init-failed-test");
-    assert!(value["message"].as_str().is_some_and(|m| !m.is_empty()), "{line}");
+    assert!(
+        value["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "{line}"
+    );
 }

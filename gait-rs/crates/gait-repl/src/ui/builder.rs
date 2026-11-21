@@ -159,9 +159,7 @@ impl ReplBuilder {
         match self.state.take_pending() {
             Pending::Clarify(items) => self.run_clarify(items),
             Pending::Inform(items) => self.run_inform(items),
-            Pending::Permission(items) => {
-                self.run_permission(items, gait_dir, session_id)
-            }
+            Pending::Permission(items) => self.run_permission(items, gait_dir, session_id),
             Pending::None => anyhow::bail!("run_interaction called with no pending interaction"),
         }
     }
@@ -375,9 +373,12 @@ impl ReplBuilder {
                 }
             };
 
-            if let Err(e) =
-                gait_core::permissions::save_choice(&choice, gait_dir, session_id, gait_ops::permission::resolve_active_mode_name(gait_dir, session_id).as_deref())
-            {
+            if let Err(e) = gait_core::permissions::save_choice(
+                &choice,
+                gait_dir,
+                session_id,
+                gait_ops::permission::resolve_active_mode_name(gait_dir, session_id).as_deref(),
+            ) {
                 eprint!("[gait] warning: could not save permission: {e}\r\n");
             }
 

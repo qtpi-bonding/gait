@@ -130,9 +130,8 @@ pub fn self_identity_block(agent_id: &str, name: Option<&str>, reply: Option<&st
         Some(name) => format!("You are {name} ({agent_id})."),
         None => format!("You are {agent_id}."),
     };
-    let mut block = format!(
-        "{who} Messages that mention this id, or are addressed to=\"you\", are for you."
-    );
+    let mut block =
+        format!("{who} Messages that mention this id, or are addressed to=\"you\", are for you.");
     if let Some(reply) = reply.map(str::trim).filter(|r| !r.is_empty()) {
         block.push(' ');
         block.push_str(reply);
@@ -144,7 +143,11 @@ pub fn self_identity_block(agent_id: &str, name: Option<&str>, reply: Option<&st
 /// The block for the current process, when a self identity is installed.
 pub fn process_self_identity_block() -> Option<String> {
     let si = SELF_IDENTITY.get()?;
-    Some(self_identity_block(&si.agent_id, si.name.as_deref(), si.reply_instructions.as_deref()))
+    Some(self_identity_block(
+        &si.agent_id,
+        si.name.as_deref(),
+        si.reply_instructions.as_deref(),
+    ))
 }
 
 pub fn content_hash_short(s: &str) -> String {
@@ -161,7 +164,8 @@ pub fn content_hash_short(s: &str) -> String {
 mod tests {
     #[test]
     fn self_identity_block_uses_id_name_and_reply_text() {
-        let b = super::self_identity_block("p256:ab", Some("Ada"), Some("Reply with send_message."));
+        let b =
+            super::self_identity_block("p256:ab", Some("Ada"), Some("Reply with send_message."));
         assert_eq!(
             b,
             "You are Ada (p256:ab). Messages that mention this id, or are addressed to=\"you\", are for you. Reply with send_message.\n"

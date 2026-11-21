@@ -332,8 +332,14 @@ mod tests {
             ("gait.provider.http", ErrorClass::Infrastructure),
             ("gait.provider.overloaded", ErrorClass::Infrastructure),
             ("gait.provider.sse", ErrorClass::Infrastructure),
-            ("gait.provider.stream_incomplete", ErrorClass::Infrastructure),
-            ("gait.provider.response_too_large", ErrorClass::Infrastructure),
+            (
+                "gait.provider.stream_incomplete",
+                ErrorClass::Infrastructure,
+            ),
+            (
+                "gait.provider.response_too_large",
+                ErrorClass::Infrastructure,
+            ),
             ("gait.provider.json", ErrorClass::Infrastructure),
             ("gait.provider.other", ErrorClass::Infrastructure),
         ];

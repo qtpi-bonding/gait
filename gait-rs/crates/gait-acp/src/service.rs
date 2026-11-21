@@ -69,7 +69,10 @@ mod tests {
         let capture = concord_telemetry::testing::capture_exclusive();
         started();
         stopping("signal");
-        assert_eq!(capture.events_where::<ev::ServiceStarted>(|_| true).len(), 1);
+        assert_eq!(
+            capture.events_where::<ev::ServiceStarted>(|_| true).len(),
+            1
+        );
         let stopped = capture.single_event_where::<ev::ServiceStopping>(|e| e.reason == "signal");
         assert_eq!(stopped.reason, "signal");
     }
@@ -80,7 +83,11 @@ mod tests {
         spawn_alive_every(Duration::from_millis(40));
         tokio::time::sleep(Duration::from_millis(250)).await;
         let alive = capture.events_where::<ev::ServiceAlive>(|_| true);
-        assert!(alive.len() >= 3, "several ticks in 250 ms, got {}", alive.len());
+        assert!(
+            alive.len() >= 3,
+            "several ticks in 250 ms, got {}",
+            alive.len()
+        );
         assert!(alive[0].uptime_ms >= 40);
         assert!(alive[0].source_record_id.starts_with("gait-acp:"));
     }

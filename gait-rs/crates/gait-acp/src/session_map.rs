@@ -162,7 +162,11 @@ impl SessionMap {
 
     /// The current turn's `acp.prompt` span, if the session has one.
     pub fn prompt_span(&self, session_id: &str) -> Option<tracing::Span> {
-        self.0.lock().unwrap().get(session_id).and_then(|e| e.prompt_span.clone())
+        self.0
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|e| e.prompt_span.clone())
     }
 
     /// Who cancelled the current turn and why, if a cause was recorded.
@@ -178,11 +182,7 @@ impl SessionMap {
     /// pending permission await) and `kill()` the cascade (SIGTERM a running
     /// brain). Peeks — does NOT take the cascade, which the turn thread's own
     /// completion path still calls `take_cascade` on. No-op on unknown session.
-    pub fn cancel(
-        &self,
-        session_id: &str,
-        cause: Option<gait_state::proto::events::CancelCause>,
-    ) {
+    pub fn cancel(&self, session_id: &str, cause: Option<gait_state::proto::events::CancelCause>) {
         let guard = self.0.lock().unwrap();
         if let Some(entry) = guard.get(session_id) {
             crate::notice_meta::record_cause(&entry.cancel_cause, cause);

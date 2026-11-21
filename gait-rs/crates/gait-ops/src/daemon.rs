@@ -142,12 +142,9 @@ pub fn stop(gait_dir: &Path, name: &str) -> anyhow::Result<StopOutcome> {
     use gait_state::session::daemons::{active, append_stop, is_alive};
 
     let recs = active(gait_dir)?;
-    let rec = recs
-        .iter()
-        .find(|r| r.name == name)
-        .ok_or_else(|| {
-            coded_error::into_anyhow(OpError::NotFound(format!("no daemon named '{}'", name)))
-        })?;
+    let rec = recs.iter().find(|r| r.name == name).ok_or_else(|| {
+        coded_error::into_anyhow(OpError::NotFound(format!("no daemon named '{}'", name)))
+    })?;
 
     let was_alive = is_alive(rec);
     let pid = rec.pid;

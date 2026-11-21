@@ -73,13 +73,12 @@ pub fn discover_with(platform: &dyn Platform, start: &Path) -> anyhow::Result<Pa
 /// optional `gaitdir:` prefix, then a path (`~`-expanded; absolute verbatim;
 /// relative resolved against the `.gaitref` file's own directory).
 fn read_gaitref_with(platform: &dyn Platform, marker: &Path) -> anyhow::Result<PathBuf> {
-    let raw = std::fs::read_to_string(marker)
-        .map_err(|e| {
-            coded_error::into_anyhow(GaitDirError::GaitrefUnreadable {
-                path: marker.display().to_string(),
-                why: e.to_string(),
-            })
-        })?;
+    let raw = std::fs::read_to_string(marker).map_err(|e| {
+        coded_error::into_anyhow(GaitDirError::GaitrefUnreadable {
+            path: marker.display().to_string(),
+            why: e.to_string(),
+        })
+    })?;
     let line = raw
         .lines()
         .map(str::trim)

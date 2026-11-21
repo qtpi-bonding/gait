@@ -133,7 +133,8 @@ pub fn start_telemetry(
     default_service: &'static str,
     agent_id: Option<String>,
 ) -> TelemetryGuard {
-    let service = gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), default_service);
+    let service =
+        gait_core::telemetry::service_for_argv(raw.get(1).map(String::as_str), default_service);
     if is_hand_argv(raw) {
         defer_telemetry(service, agent_id)
     } else {
@@ -170,7 +171,9 @@ mod tests {
     fn agent_dir_flag_sets_gait_agent_dir_env() {
         let value = format!("/nonexistent/gait-agent-dir-flag-{}", std::process::id());
         let previous = std::env::var_os("GAIT_AGENT_DIR");
-        let raw: Vec<String> = ["gait", "sessions", "--agent-dir", value.as_str()].map(String::from).to_vec();
+        let raw: Vec<String> = ["gait", "sessions", "--agent-dir", value.as_str()]
+            .map(String::from)
+            .to_vec();
         apply_agent_dir_flag(&raw);
         let observed = std::env::var_os("GAIT_AGENT_DIR");
         match previous {
@@ -218,7 +221,8 @@ mod tests {
         use tokio::runtime::RuntimeFlavor;
         let flavor = |arg: &str| {
             let raw = vec!["gait".to_string(), arg.to_string()];
-            build_runtime(&raw).block_on(async { tokio::runtime::Handle::current().runtime_flavor() })
+            build_runtime(&raw)
+                .block_on(async { tokio::runtime::Handle::current().runtime_flavor() })
         };
         assert!(is_hand_argv(&["gait".into(), "__run-tool".into()]));
         assert!(!is_hand_argv(&["gait".into(), "__brain".into()]));
@@ -237,11 +241,20 @@ mod tests {
     #[test]
     fn agent_dir_is_read_from_raw_argv_in_both_spellings() {
         let raw = |args: &[&str]| -> Vec<String> {
-            std::iter::once("gait").chain(args.iter().copied()).map(String::from).collect()
+            std::iter::once("gait")
+                .chain(args.iter().copied())
+                .map(String::from)
+                .collect()
         };
         let path = |p: &str| Some(std::path::PathBuf::from(p));
-        assert_eq!(agent_dir_arg(&raw(&["--agent-dir", "/a", "task"])), path("/a"));
-        assert_eq!(agent_dir_arg(&raw(&["sessions", "--agent-dir=/b"])), path("/b"));
+        assert_eq!(
+            agent_dir_arg(&raw(&["--agent-dir", "/a", "task"])),
+            path("/a")
+        );
+        assert_eq!(
+            agent_dir_arg(&raw(&["sessions", "--agent-dir=/b"])),
+            path("/b")
+        );
         assert_eq!(agent_dir_arg(&raw(&["--", "--agent-dir", "/c"])), None);
         assert_eq!(agent_dir_arg(&raw(&["task"])), None);
     }
@@ -253,12 +266,18 @@ mod tests {
 
     #[test]
     fn finish_maps_logical_error_to_65() {
-        assert_eq!(finish(Err(gait_cli::cli::error::CliError::not_found("missing"))), ExitCode::from(65));
+        assert_eq!(
+            finish(Err(gait_cli::cli::error::CliError::not_found("missing"))),
+            ExitCode::from(65)
+        );
     }
 
     #[test]
     fn finish_maps_infrastructure_error_to_69() {
-        assert_eq!(finish(Err(gait_cli::cli::error::CliError::failed("broken"))), ExitCode::from(69));
+        assert_eq!(
+            finish(Err(gait_cli::cli::error::CliError::failed("broken"))),
+            ExitCode::from(69)
+        );
     }
 
     #[test]
@@ -279,7 +298,9 @@ mod tests {
             }
         }
 
-        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
         let mut files = Vec::new();
         for relative in ["gait-cli/src", "gait-repl/src"] {
             rust_files(&crates.join(relative), &mut files);
@@ -290,12 +311,18 @@ mod tests {
             .iter()
             .filter_map(|path| {
                 let source = std::fs::read_to_string(path).unwrap();
-                source.lines().any(|line| {
-                    let code = line.split("//").next().unwrap_or("");
-                    code.contains("process::exit")
-                }).then_some(path.display().to_string())
+                source
+                    .lines()
+                    .any(|line| {
+                        let code = line.split("//").next().unwrap_or("");
+                        code.contains("process::exit")
+                    })
+                    .then_some(path.display().to_string())
             })
             .collect();
-        assert!(offenders.is_empty(), "process::exit remains in: {offenders:?}");
+        assert!(
+            offenders.is_empty(),
+            "process::exit remains in: {offenders:?}"
+        );
     }
 }

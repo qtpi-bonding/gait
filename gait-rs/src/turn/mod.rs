@@ -517,7 +517,9 @@ pub async fn run_turn(
             let summary = match compaction::summarize_with_retry(&env, &outgoing).await {
                 Ok(summary) => summary,
                 Err(compaction::Error::Cancelled) => break 'turn finalize::StepOutcome::Cancelled,
-                Err(error) => break 'turn finalize::StepOutcome::Fail(coded_error::into_anyhow(error)),
+                Err(error) => {
+                    break 'turn finalize::StepOutcome::Fail(coded_error::into_anyhow(error))
+                }
             };
             emitter.set_scope(crate::proto::envelope::EventScope::Session);
             emitter.record(events::summary(
@@ -538,7 +540,9 @@ pub async fn run_turn(
             let all_events = ingestor.events()?;
             let mut step_muts = active_mutations(&all_events);
             apply_cascade(&mut step_muts, &all_events);
-            outgoing = coalesce(run_projection(&ActiveRawMessages::default(), &all_events, &step_muts).base);
+            outgoing = coalesce(
+                run_projection(&ActiveRawMessages::default(), &all_events, &step_muts).base,
+            );
             let rebuilt = compaction::estimate(
                 &outgoing,
                 &system_prompt,

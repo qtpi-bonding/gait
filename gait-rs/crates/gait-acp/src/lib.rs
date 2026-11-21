@@ -13,8 +13,8 @@ pub mod last_turn;
 pub mod lifecycle;
 pub mod notice_meta;
 pub mod renew;
-pub mod session_map;
 pub mod service;
+pub mod session_map;
 pub mod trace_meta;
 pub mod turn_io;
 

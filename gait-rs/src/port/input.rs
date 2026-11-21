@@ -1,4 +1,4 @@
-use crate::proto::gait::log::v1::{Provenance, event};
+use crate::proto::gait::log::v1::{event, Provenance};
 
 /// Core representation of one input message after transport parsing.
 /// Input provenance is attested only (a verified author id from ingress);

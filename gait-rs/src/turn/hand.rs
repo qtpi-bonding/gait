@@ -209,7 +209,10 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     // A detached shell writes its log under `<gait_dir>/daemons/<session>`. Landlock
     // grants rules only to paths that exist when the seal is applied, so create the
     // directory first (a failure surfaces from the tool itself).
-    if config.seal && config.tool == "shell" && args_json.get("detached").and_then(|v| v.as_bool()) == Some(true) {
+    if config.seal
+        && config.tool == "shell"
+        && args_json.get("detached").and_then(|v| v.as_bool()) == Some(true)
+    {
         if std::fs::create_dir_all(config.gait_dir.join("daemons").join(&config.session)).is_err() {
             // The tool's own create_dir_all reports the failure.
         }
@@ -467,7 +470,8 @@ fn local_deny_policy_with(
     let mut read = read;
     // The agent's identity folders: the device key must never reach the model.
     // The spine names them; the minted default beside gait_dir is always covered.
-    let mut identity: Vec<PathBuf> = vec![gait_dir.join("identity"), gait_dir.join("identity-root")];
+    let mut identity: Vec<PathBuf> =
+        vec![gait_dir.join("identity"), gait_dir.join("identity-root")];
     if let Some(list) = var(gait_identity::DENY_PATHS_ENV) {
         identity.extend(std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()));
     }
@@ -517,9 +521,9 @@ fn settle_seal(
         reason: "sandbox apply error".into(),
     });
     match (&status, require) {
-        (crate::sandbox::SandboxStatus::Unavailable { reason }, true) => {
-            Err(SandboxRequired { reason: reason.clone() })
-        }
+        (crate::sandbox::SandboxStatus::Unavailable { reason }, true) => Err(SandboxRequired {
+            reason: reason.clone(),
+        }),
         _ => Ok(status),
     }
 }
@@ -712,7 +716,9 @@ mod tests {
 
     #[test]
     fn require_turns_unavailable_into_a_coded_tool_error() {
-        let msg = settle_seal(true, unavailable()).expect_err("Unavailable must be fatal").to_string();
+        let msg = settle_seal(true, unavailable())
+            .expect_err("Unavailable must be fatal")
+            .to_string();
         assert!(msg.contains("sandbox_required"), "{msg}");
         assert!(msg.contains("landlock is not enabled"), "{msg}");
         // apply returning Err is Unavailable too.
@@ -962,8 +968,14 @@ mod tests {
         };
         let (read, write) = local_deny_policy_with(dir.path(), var);
         let key = machine.path().join("services").join("some.jwk.json");
-        assert!(classify_denial_by_path(&key, &read).is_some(), "read of machine dir must be denied");
-        assert!(classify_denial_by_path(&key, &write).is_some(), "write of machine dir must be denied");
+        assert!(
+            classify_denial_by_path(&key, &read).is_some(),
+            "read of machine dir must be denied"
+        );
+        assert!(
+            classify_denial_by_path(&key, &write).is_some(),
+            "write of machine dir must be denied"
+        );
         assert!(classify_denial_by_path(&machine.path().join("enrolments.json"), &read).is_some());
     }
 
@@ -980,14 +992,26 @@ mod tests {
         let machine = home.path().join(".local/share/machine-identity");
         assert!(!machine.exists());
         assert!(read_deny.subpaths.contains(&machine));
-        let scope = SandboxScope { read_deny, write_deny, read_all: true, ..SandboxScope::default() };
-        let ctx = ToolCtx::new(ws.path().to_path_buf(), gait.path().to_path_buf(), "s".into())
-            .with_scope(scope);
+        let scope = SandboxScope {
+            read_deny,
+            write_deny,
+            read_all: true,
+            ..SandboxScope::default()
+        };
+        let ctx = ToolCtx::new(
+            ws.path().to_path_buf(),
+            gait.path().to_path_buf(),
+            "s".into(),
+        )
+        .with_scope(scope);
         let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
         let shell = tools.iter().find(|t| t.name() == "shell").unwrap();
         let rec = Recorder::buffering();
         let out = shell
-            .execute(serde_json::json!({"cmd": "echo standalone-ok", "reason": "t"}), &rec)
+            .execute(
+                serde_json::json!({"cmd": "echo standalone-ok", "reason": "t"}),
+                &rec,
+            )
             .await
             .expect("plain shell must succeed");
         assert!(out.to_string().contains("standalone-ok"), "{out}");
@@ -997,7 +1021,8 @@ mod tests {
     fn deny_env_value_from_the_spine_is_honoured() {
         let dir = tempfile::TempDir::new().unwrap();
         gait_ops::workspace::run_init(dir.path()).unwrap();
-        let var = |k: &str| (k == gait_identity::DENY_PATHS_ENV).then(|| "/spine/a:/spine/m".into());
+        let var =
+            |k: &str| (k == gait_identity::DENY_PATHS_ENV).then(|| "/spine/a:/spine/m".into());
         let (read, _) = local_deny_policy_with(dir.path(), var);
         assert!(classify_denial_by_path(Path::new("/spine/m/x"), &read).is_some());
     }

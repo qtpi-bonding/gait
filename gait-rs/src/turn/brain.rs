@@ -412,12 +412,9 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                 let session_for_turn = session.clone();
                 // The turn task runs on another worker, so it carries the brain's
                 // root span explicitly: that parents every gait.step below it.
-                let handle = tokio::spawn(crate::trace::within(
-                    brain_span.clone(),
-                    async move {
-                        crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
-                    },
-                ));
+                let handle = tokio::spawn(crate::trace::within(brain_span.clone(), async move {
+                    crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
+                }));
                 sink.begin_turn();
                 // drive() drains rx so emitter drops, closing the channel.
                 // NOTE: for the brain the Recorder emits via stream_fwd (Nerve), so rx is

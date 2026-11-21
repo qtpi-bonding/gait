@@ -13,13 +13,13 @@
 use crate::proto::gait::log::v1::{self as pb, event, payload, ClarifyKind, Event};
 use crate::session::{log::read_events, SessionError};
 use crate::types::{
-    AssistantContent, AssistantPart, Attribution, Message, MessageContent, ToolCall,
-    ToolResult, ToolResultKind, Trust,
+    AssistantContent, AssistantPart, Attribution, Message, MessageContent, ToolCall, ToolResult,
+    ToolResultKind, Trust,
 };
-use std::collections::HashMap;
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 /// Proto `Struct` tool input → `serde_json::Value` object (or Null).
 fn struct_to_value(s: &Option<pbjson_types::Struct>) -> serde_json::Value {
@@ -807,7 +807,11 @@ impl ActiveRawMessages {
     /// there is no verifier or the signature does not verify for `session_id`.
     fn verified_author(&self, ev: &Event, session_id: &str) -> Option<String> {
         // The verdict also depends on the audience, so the session id is part of the key.
-        let key = (ev.id.clone(), ev.content_hash.clone(), session_id.to_string());
+        let key = (
+            ev.id.clone(),
+            ev.content_hash.clone(),
+            session_id.to_string(),
+        );
         if let Some(cached) = self.verdicts.borrow().get(&key) {
             return cached.clone();
         }
@@ -851,7 +855,11 @@ impl ActiveRawMessages {
         let mut attribution = Vec::new();
         for p in &ev.provenance {
             let author = self.trusted_author(ev, p, &st.session_id);
-            let trust = if author.is_some() { Trust::Verified } else { Trust::Unverified };
+            let trust = if author.is_some() {
+                Trust::Verified
+            } else {
+                Trust::Unverified
+            };
             attribution.push(Attribution {
                 author_id: author.unwrap_or_else(|| "unverified".to_string()),
                 trust,
@@ -870,7 +878,10 @@ impl Projection for ActiveRawMessages {
 
     fn seed(&self) -> Self::State {
         self.session_id.borrow_mut().clear();
-        RawMessagesState { base: Vec::new(), session_id: String::new() }
+        RawMessagesState {
+            base: Vec::new(),
+            session_id: String::new(),
+        }
     }
 
     fn checkpoint(&self, event: &Event, kind: &payload::Kind) -> Option<Self::State> {
@@ -991,8 +1002,8 @@ impl Projection for ActiveRawMessages {
             payload::Kind::DaemonUpdate(du) => {
                 // The detached-daemon exit hook cannot sign, so a daemon notice
                 // with no provenance at all is unverified too.
-                let unverified = ev.provenance.is_empty()
-                    || self.is_unverifiable_signed(ev, &st.session_id);
+                let unverified =
+                    ev.provenance.is_empty() || self.is_unverifiable_signed(ev, &st.session_id);
                 let status = pb::DaemonStatus::try_from(du.status)
                     .map(|s| match s {
                         pb::DaemonStatus::Done => "done",
@@ -1677,7 +1688,10 @@ mod cancel_tests {
         )
     }
 
-    fn cause(kind: crate::proto::gait::log::v1::CancelActorKind, reason: Option<&str>) -> events::CancelCause {
+    fn cause(
+        kind: crate::proto::gait::log::v1::CancelActorKind,
+        reason: Option<&str>,
+    ) -> events::CancelCause {
         events::CancelCause {
             kind,
             id: "svc".into(),
@@ -1694,7 +1708,10 @@ mod cancel_tests {
 
     #[test]
     fn an_orchestrator_cancellation_names_who_and_why() {
-        let c = cause(crate::proto::gait::log::v1::CancelActorKind::Orchestrator, Some("Action 7: fix login"));
+        let c = cause(
+            crate::proto::gait::log::v1::CancelActorKind::Orchestrator,
+            Some("Action 7: fix login"),
+        );
         let (a, b) = cancel_transcript(Some(&c));
         assert_eq!(a, "[turn cancelled by orchestrator: Action 7: fix login]");
         assert_eq!(b, a);

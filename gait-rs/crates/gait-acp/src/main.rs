@@ -56,7 +56,9 @@ enum ConfigError {
     #[error("cannot read --reply-instructions-file {0}: {1}")]
     #[coded(code = "reply_instructions_unreadable", class = Logical)]
     ReplyInstructionsUnreadable(String, String),
-    #[error("--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory")]
+    #[error(
+        "--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory"
+    )]
     #[coded(code = "attestation_needs_identity", class = Logical)]
     AttestationNeedsIdentity,
     #[error("--require-attestation needs a state directory: pass --state-dir or set GAIT_DIR")]
@@ -84,7 +86,9 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
             "--require-attestation" => flags.require_attestation = true,
             "--trusted-deliverer" => {
                 let Some(value) = argv.get(i + 1) else {
-                    return Err(coded_error::into_anyhow(ConfigError::TrustedDelivererMissing));
+                    return Err(coded_error::into_anyhow(
+                        ConfigError::TrustedDelivererMissing,
+                    ));
                 };
                 let principal = PrincipalId::parse(value).map_err(|_| {
                     coded_error::into_anyhow(ConfigError::TrustedDelivererInvalid(value.clone()))
@@ -111,7 +115,9 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
                     "--send-arg" => flags.send_args.push(value.clone()),
                     _ => {
                         flags.send_audience = Some(PrincipalId::parse(value).map_err(|_| {
-                            coded_error::into_anyhow(ConfigError::SendAudienceInvalid(value.clone()))
+                            coded_error::into_anyhow(ConfigError::SendAudienceInvalid(
+                                value.clone(),
+                            ))
                         })?);
                     }
                 }
@@ -119,7 +125,9 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
             }
             "--reply-instructions-file" => {
                 let Some(value) = argv.get(i + 1) else {
-                    return Err(coded_error::into_anyhow(ConfigError::ReplyInstructionsMissing));
+                    return Err(coded_error::into_anyhow(
+                        ConfigError::ReplyInstructionsMissing,
+                    ));
                 };
                 let text = std::fs::read_to_string(value).map_err(|error| {
                     coded_error::into_anyhow(ConfigError::ReplyInstructionsUnreadable(
@@ -131,7 +139,9 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
                 i += 1;
             }
             removed @ ("--trusted-multimatrix-key" | "--trusted-recipient-key") => {
-                return Err(coded_error::into_anyhow(ConfigError::RemovedFlag(removed.to_owned())));
+                return Err(coded_error::into_anyhow(ConfigError::RemovedFlag(
+                    removed.to_owned(),
+                )));
             }
             _ => {}
         }
@@ -142,7 +152,9 @@ fn parse_attestation_flags(argv: &[String]) -> anyhow::Result<AttestationFlags> 
             return Err(coded_error::into_anyhow(ConfigError::SendNeedsAudience));
         }
         (None, Some(_)) => {
-            return Err(coded_error::into_anyhow(ConfigError::SendAudienceNeedsCommand));
+            return Err(coded_error::into_anyhow(
+                ConfigError::SendAudienceNeedsCommand,
+            ));
         }
         _ => {}
     }
@@ -208,7 +220,9 @@ fn main() -> std::process::ExitCode {
         verifier = Some(v);
     }
     if is_role {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
             .expect("failed to start the tokio runtime");
         runtime.block_on(async { gait_core::__dispatch_role(&raw[1..]).await });
         return std::process::ExitCode::SUCCESS;
@@ -230,26 +244,30 @@ fn main() -> std::process::ExitCode {
     }
     let require_attestation = flags.require_attestation;
     if require_attestation && state_dir.is_none() {
-        return fatal(coded_error::into_anyhow(ConfigError::AttestationNeedsStateDir));
+        return fatal(coded_error::into_anyhow(
+            ConfigError::AttestationNeedsStateDir,
+        ));
     }
     if require_attestation && identity.is_none() {
-        return fatal(coded_error::into_anyhow(ConfigError::AttestationNeedsIdentity));
+        return fatal(coded_error::into_anyhow(
+            ConfigError::AttestationNeedsIdentity,
+        ));
     }
     if let Some(ctx) = identity.as_ref() {
         gait_state::session::retrace::install_process_self_id(ctx.agent_id().to_string());
     }
     let attestor = match (identity.as_ref(), state_dir.as_deref()) {
-        (Some(ctx), Some(state_dir)) => match Attestor::open(
-            ctx.agent_dir(),
-            state_dir,
-            flags.trusted_deliverers.clone(),
-        ) {
-            Ok(attestor) => Some(Arc::new(attestor)),
-            Err(error) => return fatal(error),
-        },
+        (Some(ctx), Some(state_dir)) => {
+            match Attestor::open(ctx.agent_dir(), state_dir, flags.trusted_deliverers.clone()) {
+                Ok(attestor) => Some(Arc::new(attestor)),
+                Err(error) => return fatal(error),
+            }
+        }
         _ => None,
     };
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
         .expect("failed to start the tokio runtime");
     let result = runtime.block_on(async move {
         gait_acp::service::started();
@@ -316,7 +334,11 @@ mod tests {
             .map(String::from)
             .collect();
         let flags = parse_attestation_flags(&argv).unwrap();
-        let got: Vec<String> = flags.trusted_deliverers.iter().map(|p| p.to_string()).collect();
+        let got: Vec<String> = flags
+            .trusted_deliverers
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
         assert_eq!(got, vec![a, b], "order kept");
     }
 
@@ -335,7 +357,11 @@ mod tests {
         for bad in ["p256:", "p256:zz", "p256:00", ""] {
             let error = parse_attestation_flags(&["--trusted-deliverer".into(), bad.into()])
                 .expect_err("a malformed principal must fail");
-            assert_eq!(code(&error), "gait.acp.config.trusted_deliverer_invalid", "{bad:?}");
+            assert_eq!(
+                code(&error),
+                "gait.acp.config.trusted_deliverer_invalid",
+                "{bad:?}"
+            );
         }
     }
 
@@ -364,7 +390,10 @@ mod tests {
 
     #[test]
     fn no_attestation_flags_yields_permissive_defaults() {
-        assert_eq!(parse_attestation_flags(&[]).unwrap(), AttestationFlags::default());
+        assert_eq!(
+            parse_attestation_flags(&[]).unwrap(),
+            AttestationFlags::default()
+        );
     }
 
     #[test]
@@ -380,15 +409,29 @@ mod tests {
     fn send_flags_take_values_verbatim_and_need_each_other() {
         let aud = "p256:".to_string() + &"ab".repeat(33);
         let ok = parse_attestation_flags(&strs(&[
-            "--send-command", "multimatrix", "--send-arg", "submit-message",
-            "--send-arg", "--signed-file", "--send-arg", "-", "--send-audience", &aud,
+            "--send-command",
+            "multimatrix",
+            "--send-arg",
+            "submit-message",
+            "--send-arg",
+            "--signed-file",
+            "--send-arg",
+            "-",
+            "--send-audience",
+            &aud,
         ]));
         // A syntactically valid principal needs a real key; accept either outcome of
         // the audience parse but never a lost `--signed-file` argument.
         if let Ok(flags) = ok {
-            assert_eq!(flags.send_args, strs(&["submit-message", "--signed-file", "-"]));
+            assert_eq!(
+                flags.send_args,
+                strs(&["submit-message", "--signed-file", "-"])
+            );
         }
         let error = parse_attestation_flags(&strs(&["--send-command", "x"])).unwrap_err();
-        assert!(format!("{error:#}").contains("--send-audience"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("--send-audience"),
+            "{error:#}"
+        );
     }
 }

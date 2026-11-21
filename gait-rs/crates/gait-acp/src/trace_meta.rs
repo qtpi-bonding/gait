@@ -9,7 +9,9 @@ use concord_telemetry::{TraceCarrier, carrier};
 use tracing::Span;
 
 /// The carrier in a `_meta` object. Missing or non-string keys read as absent.
-pub fn carrier_from_meta(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> TraceCarrier {
+pub fn carrier_from_meta(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> TraceCarrier {
     TraceCarrier::from_pairs(|key| {
         meta.and_then(|values| values.get(key))
             .and_then(|value| value.as_str())
@@ -27,7 +29,10 @@ pub fn handler_span(span: Span, meta: Option<&serde_json::Map<String, serde_json
 
 /// Opens the span for an answer gait receives to its own request, linked to the
 /// answerer's carrier and not parented on it.
-pub fn answer_span(kind: &'static str, meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Span {
+pub fn answer_span(
+    kind: &'static str,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Span {
     let span = tracing::info_span!(parent: None, "acp.answer", answer.kind = kind);
     let answerer = carrier_from_meta(meta);
     carrier::link_from(&span, &answerer);

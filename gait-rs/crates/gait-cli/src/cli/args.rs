@@ -94,7 +94,9 @@ mod tests {
             "--inference".to_string(),
             "no-such-inference-xyz".to_string(),
         ];
-        let err = cmd_run(&argv).await.expect_err("an unknown inference is an error");
+        let err = cmd_run(&argv)
+            .await
+            .expect_err("an unknown inference is an error");
         assert!(matches!(
             coded_error::downcast_ref::<crate::cli::error::CliError>(&err),
             Some(crate::cli::error::CliError::InvalidInput(_))
@@ -109,7 +111,9 @@ mod tests {
             "--gait-dir".to_string(),
             gait_dir.path().to_string_lossy().to_string(),
         ];
-        let err = cmd_run(&argv).await.expect_err("a broken gait.jsonc is an error");
+        let err = cmd_run(&argv)
+            .await
+            .expect_err("a broken gait.jsonc is an error");
         assert!(matches!(
             coded_error::downcast_ref::<crate::cli::error::CliError>(&err),
             Some(crate::cli::error::CliError::InvalidInput(_))
@@ -137,7 +141,9 @@ mod tests {
             "--result-schema-json".to_string(),
             "not json".to_string(),
         ];
-        let err = cmd_run(&argv).await.expect_err("a non-JSON schema is an error");
+        let err = cmd_run(&argv)
+            .await
+            .expect_err("a non-JSON schema is an error");
         assert!(matches!(
             coded_error::downcast_ref::<crate::cli::error::CliError>(&err),
             Some(crate::cli::error::CliError::InvalidInput(_))
@@ -178,9 +184,15 @@ mod tests {
         fn resolve_codebase_uses_arg() {
             // A non-existent path: canonicalize() fails, falls back to raw —
             // exercises the fallback branch specifically.
-            let args = vec!["--codebase".to_string(), "/tmp/mycode-does-not-exist".to_string()];
+            let args = vec![
+                "--codebase".to_string(),
+                "/tmp/mycode-does-not-exist".to_string(),
+            ];
             let result = resolve_codebase(&args);
-            assert_eq!(result, std::path::PathBuf::from("/tmp/mycode-does-not-exist"));
+            assert_eq!(
+                result,
+                std::path::PathBuf::from("/tmp/mycode-does-not-exist")
+            );
         }
 
         // Regression test for the archeglyph-eb report (2026-09-08): a

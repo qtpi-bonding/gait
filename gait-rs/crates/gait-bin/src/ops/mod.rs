@@ -51,29 +51,21 @@ pub(crate) fn require_active(gait_dir: &std::path::Path, session: &str) -> anyho
     if gait_core::session::live::worktree_dir(gait_dir, session).exists() {
         Ok(())
     } else {
-        Err(coded_error::into_anyhow(gait_ops::OpError::NotFound(format!(
-            "session '{session}' is not active"
-        ))))
+        Err(coded_error::into_anyhow(gait_ops::OpError::NotFound(
+            format!("session '{session}' is not active"),
+        )))
     }
 }
 
 /// The `ops!` block. It sits in its own module so `registry()` below can add
 /// the call hook to the registry it generates.
 pub mod decl {
-    use super::session::{
-        AllowParams, DiscardParams, PersistParams, PsParams, ReplyParams, SessionId, SessionsParams, UndoParams,
-        UnlockParams,
-    };
-    use super::session::{
-        AllowResult, DenyResult, ProcessItem, ReplyResult, SessionAct, SessionItem, SessionStats,
-        SessionSummary, UndoResult, UnlockResult,
-    };
+    #[cfg(feature = "full")]
+    use super::auth::{AuthAddParams, AuthLogin, AuthLoginParams};
     use super::auth::{
         AuthEntry, AuthLinkParams, AuthListParams, AuthLogout, AuthLogoutParams, AuthRemoved,
         AuthSaved, AuthStatus, ModelItem, ModelsParams, ProviderId,
     };
-    #[cfg(feature = "full")]
-    use super::auth::{AuthAddParams, AuthLogin, AuthLoginParams};
     use super::config::{ConfigEntry, ConfigKey, ConfigSetParams, ConfigShowParams};
     use super::daemon::{DaemonItem, DaemonListParams, DaemonStopParams, DaemonStopped};
     use super::extension::{
@@ -84,13 +76,21 @@ pub mod decl {
         InferenceAddParams, InferenceAdded, InferenceClearParams, InferenceItem,
         InferenceListParams, InferenceRef, InferenceSelectParams, InferenceSelected,
     };
+    #[cfg(feature = "local")]
+    use super::local::{LocalRunner, LocalRunnerParams, LocalSetup, LocalSetupParams};
     use super::mode::{
         ModeAddParams, ModeAdded, ModeClearParams, ModeItem, ModeListParams, ModeRef,
         ModeSelectParams, ModeSelected,
     };
+    use super::session::{
+        AllowParams, DiscardParams, PersistParams, PsParams, ReplyParams, SessionId,
+        SessionsParams, UndoParams, UnlockParams,
+    };
+    use super::session::{
+        AllowResult, DenyResult, ProcessItem, ReplyResult, SessionAct, SessionItem, SessionStats,
+        SessionSummary, UndoResult, UnlockResult,
+    };
     use super::workspace::{InitParams, InitResult, LinkParams, LinkResult};
-    #[cfg(feature = "local")]
-    use super::local::{LocalRunner, LocalRunnerParams, LocalSetup, LocalSetupParams};
     use super::{GaitContext, Globals};
     use gait_cli::cli::error::CliError;
     use gait_ops::OpError;
@@ -349,8 +349,20 @@ pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     registry.push_extra(workflow_command(), run_workflow);
     match repl {
         #[cfg(feature = "rich-tui")]
-        Repl::Rich => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, true, turn::run_rich),
-        Repl::Plain => registry.fallback_free_text("turn", turn::TURN_HELP, turn::TURN_FLAGS, true, turn::run_plain),
+        Repl::Rich => registry.fallback_free_text(
+            "turn",
+            turn::TURN_HELP,
+            turn::TURN_FLAGS,
+            true,
+            turn::run_rich,
+        ),
+        Repl::Plain => registry.fallback_free_text(
+            "turn",
+            turn::TURN_HELP,
+            turn::TURN_FLAGS,
+            true,
+            turn::run_plain,
+        ),
     }
     registry
 }
@@ -386,11 +398,20 @@ fn run_workflow<'a>(
         let args = gait_cli::cli::workflow::WorkflowArgs {
             gait_dir: globals.gait_dir.clone(),
             action: matches.get_one::<String>("action").cloned(),
-            rest: matches.get_many::<String>("rest").map(|v| v.cloned().collect()).unwrap_or_default(),
-            pretty: matches.try_get_one::<bool>("pretty").ok().flatten().copied().unwrap_or(false),
+            rest: matches
+                .get_many::<String>("rest")
+                .map(|v| v.cloned().collect())
+                .unwrap_or_default(),
+            pretty: matches
+                .try_get_one::<bool>("pretty")
+                .ok()
+                .flatten()
+                .copied()
+                .unwrap_or(false),
         };
         // The workflow runner holds non-`Send` state across awaits, as the turn does.
-        let result = turn::on_turn_thread(move || gait_cli::cli::workflow::cmd_workflow(args)).await;
+        let result =
+            turn::on_turn_thread(move || gait_cli::cli::workflow::cmd_workflow(args)).await;
         result
     })
 }

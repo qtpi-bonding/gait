@@ -1,5 +1,7 @@
 use anyhow::Error as AnyhowError;
-use gait_identity::{mode_detail, owner_detail, MODE_HINT_SUFFIX, OLD_FORMAT_HINT, OWNER_HINT_SUFFIX};
+use gait_identity::{
+    MODE_HINT_SUFFIX, OLD_FORMAT_HINT, OWNER_HINT_SUFFIX, mode_detail, owner_detail,
+};
 
 pub const NEW_SESSION: &str = "session/new";
 pub const LOAD_SESSION: &str = "session/load";
@@ -40,7 +42,9 @@ pub enum PromptError {
     #[error("replay: {0}")]
     #[coded(code = "attestation_replay", class = Logical)]
     AttestationReplay(String),
-    #[error("an attested batch #{got} was already confirmed (last {last}); its message is already logged")]
+    #[error(
+        "an attested batch #{got} was already confirmed (last {last}); its message is already logged"
+    )]
     #[coded(code = "attestation_replay_confirmed", class = Logical)]
     AttestationReplayConfirmed { last: u64, got: u64 },
     #[error("attestation has no messages")]
@@ -110,19 +114,32 @@ pub enum PromptError {
 pub enum AttestationStateError {
     #[error("attestation state {} is not private ({detail}){hint}", .path.display())]
     #[coded(code = "insecure", class = Logical)]
-    Insecure { path: std::path::PathBuf, detail: String, hint: &'static str },
+    Insecure {
+        path: std::path::PathBuf,
+        detail: String,
+        hint: &'static str,
+    },
     #[error("attestation state {} uses the old layout ({reason}); {OLD_FORMAT_HINT}", .path.display())]
     #[coded(code = "old_layout", class = Logical)]
-    OldLayout { path: std::path::PathBuf, reason: String },
+    OldLayout {
+        path: std::path::PathBuf,
+        reason: String,
+    },
     #[error("cannot open attestation state at {}: {reason}", .path.display())]
     #[coded(code = "unavailable", class = Infrastructure)]
-    Unavailable { path: std::path::PathBuf, reason: String },
+    Unavailable {
+        path: std::path::PathBuf,
+        reason: String,
+    },
 }
 
 impl AttestationStateError {
     /// From a keyfile failure. `fallback` names the state when the failure
     /// carries no path of its own.
-    pub fn from_keyfile(fallback: &std::path::Path, error: &identity_keyfile::KeyfileError) -> Self {
+    pub fn from_keyfile(
+        fallback: &std::path::Path,
+        error: &identity_keyfile::KeyfileError,
+    ) -> Self {
         use identity_keyfile::KeyfileError as K;
         match error {
             K::InsecureDir(path) | K::InsecureFile(path) => {
@@ -136,7 +153,10 @@ impl AttestationStateError {
             K::InvalidMode(mode) => {
                 Self::insecure(fallback, format!("mode {:04o}", mode & 0o7777), "")
             }
-            other => Self::Unavailable { path: fallback.to_owned(), reason: other.to_string() },
+            other => Self::Unavailable {
+                path: fallback.to_owned(),
+                reason: other.to_string(),
+            },
         }
     }
 
@@ -146,24 +166,43 @@ impl AttestationStateError {
     /// keyfile failures are classified from their own types, and everything
     /// else (io, serde_json, any other untyped source, or no source) is
     /// Unavailable.
-    pub fn from_store(fallback: &std::path::Path, error: &message_attestation::AttestationError) -> Self {
+    pub fn from_store(
+        fallback: &std::path::Path,
+        error: &message_attestation::AttestationError,
+    ) -> Self {
         use std::error::Error as _;
         let source = error.source();
         match source {
-            Some(s) if s.downcast_ref::<message_attestation::ReplayStateError>().is_some() => {
-                Self::OldLayout { path: fallback.to_owned(), reason: s.to_string() }
+            Some(s)
+                if s.downcast_ref::<message_attestation::ReplayStateError>()
+                    .is_some() =>
+            {
+                Self::OldLayout {
+                    path: fallback.to_owned(),
+                    reason: s.to_string(),
+                }
             }
             Some(s) if s.downcast_ref::<identity_keyfile::KeyfileError>().is_some() => {
                 let keyfile = s.downcast_ref::<identity_keyfile::KeyfileError>().unwrap();
                 Self::from_keyfile(fallback, keyfile)
             }
-            Some(s) => Self::Unavailable { path: fallback.to_owned(), reason: s.to_string() },
-            None => Self::Unavailable { path: fallback.to_owned(), reason: error.to_string() },
+            Some(s) => Self::Unavailable {
+                path: fallback.to_owned(),
+                reason: s.to_string(),
+            },
+            None => Self::Unavailable {
+                path: fallback.to_owned(),
+                reason: error.to_string(),
+            },
         }
     }
 
     fn insecure(path: &std::path::Path, detail: String, hint: &'static str) -> Self {
-        Self::Insecure { path: path.to_owned(), detail, hint }
+        Self::Insecure {
+            path: path.to_owned(),
+            detail,
+            hint,
+        }
     }
 }
 
@@ -197,11 +236,22 @@ mod tests {
         let wire = acp_error(&err, PROMPT);
         assert_eq!(i32::from(wire.code), -32001);
         assert_eq!(wire.message, "prompt already seen by agent");
-        assert_eq!(wire.data.as_ref().unwrap()["reason"], "already_seen_by_agent");
+        assert_eq!(
+            wire.data.as_ref().unwrap()["reason"],
+            "already_seen_by_agent"
+        );
         assert_eq!(wire.data.as_ref().unwrap()["idempotency_key"], "k1");
-        assert_eq!(wire.data.as_ref().unwrap()["code"], "gait.acp.prompt.already_seen");
+        assert_eq!(
+            wire.data.as_ref().unwrap()["code"],
+            "gait.acp.prompt.already_seen"
+        );
         assert_eq!(wire.data.as_ref().unwrap()["class"], "logical");
-        assert!(!wire.data.as_ref().unwrap()["fingerprint"].as_str().unwrap().is_empty());
+        assert!(
+            !wire.data.as_ref().unwrap()["fingerprint"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -237,10 +287,12 @@ mod tests {
         let records = capture.errors_where(|record| record.fingerprint == fingerprint);
         assert_eq!(records.len(), 1);
         // Error text is recorded by default (CONCORD_ERROR_TEXT=full).
-        assert!(records[0]
-            .fields
-            .values()
-            .any(|value| format!("{value:?}").contains("not-for-record")));
+        assert!(
+            records[0]
+                .fields
+                .values()
+                .any(|value| format!("{value:?}").contains("not-for-record"))
+        );
     }
 
     #[test]
@@ -250,11 +302,17 @@ mod tests {
         // A typed io failure whose text mentions the old-layout words is not the old layout.
         let io = std::io::Error::other("replay entry has no attested_at");
         let err = AttestationStateError::from_store(path, &A::Store(Box::new(io)));
-        assert!(matches!(err, AttestationStateError::Unavailable { .. }), "{err}");
+        assert!(
+            matches!(err, AttestationStateError::Unavailable { .. }),
+            "{err}"
+        );
         // A typed parse failure likewise.
         let parse = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
         let err = AttestationStateError::from_store(path, &A::Store(Box::new(parse)));
-        assert!(matches!(err, AttestationStateError::Unavailable { .. }), "{err}");
+        assert!(
+            matches!(err, AttestationStateError::Unavailable { .. }),
+            "{err}"
+        );
         // The library's typed layout failures are the old layout, whatever their wording.
         for typed in [
             message_attestation::ReplayStateError::OldLayout,
@@ -262,18 +320,30 @@ mod tests {
             message_attestation::ReplayStateError::InvalidSequence,
         ] {
             let err = AttestationStateError::from_store(path, &A::Store(Box::new(typed)));
-            assert!(matches!(err, AttestationStateError::OldLayout { .. }), "{typed:?}: {err}");
+            assert!(
+                matches!(err, AttestationStateError::OldLayout { .. }),
+                "{typed:?}: {err}"
+            );
         }
         // Any other untyped source is never classified as the old layout, even when its
         // text says so.
-        for text in ["reworded", "replay entry is in the old layout (no attested_at)"] {
+        for text in [
+            "reworded",
+            "replay entry is in the old layout (no attested_at)",
+        ] {
             let err = AttestationStateError::from_store(path, &A::Store(text.to_owned().into()));
-            assert!(matches!(err, AttestationStateError::Unavailable { .. }), "{text}: {err}");
+            assert!(
+                matches!(err, AttestationStateError::Unavailable { .. }),
+                "{text}: {err}"
+            );
         }
         // A keyfile failure is never the old layout.
         let key = identity_keyfile::KeyfileError::InsecureDir(path.to_owned());
         let err = AttestationStateError::from_store(path, &A::Store(Box::new(key)));
-        assert!(matches!(err, AttestationStateError::Insecure { .. }), "{err}");
+        assert!(
+            matches!(err, AttestationStateError::Insecure { .. }),
+            "{err}"
+        );
     }
 
     #[test]
@@ -281,10 +351,17 @@ mod tests {
         use identity_keyfile::KeyfileError as K;
         use message_attestation::AttestationError as A;
         let path = std::path::Path::new("/state/replay.json");
-        let mode = "tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry";
+        let mode =
+            "tighten the permissions (chmod 700 for a directory, chmod 600 for a file) and retry";
         let hinted = [
-            (AttestationStateError::from_keyfile(path, &K::InsecureDir(path.to_owned())), mode),
-            (AttestationStateError::from_keyfile(path, &K::InsecureFile(path.to_owned())), mode),
+            (
+                AttestationStateError::from_keyfile(path, &K::InsecureDir(path.to_owned())),
+                mode,
+            ),
+            (
+                AttestationStateError::from_keyfile(path, &K::InsecureFile(path.to_owned())),
+                mode,
+            ),
             (
                 AttestationStateError::from_keyfile(path, &K::WrongOwner(path.to_owned())),
                 "the path must be owned by the current user",
@@ -302,18 +379,32 @@ mod tests {
         }
         let plain = [
             AttestationStateError::from_keyfile(path, &K::NotAFile(path.to_owned())),
-            AttestationStateError::from_keyfile(path, &K::TooLarge { path: path.to_owned(), cap: 9 }),
+            AttestationStateError::from_keyfile(
+                path,
+                &K::TooLarge {
+                    path: path.to_owned(),
+                    cap: 9,
+                },
+            ),
             AttestationStateError::from_store(path, &A::Store("boom".to_owned().into())),
         ];
         for err in plain {
             let text = err.to_string();
-            assert!(!text.contains("tighten the permissions") && !text.contains("old format") && !text.contains("owned by the current user"), "{text}");
+            assert!(
+                !text.contains("tighten the permissions")
+                    && !text.contains("old format")
+                    && !text.contains("owned by the current user"),
+                "{text}"
+            );
             assert!(text.contains("/state/replay.json"), "{text}");
         }
     }
 
     #[test]
     fn logical_error_class_is_stable() {
-        assert_eq!(PromptError::SessionUnknown("x".into()).class(), ErrorClass::Logical);
+        assert_eq!(
+            PromptError::SessionUnknown("x".into()).class(),
+            ErrorClass::Logical
+        );
     }
 }

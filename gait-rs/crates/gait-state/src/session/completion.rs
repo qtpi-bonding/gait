@@ -131,7 +131,9 @@ fn notify(
     // One-shot lock acquire — the lock IS the "is a turn running?" check.
     let lock = match crate::session::SessionLock::acquire(&target_dir) {
         Ok(l) => l,
-        Err(e) if e.is::<crate::session::lock::AlreadyRunning>() => return NotifyOutcome::ParentBusy,
+        Err(e) if e.is::<crate::session::lock::AlreadyRunning>() => {
+            return NotifyOutcome::ParentBusy
+        }
         Err(_) => return NotifyOutcome::NoParent, // unexpected I/O — leave registry as fallback
     };
     // Dedup: if the parent's log already has a matching *_update for this
@@ -454,7 +456,14 @@ mod tests {
         let (_agent, ctx) = identity_fixture();
         let repos = crate::git::Repos::production();
         let c = daemon_completion("x", 0, "done", "/tmp/x.log");
-        let outcome = notify_parent(gd.path(), &repos, "does_not_exist", &c, Some(&ctx), &wall_clock);
+        let outcome = notify_parent(
+            gd.path(),
+            &repos,
+            "does_not_exist",
+            &c,
+            Some(&ctx),
+            &wall_clock,
+        );
         assert!(
             matches!(outcome, NotifyOutcome::NoParent),
             "expected NoParent, got {outcome:?}"

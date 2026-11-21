@@ -450,7 +450,10 @@ mod tests {
         let t = TempDir::new().unwrap();
         let body = "one\n---\ntwo\n";
         write_mode(t.path(), "x", &[], &[], body, "", None).unwrap();
-        assert_eq!(load_mode(t.path(), "x").unwrap().steer, body.trim_end_matches('\n'));
+        assert_eq!(
+            load_mode(t.path(), "x").unwrap().steer,
+            body.trim_end_matches('\n')
+        );
     }
 
     #[test]

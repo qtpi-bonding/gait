@@ -21,7 +21,9 @@ pub(crate) fn parse_send_input(impulse: &Impulse) -> serde_json::Value {
 }
 
 fn child_env() -> Vec<(String, String)> {
-    std::env::vars().filter(|(k, _)| crate::env_passes_to_children(k)).collect()
+    std::env::vars()
+        .filter(|(k, _)| crate::env_passes_to_children(k))
+        .collect()
 }
 
 pub(crate) async fn handle_send_message(input: serde_json::Value, ctx: TurnCtx) -> Feedback {
@@ -85,7 +87,9 @@ mod tests {
         }
         let env = child_env();
         assert!(env.iter().all(|(k, _)| crate::env_passes_to_children(k)));
-        assert!(!env.iter().any(|(k, _)| k == "GAIT_AGENT_DIR" || k == "OPENAI_API_KEY"));
+        assert!(!env
+            .iter()
+            .any(|(k, _)| k == "GAIT_AGENT_DIR" || k == "OPENAI_API_KEY"));
     }
 
     #[tokio::test]
@@ -118,16 +122,26 @@ mod tests {
             argv: vec![
                 "/bin/sh".into(),
                 "-c".into(),
-                format!("/usr/bin/env > {}; /bin/cat > {}", envf.display(), out.display()),
+                format!(
+                    "/usr/bin/env > {}; /bin/cat > {}",
+                    envf.display(),
+                    out.display()
+                ),
             ],
             audience: deliverer(),
         };
         unsafe { std::env::set_var("GAIT_AGENT_DIR", "/secret") };
-        let fb = send_with(&config, serde_json::json!({"to": ["room:r1"], "body": "hi"}), ctx).await;
+        let fb = send_with(
+            &config,
+            serde_json::json!({"to": ["room:r1"], "body": "hi"}),
+            ctx,
+        )
+        .await;
         let json = result_json(&fb);
         assert_eq!(json["status"], "sent", "{json}");
-        let signed = identity_crypto::pb::SignedMessage::decode(std::fs::read(&out).unwrap().as_slice())
-            .expect("stdin decodes as a SignedMessage");
+        let signed =
+            identity_crypto::pb::SignedMessage::decode(std::fs::read(&out).unwrap().as_slice())
+                .expect("stdin decodes as a SignedMessage");
         assert_eq!(signed.body_type, message_attestation::MESSAGE_BODY_TYPE);
         let message = identity_crypto::pb::Message::decode(signed.body.as_slice()).unwrap();
         assert_eq!(message.message_id, json["message_id"].as_str().unwrap());
@@ -146,7 +160,12 @@ mod tests {
             argv: vec!["/usr/bin/false".into()],
             audience: deliverer(),
         };
-        let fb = send_with(&config, serde_json::json!({"to": ["room:r1"], "body": "hi"}), ctx).await;
+        let fb = send_with(
+            &config,
+            serde_json::json!({"to": ["room:r1"], "body": "hi"}),
+            ctx,
+        )
+        .await;
         assert_eq!(fb.is_error, Some(true));
         assert_eq!(result_json(&fb)["status"], "failed");
     }

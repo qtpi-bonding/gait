@@ -254,7 +254,6 @@ pub struct GuideSource {
     pub body: String,
 }
 
-
 #[derive(Debug, thiserror::Error)]
 pub enum ManualError {
     #[error("invalid manual YAML: {0}")]
@@ -289,7 +288,11 @@ fn is_op_path(registry: &op_registry::Registry<GaitContext>, path: &str) -> bool
     let chain: Vec<&str> = path.split_whitespace().collect();
     registry.descriptors().iter().any(|d| {
         d.path.iter().map(String::as_str).eq(chain.iter().copied())
-            || (d.group_default && d.noun_path().iter().map(String::as_str).eq(chain.iter().copied()))
+            || (d.group_default
+                && d.noun_path()
+                    .iter()
+                    .map(String::as_str)
+                    .eq(chain.iter().copied()))
     })
 }
 
@@ -309,7 +312,10 @@ fn other_command_help(
     let mut root = op_registry::cli::command(registry);
     root.build();
     let mut command = root.find_subcommand(path)?.clone();
-    Some((format!("`{bin} {path}`"), command.render_long_help().to_string()))
+    Some((
+        format!("`{bin} {path}`"),
+        command.render_long_help().to_string(),
+    ))
 }
 
 fn push_repl_command(out: &mut String, command: &ReplCommand) {
@@ -339,8 +345,16 @@ pub fn manual_from(
             if !path.is_empty() && is_op_path(registry, path) {
                 commands.push(path.clone());
             } else if let Some((title, help)) = other_command_help(registry, path) {
-                let help = help.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
-                let _ = write!(body, "\n\n#### {title}\n\n```text\n{}\n```", help.trim_end());
+                let help = help
+                    .lines()
+                    .map(str::trim_end)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let _ = write!(
+                    body,
+                    "\n\n#### {title}\n\n```text\n{}\n```",
+                    help.trim_end()
+                );
             } else {
                 return Err(ManualError::UnknownCommand {
                     guide: source.title.clone(),
@@ -362,22 +376,37 @@ pub fn manual_from(
             }
             body.truncate(body.trim_end().len());
         }
-        guides.push(Guide { title: source.title.clone(), body, commands });
+        guides.push(Guide {
+            title: source.title.clone(),
+            body,
+            commands,
+        });
     }
 
     let reference = |title: &str, fill: &dyn Fn(&mut String)| {
         let mut body = String::new();
         fill(&mut body);
-        Guide { title: title.to_owned(), body: body.trim().to_owned(), commands: Vec::new() }
+        Guide {
+            title: title.to_owned(),
+            body: body.trim().to_owned(),
+            commands: Vec::new(),
+        }
     };
     let reference_guides = vec![
         reference("Config fields", &|out| render_config_fields(out, flavor)),
-        reference("Inference profile: `inferences/<name>/inference.textproto`", &|out| {
-            render_inference_format(out, flavor)
-        }),
+        reference(
+            "Inference profile: `inferences/<name>/inference.textproto`",
+            &|out| render_inference_format(out, flavor),
+        ),
         reference("Mode: `modes/<name>/MODE.md`", &render_mode_format),
-        reference("Agent file: `agents/<name>/AGENT.md`", &render_agent_file_format),
-        reference("Skill file: `skills/<name>/SKILL.md`", &render_skill_file_format),
+        reference(
+            "Agent file: `agents/<name>/AGENT.md`",
+            &render_agent_file_format,
+        ),
+        reference(
+            "Skill file: `skills/<name>/SKILL.md`",
+            &render_skill_file_format,
+        ),
     ];
     Ok(Manual {
         front_matter: Some(FrontMatter {
@@ -385,8 +414,14 @@ pub fn manual_from(
             description: "Explain how to use and configure Gait.".to_owned(),
         }),
         sections: vec![
-            Section { title: "Guides".to_owned(), guides },
-            Section { title: "Reference".to_owned(), guides: reference_guides },
+            Section {
+                title: "Guides".to_owned(),
+                guides,
+            },
+            Section {
+                title: "Reference".to_owned(),
+                guides: reference_guides,
+            },
         ],
     })
 }
@@ -409,12 +444,17 @@ pub fn render(
     repl_commands: &[ReplCommand],
 ) -> Result<String, ManualError> {
     let manual = manual(registry, flavor, repl_commands)?;
-    op_registry::manual::render(registry, &manual).map_err(|e| ManualError::Render(format!("{e:#}")))
+    op_registry::manual::render(registry, &manual)
+        .map_err(|e| ManualError::Render(format!("{e:#}")))
 }
 
 /// The manual of the full `gait`.
 pub fn render_full() -> Result<String, ManualError> {
-    render(&crate::ops::registry(), ManualFlavor::Full, gait_repl::repl::commands::COMMANDS)
+    render(
+        &crate::ops::registry(),
+        ManualFlavor::Full,
+        gait_repl::repl::commands::COMMANDS,
+    )
 }
 
 /// The text `manual install` writes: [`render`] with a `manual-source-hash`
@@ -427,7 +467,11 @@ pub fn install_text(
 ) -> Result<String, ManualError> {
     let text = render(registry, flavor, repl_commands)?;
     let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
-    Ok(text.replacen("\n---\n", &format!("\nmanual-source-hash: {hash}\n---\n"), 1))
+    Ok(text.replacen(
+        "\n---\n",
+        &format!("\nmanual-source-hash: {hash}\n---\n"),
+        1,
+    ))
 }
 
 #[cfg(test)]
@@ -444,7 +488,8 @@ mod tests {
         let manifest = parse_manifest(manifest_yaml)?;
         let registry = registry();
         let manual = manual_from(&registry, &manifest, ManualFlavor::Full, COMMANDS)?;
-        op_registry::manual::render(&registry, &manual).map_err(|e| ManualError::Render(format!("{e:#}")))
+        op_registry::manual::render(&registry, &manual)
+            .map_err(|e| ManualError::Render(format!("{e:#}")))
     }
 
     #[cfg(feature = "full")]
@@ -501,7 +546,10 @@ mod tests {
     #[test]
     fn renders_live_command_metadata() {
         let rendered = render_with("guides:\n  - title: Sessions\n    cli_cmds: [sessions]\n    repl_cmds: [/new]\n    body: |\n      Manage sessions.\n").unwrap();
-        assert!(rendered.contains("### gait sessions"), "the command help comes from the registry");
+        assert!(
+            rendered.contains("### gait sessions"),
+            "the command help comes from the registry"
+        );
         assert!(rendered.contains("Commands: `sessions`"));
         assert!(rendered.contains("`/new`"));
         assert!(rendered.contains("Start a fresh session"));
@@ -509,11 +557,20 @@ mod tests {
 
     #[test]
     fn the_turn_and_workflow_are_documented_from_their_own_help() {
-        let rendered = render_with("guides:\n  - title: Turn\n    cli_cmds: [\"\"]\n    body: |\n      Tasks.\n").unwrap();
-        assert!(rendered.contains("--auto-approve"), "the turn flags are in the manual");
+        let rendered = render_with(
+            "guides:\n  - title: Turn\n    cli_cmds: [\"\"]\n    body: |\n      Tasks.\n",
+        )
+        .unwrap();
+        assert!(
+            rendered.contains("--auto-approve"),
+            "the turn flags are in the manual"
+        );
         #[cfg(feature = "workflow")]
         {
-            let rendered = render_with("guides:\n  - title: W\n    cli_cmds: [workflow]\n    body: |\n      Flows.\n").unwrap();
+            let rendered = render_with(
+                "guides:\n  - title: W\n    cli_cmds: [workflow]\n    body: |\n      Flows.\n",
+            )
+            .unwrap();
             assert!(rendered.contains("#### `gait workflow`"));
         }
     }
@@ -551,7 +608,10 @@ mod tests {
         let head = text.split("\n---\n").next().unwrap();
         assert!(head.starts_with("---\nname: gait-manual\n"), "{head}");
         assert!(head.contains("\nmanual-source-hash: "), "{head}");
-        assert_eq!(text, install_text(&registry(), ManualFlavor::Full, COMMANDS).unwrap());
+        assert_eq!(
+            text,
+            install_text(&registry(), ManualFlavor::Full, COMMANDS).unwrap()
+        );
     }
 
     #[test]

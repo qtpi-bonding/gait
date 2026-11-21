@@ -1,16 +1,16 @@
 //! The op-registry skeleton: globals, context, hooks and an empty registry.
 use gait_bin::ops::{registry, GaitContext, GaitHooks, Globals};
-use op_registry::cli::{run_with_io, Io};
 #[cfg(feature = "full")]
 use op_registry::cli::Prompter;
+use op_registry::cli::{run_with_io, Io};
 use op_registry::{OpGlobals, Ref, Resolve, Scope};
 use serial_test::serial;
 use std::ffi::OsString;
+#[cfg(feature = "full")]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "full")]
 use std::sync::Arc;
-#[cfg(feature = "full")]
-use std::os::unix::fs::PermissionsExt;
 
 #[cfg(feature = "full")]
 struct TestPrompter;
@@ -37,11 +37,7 @@ fn run(args: &[&str]) -> (u8, String, String) {
 #[serial]
 fn auth_add_uses_the_installed_prompter() {
     let home = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(
-        home.path(),
-        std::fs::Permissions::from_mode(0o700),
-    )
-    .unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     std::env::set_var("GAIT_HOME", home.path());
     let (io, captured) = Io::memory(b"", false, false);
     let io = io.with_prompter(Arc::new(TestPrompter));
@@ -78,7 +74,10 @@ fn globals_have_no_machine_paths_in_help() {
     assert!(stdout.contains("--gait-dir"), "{stdout}");
     assert!(stdout.contains("--agent-dir"), "{stdout}");
     for banned in ["/Users/", "/home/"] {
-        assert!(!stdout.contains(banned), "help names a machine path: {stdout}");
+        assert!(
+            !stdout.contains(banned),
+            "help names a machine path: {stdout}"
+        );
     }
 }
 
@@ -103,7 +102,11 @@ fn exit_code_is_2_for_a_usage_error() {
 }
 
 fn write_gaitref(dir: &Path, target: &Path) {
-    std::fs::write(dir.join(".gaitref"), format!("gaitdir: {}\n", target.display())).unwrap();
+    std::fs::write(
+        dir.join(".gaitref"),
+        format!("gaitdir: {}\n", target.display()),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -140,7 +143,10 @@ fn gait_dir_resolves_from_flag_env_and_gaitref() {
 
 #[test]
 fn from_globals_does_no_io_even_for_a_missing_gait_dir() {
-    let globals = Globals { gait_dir: Some(PathBuf::from("/nonexistent/x")), agent_dir: None };
+    let globals = Globals {
+        gait_dir: Some(PathBuf::from("/nonexistent/x")),
+        agent_dir: None,
+    };
     assert!(<GaitContext as op_registry::CliContext>::from_globals(&globals).is_ok());
 }
 
@@ -151,7 +157,10 @@ fn not_found_code(err: &anyhow::Error) -> &'static str {
 #[test]
 fn resolver_gives_the_apps_not_found_for_missing_objects() {
     let dir = tempfile::tempdir().unwrap();
-    let globals = Globals { gait_dir: Some(dir.path().to_path_buf()), agent_dir: None };
+    let globals = Globals {
+        gait_dir: Some(dir.path().to_path_buf()),
+        agent_dir: None,
+    };
     let ctx = <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap();
     for kind in ["inference", "mode", "daemon"] {
         let err = futures_executor_block(ctx.resolve(kind, &Ref::new("nosuch"), &Scope::default()))
@@ -184,7 +193,10 @@ mod session_ops {
     }
 
     fn ctx(dir: &Path) -> GaitContext {
-        let globals = Globals { gait_dir: Some(dir.to_path_buf()), agent_dir: None };
+        let globals = Globals {
+            gait_dir: Some(dir.to_path_buf()),
+            agent_dir: None,
+        };
         <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap()
     }
 
@@ -205,7 +217,9 @@ mod session_ops {
         let dir = gait_dir();
         let err = futures_executor_block(registry().call_typed::<ops::Stats>(
             &ctx(dir.path()),
-            SessionId { id: Ref::new("nosuch") },
+            SessionId {
+                id: Ref::new("nosuch"),
+            },
             CallOptions::default(),
         ))
         .unwrap_err();
@@ -217,7 +231,9 @@ mod session_ops {
         let dir = gait_dir();
         let err = futures_executor_block(registry().call_typed::<ops::Deny>(
             &ctx(dir.path()),
-            SessionId { id: Ref::new("nosuch") },
+            SessionId {
+                id: Ref::new("nosuch"),
+            },
             CallOptions::default(),
         ))
         .unwrap_err();
@@ -281,8 +297,12 @@ mod kit {
     const MANUAL_SNAPSHOT_FILE: &str = "tests/manual_snapshot_local.md";
 
     fn full_manual() -> op_registry::manual::Manual {
-        manual(&registry(), ManualFlavor::Full, gait_repl::repl::commands::COMMANDS)
-            .expect("the manual manifest is valid")
+        manual(
+            &registry(),
+            ManualFlavor::Full,
+            gait_repl::repl::commands::COMMANDS,
+        )
+        .expect("the manual manifest is valid")
     }
 
     /// A fresh gait dir for the fixtures and the context.
@@ -300,7 +320,10 @@ mod kit {
             "init failed: {}",
             String::from_utf8_lossy(&init.stderr)
         );
-        let globals = Globals { gait_dir: Some(dir.path().to_path_buf()), agent_dir: None };
+        let globals = Globals {
+            gait_dir: Some(dir.path().to_path_buf()),
+            agent_dir: None,
+        };
         let ctx = <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap();
         (dir, ctx)
     }
@@ -315,7 +338,9 @@ mod kit {
     fn assert_help_complete() {
         let rules = HelpRules {
             // `daemon` is not banned: gait's `daemons` command is real.
-            banned_words: &["round-", "Task ", "/Users/", "/home/", "gait_ops", "Mirrors"],
+            banned_words: &[
+                "round-", "Task ", "/Users/", "/home/", "gait_ops", "Mirrors",
+            ],
         };
         let warnings = testing::assert_help_complete(&registry(), &rules);
         for warning in warnings {
@@ -338,14 +363,38 @@ mod kit {
     fn assert_error_codes() {
         let (_dir, ctx) = gait_dir();
         let fixtures = [
-            Fixture { op: "stats", args: json!({"id": "nosuch"}) },
-            Fixture { op: "log", args: json!({"id": "nosuch"}) },
-            Fixture { op: "inference_show", args: json!({"id": "nosuch"}) },
-            Fixture { op: "mode_show", args: json!({"id": "nosuch"}) },
-            Fixture { op: "daemons_stop", args: json!({"id": "nosuch"}) },
-            Fixture { op: "config_get", args: json!({"id": "nosuch"}) },
-            Fixture { op: "unregister", args: json!({"kind": "mcp", "id": "nosuch"}) },
-            Fixture { op: "enable", args: json!({"kind": "mcp", "id": "nosuch"}) },
+            Fixture {
+                op: "stats",
+                args: json!({"id": "nosuch"}),
+            },
+            Fixture {
+                op: "log",
+                args: json!({"id": "nosuch"}),
+            },
+            Fixture {
+                op: "inference_show",
+                args: json!({"id": "nosuch"}),
+            },
+            Fixture {
+                op: "mode_show",
+                args: json!({"id": "nosuch"}),
+            },
+            Fixture {
+                op: "daemons_stop",
+                args: json!({"id": "nosuch"}),
+            },
+            Fixture {
+                op: "config_get",
+                args: json!({"id": "nosuch"}),
+            },
+            Fixture {
+                op: "unregister",
+                args: json!({"kind": "mcp", "id": "nosuch"}),
+            },
+            Fixture {
+                op: "enable",
+                args: json!({"kind": "mcp", "id": "nosuch"}),
+            },
         ];
         futures_executor_block(testing::assert_error_codes(&registry(), &ctx, &fixtures));
     }
@@ -357,30 +406,71 @@ mod kit {
         let gait_dir = dir.path().to_str().unwrap();
 
         let (code, output, error) = super::run(&[
-            "gait", "auth", "status", "--gait-dir", gait_dir, "--id", "new-provider",
+            "gait",
+            "auth",
+            "status",
+            "--gait-dir",
+            gait_dir,
+            "--id",
+            "new-provider",
         ]);
         assert_eq!(code, 0, "{error}");
         assert!(output.contains("new-provider"), "{output}");
 
         let (code, _, error) = super::run(&[
-            "gait", "inference", "add", "--gait-dir", gait_dir, "--id", "new-profile",
-            "--model", "provider/model", "--compaction-threshold-tokens", "1000",
+            "gait",
+            "inference",
+            "add",
+            "--gait-dir",
+            gait_dir,
+            "--id",
+            "new-profile",
+            "--model",
+            "provider/model",
+            "--compaction-threshold-tokens",
+            "1000",
         ]);
         assert_eq!(code, 0, "{error}");
 
         let (code, _, error) = super::run(&[
-            "gait", "config", "set", "--gait-dir", gait_dir, "--id", "theme", "--value", "-dark",
+            "gait",
+            "config",
+            "set",
+            "--gait-dir",
+            gait_dir,
+            "--id",
+            "theme",
+            "--value",
+            "-dark",
         ]);
         assert_eq!(code, 0, "{error}");
 
         let (code, _, error) = super::run(&[
-            "gait", "mode", "add", "--gait-dir", gait_dir, "--id", "new-mode", "--allow", "read",
+            "gait",
+            "mode",
+            "add",
+            "--gait-dir",
+            gait_dir,
+            "--id",
+            "new-mode",
+            "--allow",
+            "read",
         ]);
         assert_eq!(code, 0, "{error}");
 
         let (code, _, error) = super::run(&[
-            "gait", "register", "--gait-dir", gait_dir, "--kind", "mcp", "--id", "dash-args",
-            "--command", "echo", "--args", "-y @pkg/example",
+            "gait",
+            "register",
+            "--gait-dir",
+            gait_dir,
+            "--kind",
+            "mcp",
+            "--id",
+            "dash-args",
+            "--command",
+            "echo",
+            "--args",
+            "-y @pkg/example",
         ]);
         assert_eq!(code, 0, "{error}");
     }
@@ -389,7 +479,13 @@ mod kit {
     /// reads its key from stdin, and the kit calls it with sample arguments.
     fn in_child(name: &str) {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &format!("kit::{name}"), "--ignored", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                &format!("kit::{name}"),
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .stdin(std::process::Stdio::null())
             .output()
             .unwrap();
@@ -414,7 +510,11 @@ mod kit {
         std::fs::write(&key_file, "KEYLINE-gait-registry-4417\n").unwrap();
         let sentinel = testing::SecretSentinel::new("sk-SENTINEL1234567890", &key_file);
         let manual = full_manual();
-        futures_executor_block(testing::assert_secrets_not_echoed(&registry(), Some(&manual), &sentinel));
+        futures_executor_block(testing::assert_secrets_not_echoed(
+            &registry(),
+            Some(&manual),
+            &sentinel,
+        ));
     }
 
     #[test]
@@ -426,7 +526,11 @@ mod kit {
             names.sort_unstable();
             std::fs::write(&path, names.join("\n") + "\n").unwrap();
         }
-        let canonical: Vec<&str> = CANONICAL.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let canonical: Vec<&str> = CANONICAL
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
         testing::assert_canonical(&registry(), &canonical);
     }
 
@@ -439,7 +543,11 @@ mod kit {
     #[ignore = "run by assert_unknown_ref_not_found in a child process"]
     fn child_unknown_ref_not_found() {
         let (_dir, ctx) = gait_dir();
-        futures_executor_block(testing::assert_unknown_ref_not_found(&registry(), &ctx, &[]));
+        futures_executor_block(testing::assert_unknown_ref_not_found(
+            &registry(),
+            &ctx,
+            &[],
+        ));
     }
 
     #[test]
@@ -449,12 +557,22 @@ mod kit {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("ws");
         let fixtures = [
-            Fixture { op: "init", args: json!({"gaitDir": target}) },
-            Fixture { op: "link", args: json!({"gaitDir": target}) },
+            Fixture {
+                op: "init",
+                args: json!({"gaitDir": target}),
+            },
+            Fixture {
+                op: "link",
+                args: json!({"gaitDir": target}),
+            },
         ];
         let before = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
-        futures_executor_block(testing::assert_local_ops_offline(&registry(), &ctx, &fixtures));
+        futures_executor_block(testing::assert_local_ops_offline(
+            &registry(),
+            &ctx,
+            &fixtures,
+        ));
         std::env::set_current_dir(before).unwrap();
     }
 

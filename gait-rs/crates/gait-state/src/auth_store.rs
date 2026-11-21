@@ -555,7 +555,10 @@ mod tests {
             0o755
         );
         let text = g.clear_pending("openai-signin").unwrap_err().to_string();
-        assert!(text.contains("0755") && text.contains("tighten the permissions"), "{text}");
+        assert!(
+            text.contains("0755") && text.contains("tighten the permissions"),
+            "{text}"
+        );
         assert!(file.exists());
     }
 }

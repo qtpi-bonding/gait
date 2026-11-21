@@ -334,7 +334,14 @@ mod tests {
 
     #[test]
     fn agent_id_omitted_when_none() {
-        let r = DiagRecord::ping("s3d6bf3d6", 1, "minimax/MiniMax-M3", None, Phase::TurnBegin, 0);
+        let r = DiagRecord::ping(
+            "s3d6bf3d6",
+            1,
+            "minimax/MiniMax-M3",
+            None,
+            Phase::TurnBegin,
+            0,
+        );
         let line = r.to_json_line();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert!(

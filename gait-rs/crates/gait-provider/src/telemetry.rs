@@ -36,13 +36,22 @@ pub async fn with_call<F: Future>(ctx: CallContext, fut: F) -> F::Output {
 }
 
 #[cfg(feature = "telemetry")]
-pub(crate) fn report_failed(error: &ProviderError, attempt: u32, max_attempts: u32, will_retry: bool) {
+pub(crate) fn report_failed(
+    error: &ProviderError,
+    attempt: u32,
+    max_attempts: u32,
+    will_retry: bool,
+) {
     use gait_events::gait::events::v1::{ModelCallFailed, ModelFailureKind as K};
     let ctx = CALL.try_with(Clone::clone).unwrap_or_default();
     let (kind, http_status, request_id) = match error {
-        ProviderError::Http { status, request_id, .. } => {
-            (K::HttpStatus, u32::from(*status), request_id.clone().unwrap_or_default())
-        }
+        ProviderError::Http {
+            status, request_id, ..
+        } => (
+            K::HttpStatus,
+            u32::from(*status),
+            request_id.clone().unwrap_or_default(),
+        ),
         ProviderError::Timeout { phase } => (
             match phase {
                 TimeoutPhase::Connect => K::TimeoutConnect,
@@ -183,7 +192,14 @@ impl ModelCall {
                 error.code = tracing::field::Empty,
                 error.class = tracing::field::Empty,
             );
-            Self { span, start: std::time::Instant::now(), first_token: None, output_tokens: 0, answered: None, ended: false }
+            Self {
+                span,
+                start: std::time::Instant::now(),
+                first_token: None,
+                output_tokens: 0,
+                answered: None,
+                ended: false,
+            }
         }
         #[cfg(not(feature = "telemetry"))]
         {
@@ -206,7 +222,8 @@ impl ModelCall {
         if self.first_token.is_none() {
             let now = std::time::Instant::now();
             self.first_token = Some(now);
-            self.span.record("gait.time_to_first_token_ms", millis(now - self.start));
+            self.span
+                .record("gait.time_to_first_token_ms", millis(now - self.start));
         }
     }
 
@@ -238,11 +255,18 @@ impl ModelCall {
         #[cfg(feature = "telemetry")]
         {
             self.output_tokens = usage.output;
-            self.span.record("gen_ai.usage.input_tokens", u64::from(usage.input));
-            self.span.record("gen_ai.usage.output_tokens", u64::from(usage.output));
-            self.span.record("gait.usage.cached_tokens", u64::from(usage.cached));
-            self.span.record("gait.usage.reasoning_tokens", u64::from(usage.reasoning));
-            self.span.record("gait.usage.cache_write_tokens", u64::from(usage.cache_write));
+            self.span
+                .record("gen_ai.usage.input_tokens", u64::from(usage.input));
+            self.span
+                .record("gen_ai.usage.output_tokens", u64::from(usage.output));
+            self.span
+                .record("gait.usage.cached_tokens", u64::from(usage.cached));
+            self.span
+                .record("gait.usage.reasoning_tokens", u64::from(usage.reasoning));
+            self.span.record(
+                "gait.usage.cache_write_tokens",
+                u64::from(usage.cache_write),
+            );
         }
         #[cfg(not(feature = "telemetry"))]
         let _ = usage;
@@ -256,7 +280,8 @@ impl ModelCall {
                 self.span.record("gait.server.time_to_first_token_ms", v);
             }
             if let Some(v) = tokens_per_second {
-                self.span.record("gait.server.generation_tokens_per_second", v);
+                self.span
+                    .record("gait.server.generation_tokens_per_second", v);
             }
         }
         #[cfg(not(feature = "telemetry"))]
@@ -280,11 +305,15 @@ impl ModelCall {
         if !self.ended {
             self.ended = true;
             let now = self.answered.unwrap_or_else(std::time::Instant::now);
-            self.span.record("gait.duration_ms", millis(now - self.start));
+            self.span
+                .record("gait.duration_ms", millis(now - self.start));
             if let Some(first) = self.first_token {
                 let generating = (now - first).as_secs_f64();
                 if self.output_tokens > 0 && generating > 0.0 {
-                    self.span.record("gait.output_tokens_per_second", f64::from(self.output_tokens) / generating);
+                    self.span.record(
+                        "gait.output_tokens_per_second",
+                        f64::from(self.output_tokens) / generating,
+                    );
                 }
             }
         }
@@ -346,15 +375,26 @@ mod tests {
             request_id: Some("req_1".into()),
         };
         with_call(
-            CallContext { session_id: "s-429".into(), turn_id: "t1".into(), model: "openai/gpt-x".into(), ..Default::default() },
+            CallContext {
+                session_id: "s-429".into(),
+                turn_id: "t1".into(),
+                model: "openai/gpt-x".into(),
+                ..Default::default()
+            },
             async { report_failed(&error, 1, 3, true) },
         )
         .await;
         let event = capture.single_event_where::<ModelCallFailed>(|e| e.gait_session_id == "s-429");
         assert_eq!(event.kind, K::HttpStatus as i32);
         assert_eq!((event.http_status, event.retry_after_ms), (429, 7000));
-        assert_eq!((event.attempt, event.attempt_max, event.will_retry), (1, 3, true));
-        assert_eq!((event.provider_request_id.as_str(), event.model.as_str()), ("req_1", "openai/gpt-x"));
+        assert_eq!(
+            (event.attempt, event.attempt_max, event.will_retry),
+            (1, 3, true)
+        );
+        assert_eq!(
+            (event.provider_request_id.as_str(), event.model.as_str()),
+            ("req_1", "openai/gpt-x")
+        );
     }
 
     #[tokio::test]
@@ -376,14 +416,27 @@ mod tests {
             .into_iter()
             .map(|e| e.source_record_id)
             .collect();
-        assert_eq!(ids.len(), 2, "a monitor that dedupes on the id must see both");
+        assert_eq!(
+            ids.len(),
+            2,
+            "a monitor that dedupes on the id must see both"
+        );
     }
 
     #[test]
     fn a_timeout_maps_to_its_phase() {
         let capture = concord_telemetry::testing::capture_exclusive();
-        report_failed(&ProviderError::Timeout { phase: TimeoutPhase::Ttfb }, 3, 3, false);
-        let event = capture.single_event_where::<ModelCallFailed>(|e| e.attempt == 3 && e.gait_session_id.is_empty());
+        report_failed(
+            &ProviderError::Timeout {
+                phase: TimeoutPhase::Ttfb,
+            },
+            3,
+            3,
+            false,
+        );
+        let event = capture.single_event_where::<ModelCallFailed>(|e| {
+            e.attempt == 3 && e.gait_session_id.is_empty()
+        });
         assert_eq!(event.kind, K::TimeoutTtfb as i32);
         assert!(!event.will_retry);
     }
@@ -399,7 +452,12 @@ mod call_span_tests {
         let span = call_span(2);
         record_failure(
             &span,
-            &ProviderError::Http { status: 429, body: String::new(), retry_after: None, request_id: None },
+            &ProviderError::Http {
+                status: 429,
+                body: String::new(),
+                retry_after: None,
+                request_id: None,
+            },
         );
         drop(span);
         let finished = concord_telemetry::testing::spans()
@@ -408,7 +466,11 @@ mod call_span_tests {
             .find(|s| s.name == "gait.provider.call")
             .expect("the call span finished");
         let value = |key: &str| {
-            finished.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.to_string())
+            finished
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.to_string())
         };
         assert_eq!(value("attempt").as_deref(), Some("2"));
         assert_eq!(value("http_status").as_deref(), Some("429"));

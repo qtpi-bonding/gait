@@ -41,16 +41,59 @@ pub(crate) fn finalized_turn(
             None,
             None,
         ),
-        TurnResult::Clarify { .. } => (Outcome::Clarify, String::new(), None, String::new(), None, None),
-        TurnResult::Inform { .. } => (Outcome::Inform, String::new(), None, String::new(), None, None),
-        TurnResult::Permissions => (Outcome::Permissions, String::new(), None, String::new(), None, None),
-        TurnResult::SandboxUnlock { .. } => {
-            (Outcome::SandboxUnlock, String::new(), None, String::new(), None, None)
-        }
-        TurnResult::Cancelled => (Outcome::Cancelled, String::new(), None, String::new(), None, None),
-        TurnResult::Failed { ended, message, code, class } => {
-            (Outcome::Failed, message.clone(), None, ended.clone(), code.clone(), class.clone())
-        }
+        TurnResult::Clarify { .. } => (
+            Outcome::Clarify,
+            String::new(),
+            None,
+            String::new(),
+            None,
+            None,
+        ),
+        TurnResult::Inform { .. } => (
+            Outcome::Inform,
+            String::new(),
+            None,
+            String::new(),
+            None,
+            None,
+        ),
+        TurnResult::Permissions => (
+            Outcome::Permissions,
+            String::new(),
+            None,
+            String::new(),
+            None,
+            None,
+        ),
+        TurnResult::SandboxUnlock { .. } => (
+            Outcome::SandboxUnlock,
+            String::new(),
+            None,
+            String::new(),
+            None,
+            None,
+        ),
+        TurnResult::Cancelled => (
+            Outcome::Cancelled,
+            String::new(),
+            None,
+            String::new(),
+            None,
+            None,
+        ),
+        TurnResult::Failed {
+            ended,
+            message,
+            code,
+            class,
+        } => (
+            Outcome::Failed,
+            message.clone(),
+            None,
+            ended.clone(),
+            code.clone(),
+            class.clone(),
+        ),
     };
     crate::proto::gait::sandbox::v1::FinalizedTurn {
         outcome: outcome as i32,
