@@ -21,11 +21,11 @@ Use `--gait-dir <path>` instead of `GAIT_DIR` when needed. Use
 ## Workspace
 
 ```bash
-gait init <path>
-gait init <path> --force
-gait link /path/to/gait-workspace
-gait config get <key>
-gait config set <key> <value>
+gait init --gait-dir <path>
+gait init --gait-dir <path> --force
+gait link --gait-dir /path/to/gait-workspace
+gait config get --id <key>
+gait config set --id <key> --value <value>
 ```
 
 `gait init` creates a workspace. `gait link` writes a `.gaitref` in the current
@@ -43,15 +43,16 @@ compaction_threshold_tokens: 128000
 
 ```bash
 gait inference list
-gait inference show <inference-name>
-gait inference add <inference-name> --model <provider>/<model-id>
+gait inference show --id <inference-name>
+gait inference add --id <inference-name> --model <provider>/<model-id> \
+  --compaction-threshold-tokens 128000
 ```
 
 Set the workspace default:
 
 ```bash
-gait config set inference <inference-name>
-gait config get inference
+gait config set --id inference --value <inference-name>
+gait config get --id inference
 ```
 
 Use a profile for one turn:
@@ -73,7 +74,7 @@ gait -e --inference <inference-name> \
 Select or clear the profile recorded for an active session:
 
 ```bash
-gait inference select <inference-name> --session <session-id>
+gait inference select --id <inference-name> --session <session-id>
 gait inference clear --session <session-id>
 ```
 
@@ -126,72 +127,68 @@ gait auth logout --id <provider>
 gait auth link --id <provider> --source <source>
 gait auth unlink --id <provider>
 gait models
-gait models <filter>
+gait models --filter <filter>
 ```
 
 ## Sessions
 
 ```bash
 gait sessions
-gait sessions --json
 gait ps
-gait ps --json
-gait stats <session-id>
-gait stats <session-id> --json
+gait stats --id <session-id>
+gait log --id <session-id>
 ```
 
 Persist a session by merging it into the main codebase:
 
 ```bash
-gait persist <session-id> --yes
+gait persist --id <session-id> --yes
 gait persist --all --yes
-gait persist <session-id> --json
 ```
 
 Discard a session without merging it:
 
 ```bash
-gait discard <session-id> --yes
-gait discard --all --yes
-gait discard <session-id> --json
+gait discard --id <session-id> --yes
+gait discard --all --yes --force
 ```
 
 Inspect or undo turns:
 
 ```bash
-gait undo <session-id> --list
-gait undo <session-id> --turn <turn-number>
-gait undo <session-id> --turn <turn-number> --code
-gait undo <session-id> --turn <turn-number> --transcript
+gait undo --id <session-id> --list
+gait undo --id <session-id> --turn <turn-number>
+gait undo --id <session-id> --turn <turn-number> --code
+gait undo --id <session-id> --turn <turn-number> --transcript
 ```
 
 ## Permissions and session updates
 
 ```bash
-gait allow <session-id> --pattern '<pattern>'
-gait allow <session-id> --pattern '<pattern>' --scope <once|session|global|agent>
-gait allow <session-id> --pattern '<pattern>' --scope agent --agent <agent-name>
-gait deny <session-id>
-gait unlock <session-id>
-gait unlock <session-id> --scope <once|session|global|agent>
-gait unlock <session-id> --scope agent --agent <agent-name>
-gait reply <session-id> "<message>"
+gait allow --id <session-id> --pattern '<pattern>'
+gait allow --id <session-id> --pattern '<pattern>' --scope <once|session|global|agent>
+gait allow --id <session-id> --pattern '<pattern>' --scope agent --agent <agent-name>
+gait deny --id <session-id>
+gait unlock --id <session-id>
+gait unlock --id <session-id> --scope <once|session|global|agent>
+gait unlock --id <session-id> --scope agent --agent <agent-name>
+gait reply --id <session-id> --message "<message>"
 ```
 
 Load or unload a registered extension for a session:
 
 ```bash
-gait load <mcp|skill|plugin> <name> <session-id>
-gait unload <mcp|skill|plugin> <name> <session-id>
+gait load --kind <mcp|skill|plugin> --id <name> --session <session-id>
+gait unload --kind <mcp|skill|plugin> --id <name> --session <session-id>
 ```
 
 ## Extensions
 
 ```bash
-gait register <mcp|skill|plugin> <name> [options]
-gait unregister <mcp|skill|plugin> <name>
-gait enable <mcp|skill|plugin> <name>
-gait disable <mcp|skill|plugin> <name>
+gait register --kind <mcp|skill|plugin> --id <name> [options]
+gait unregister --kind <mcp|skill|plugin> --id <name>
+gait enable --kind <mcp|skill|plugin> --id <name>
+gait disable --kind <mcp|skill|plugin> --id <name>
 ```
 
 Use `gait register --help` and the kind-specific help for registration
@@ -209,14 +206,14 @@ gait workflow log <run-id>
 
 gait daemons list
 gait daemons list --all
-gait daemons stop <daemon-name>
+gait daemons stop --id <daemon-name>
 ```
 
 ## Common command options
 
 Most workspace and session commands accept `--gait-dir <path>` or use
 `GAIT_DIR`. Commands that operate on a codebase accept `--codebase <path>`.
-Commands with machine-readable output accept `--json`.
+Every command prints JSON; lists are `{"items":[...]}`. Add `--pretty` for indented output.
 
 ```bash
 gait <command> --help
