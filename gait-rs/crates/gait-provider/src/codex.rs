@@ -178,6 +178,7 @@ impl Provider for CodexResponsesProvider {
         let events = match crate::telemetry::within(call.span(), self.transport.stream(request)).await {
             Ok(events) => events,
             Err(error) => {
+                let error = expired_credential_error(error);
                 call.fail(&error);
                 return Err(error);
             }
@@ -192,6 +193,35 @@ impl Provider for CodexResponsesProvider {
     fn model_id(&self) -> &str {
         &self.model
     }
+}
+
+/// Body error codes with which the Codex backend says the access token is no
+/// longer valid. Only a 401 carrying one of them is read as expiry.
+const EXPIRED_TOKEN_CODES: [&str; 3] = ["token_expired", "invalid_token", "refresh_token_expired"];
+
+/// Turn a 401 whose body code says the token expired into the coded auth
+/// error that names the login command. The provider cannot tell a linked
+/// Codex login from gait's own, so the message names both. Gait never
+/// refreshes either here: a linked credential belongs to the Codex CLI.
+fn expired_credential_error(error: ProviderError) -> ProviderError {
+    let ProviderError::Http { status: 401, body, .. } = &error else {
+        return error;
+    };
+    let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let code = value
+        .get("error")
+        .and_then(|inner| inner.get("code").or(Some(inner)))
+        .and_then(Value::as_str)
+        .or_else(|| value.get("code").and_then(Value::as_str));
+    if !code.is_some_and(|code| EXPIRED_TOKEN_CODES.contains(&code)) {
+        return error;
+    }
+    gait_auth::AuthError::Expired(
+        "the codex credentials expired; run `codex login` again for a linked codex login, \
+         or `gait auth login --id openai-codex`"
+            .into(),
+    )
+    .into()
 }
 
 /// The Codex backend keys its prompt cache on UUID-shaped session ids; gait's
@@ -335,6 +365,50 @@ mod tests {
             codex_failure_format(&crate::responses_wire::failure_from_value(&event, false)),
             "Codex Responses request failed (server_error): model backend unavailable"
         );
+    }
+
+    fn unauthorized(body: &str) -> ProviderError {
+        ProviderError::Http {
+            status: 401,
+            body: body.into(),
+            retry_after: None,
+            request_id: None,
+        }
+    }
+
+    #[test]
+    fn expired_token_401_becomes_the_coded_auth_error() {
+        use coded_error::CodedError;
+        for body in [
+            r#"{"error":{"code":"token_expired"}}"#,
+            r#"{"error":"invalid_token"}"#,
+            r#"{"code":"refresh_token_expired"}"#,
+        ] {
+            let mapped = expired_credential_error(unauthorized(body));
+            assert_eq!(mapped.code(), "gait.auth.expired", "{body}");
+            assert_eq!(mapped.class(), coded_error::ErrorClass::Logical);
+            assert!(mapped.to_string().contains("codex login"));
+            assert!(mapped.to_string().contains("gait auth login --id openai-codex"));
+        }
+    }
+
+    #[test]
+    fn other_failures_keep_their_http_error() {
+        for error in [
+            unauthorized(r#"{"error":{"code":"something_else"}}"#),
+            unauthorized("not json"),
+            ProviderError::Http {
+                status: 403,
+                body: r#"{"error":{"code":"token_expired"}}"#.into(),
+                retry_after: None,
+                request_id: None,
+            },
+        ] {
+            assert!(matches!(
+                expired_credential_error(error),
+                ProviderError::Http { .. }
+            ));
+        }
     }
 
     #[tokio::test]

@@ -122,6 +122,11 @@ pub enum ProviderError {
     #[error("{0}")]
     #[coded(code = "other", class_with = provider_class)]
     Other(String),
+    /// The provider rejected the credential as expired; carries the auth
+    /// error's own code and class.
+    #[error(transparent)]
+    #[coded(transparent)]
+    Auth(#[from] gait_auth::AuthError),
 }
 
 impl ProviderError {

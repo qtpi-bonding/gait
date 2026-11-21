@@ -133,6 +133,35 @@ fn is_signin_credential(provider: &str, credential: &gait_auth::ResolvedCredenti
     )
 }
 
+/// A codex lease already past its expiry fails before any request. The
+/// message names the login that fixes it: a linked codex login belongs to the
+/// codex CLI, gait's own to `gait auth login`. Gait refreshes neither here.
+fn reject_expired_codex(lease: &gait_auth::CredentialLease) -> anyhow::Result<()> {
+    let gait_auth::ResolvedCredential::Subscription(subscription) = &lease.credential else {
+        return Ok(());
+    };
+    if subscription.provider_id != gait_auth::codex::CODEX_PROVIDER_ID {
+        return Ok(());
+    }
+    let Some(expires_at) = subscription.expires_at_unix_s else {
+        return Ok(());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    if expires_at > now {
+        return Ok(());
+    }
+    let message = if lease.source_id == "codex" {
+        "the linked codex credentials expired; run `codex login` again"
+    } else {
+        "the codex credentials expired; run `gait auth login --id openai-codex`"
+    };
+    Err(coded_error::into_anyhow(gait_auth::AuthError::Expired(
+        message.into(),
+    )))
+}
+
 /// Prepare the credential at the spine boundary.  Sign-in credentials are
 /// refreshed while the store lock is held, then reduced to the access-token
 /// projection understood by the brain.
@@ -143,6 +172,7 @@ pub async fn prepare_credential_with(
     store: &dyn gait_auth::store::CredentialStore,
 ) -> anyhow::Result<Option<gait_auth::ResolvedCredential>> {
     let Some(lease) = lease else { return Ok(None) };
+    reject_expired_codex(&lease)?;
     if provider == gait_auth::signin::SIGNIN_PROVIDER_ID
         && !matches!(&lease.credential,
             gait_auth::ResolvedCredential::Subscription(c)
@@ -172,6 +202,9 @@ pub async fn prepare_credential(
     provider: &str,
     lease: Option<gait_auth::CredentialLease>,
 ) -> anyhow::Result<Option<gait_auth::ResolvedCredential>> {
+    if let Some(lease) = &lease {
+        reject_expired_codex(lease)?;
+    }
     if lease
         .as_ref()
         .is_none_or(|lease| !is_signin_credential(provider, &lease.credential))
@@ -1098,7 +1131,7 @@ mod tests {
                     provider_id: "openai-codex".into(),
                     method_id: "codex-subscription".into(),
                     version: 1,
-                    expires_at_unix_s: Some(10),
+                    expires_at_unix_s: Some(u64::MAX / 2),
                     account_label: Some("account".into()),
                     secret: serde_json::json!({"opaque":"value"}),
                 },
@@ -1118,6 +1151,63 @@ mod tests {
                 .await
                 .unwrap(),
             Some(codex.credential)
+        );
+    }
+
+    fn codex_lease(source_id: &str, expires_at_unix_s: Option<u64>) -> gait_auth::CredentialLease {
+        gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::Subscription(
+                gait_auth::SubscriptionCredential {
+                    provider_id: "openai-codex".into(),
+                    method_id: "codex-subscription".into(),
+                    version: 1,
+                    expires_at_unix_s,
+                    account_label: None,
+                    secret: serde_json::json!({"opaque":"value"}),
+                },
+            ),
+            source_id: source_id.into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_credential_rejects_an_expired_codex_lease_with_the_action() {
+        let store = gait_state::auth_store::FileCredentialStore::new(
+            tempfile::tempdir().unwrap().path().join("auth.json"),
+        );
+        let method = gait_auth::signin::ChatGptSignIn::new();
+        for (source, action) in [
+            ("codex", "run `codex login` again"),
+            ("gait", "run `gait auth login --id openai-codex`"),
+        ] {
+            let error = prepare_credential_with(
+                "openai-codex",
+                Some(codex_lease(source, Some(10))),
+                &method,
+                &store,
+            )
+            .await
+            .unwrap_err();
+            let coded = coded_error::from_anyhow(&error).expect("coded error");
+            assert_eq!(coded.facts().code, "gait.auth.expired");
+            assert!(error.to_string().contains(action), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_credential_passes_a_codex_lease_without_expiry() {
+        let store = gait_state::auth_store::FileCredentialStore::new(
+            tempfile::tempdir().unwrap().path().join("auth.json"),
+        );
+        let method = gait_auth::signin::ChatGptSignIn::new();
+        let lease = codex_lease("codex", None);
+        assert_eq!(
+            prepare_credential_with("openai-codex", Some(lease.clone()), &method, &store)
+                .await
+                .unwrap(),
+            Some(lease.credential)
         );
     }
 

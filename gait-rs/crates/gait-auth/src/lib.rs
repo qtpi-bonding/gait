@@ -139,6 +139,11 @@ pub enum AuthError {
     #[error("authentication requires login again: {0}")]
     #[coded(code = "login_required", class = Logical)]
     LoginRequired(String),
+    /// The stored credential's lifetime ended; the message names the login
+    /// command that issues a new one.
+    #[error("{0}")]
+    #[coded(code = "expired", class = Logical)]
+    Expired(String),
     #[error("authentication failed: {0}")]
     #[coded(code = "other", class = Unknown)]
     Other(String),

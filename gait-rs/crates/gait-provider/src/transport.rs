@@ -565,6 +565,7 @@ fn retry_diagnostic(attempt: u32, max_attempts: u8, error: &ProviderError) -> St
         ProviderError::ResponseTooLarge { .. } => "response_too_large",
         ProviderError::Json(_) => "json",
         ProviderError::Other(_) => "other",
+        ProviderError::Auth(_) => "auth",
     };
     format!("transport_retry attempt={attempt}/{max_attempts} reason={reason}")
 }
