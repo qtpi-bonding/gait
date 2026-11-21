@@ -1,6 +1,6 @@
 //! Local-model ops: set up a llama.cpp profile and manage its runner. Only
-//! built with the `local` feature; declared in its own `ops!` block and merged
-//! into the registry.
+//! built with the `local` feature; its entries are `#[cfg(feature = "local")]`
+//! in the main `ops!` block.
 use super::{infra, GaitContext};
 use gait_cli::cli::error::CliError;
 use op_registry::{CallOptions, OpParams, Ref};
@@ -31,7 +31,7 @@ output! {
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalSetupParams {
     /// The profile id; `local-qwen` when not given.
-    #[op(subject = "inference", id_only, absent_ok, default = "local-qwen", hide_default)]
+    #[op(subject = "inference", id_only, absent_ok)]
     pub id: Option<Ref>,
     /// The GGUF file of Qwen2.5-Coder-7B-Instruct Q4_K_M.
     pub model_path: String,
@@ -49,7 +49,7 @@ pub struct LocalSetupParams {
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalRunnerParams {
     /// The profile id; `local-qwen` when not given.
-    #[op(subject = "inference", id_only, default = "local-qwen", hide_default)]
+    #[op(subject = "inference", id_only)]
     pub id: Option<Ref>,
 }
 
