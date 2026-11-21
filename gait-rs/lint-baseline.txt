@@ -17,6 +17,7 @@
 1	crates/gait-bin/src/ops/auth.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-bin/src/ops/local.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-bin/src/ops/mod.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-bin/src/ops/turn.rs: ratchet.error_to_string: error converted to string
 1	crates/gait-cli/src/cli/admin.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-cli/src/cli/admin.rs: ratchet.result_string: Result error type is String
 1	crates/gait-cli/src/cli/args.rs: ratchet.error_to_string: error formatted as string

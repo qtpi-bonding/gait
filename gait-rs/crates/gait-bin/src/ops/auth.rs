@@ -201,13 +201,19 @@ pub async fn add(
             "openai-codex uses a ChatGPT subscription; run: gait auth login --id openai-codex",
         ));
     }
-    let key = std::str::from_utf8(params.key_file.bytes())
-        .map_err(|e| CliError::usage(format!("invalid API key: {e}")))?
-        .trim()
-        .to_owned();
     opts.redact(params.key_file.bytes());
+    let key = first_line(params.key_file.bytes(), "API key")?;
+    opts.redact(key.as_bytes());
     let out = gait_ops::auth::add(provider, key).map_err(failed)?;
     Ok(AuthSaved { provider: out.provider, display: out.display, action: "saved".into() })
+}
+
+/// The first line of a secret file, trimmed: what the old stdin read took, so a
+/// trailing comment or second line is not stored as part of the secret.
+fn first_line(bytes: &[u8], what: &str) -> anyhow::Result<String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| CliError::usage(format!("the {what} is not valid UTF-8")))?;
+    Ok(text.lines().next().unwrap_or_default().trim().to_owned())
 }
 
 /// Use another tool's credentials for a provider without copying them.
@@ -267,11 +273,9 @@ pub async fn login(
     }
     if provider == SIGNIN {
         if let Some(file) = params.callback_file {
-            let callback = std::str::from_utf8(file.bytes())
-                .map_err(|e| CliError::usage(format!("invalid callback URL: {e}")))?
-                .trim()
-                .to_owned();
             opts.redact(file.bytes());
+            let callback = first_line(file.bytes(), "callback URL")?;
+            opts.redact(callback.as_bytes());
             return gait_ops::auth::login_complete(provider, callback).await.map(saved).map_err(failed);
         }
         let start = gait_ops::auth::login_begin(provider).await.map_err(failed)?;

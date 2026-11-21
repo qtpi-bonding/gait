@@ -299,5 +299,11 @@ mod tests {
                 flag.long
             );
         }
+        // And the other way: no flag of the turn is missing from the table.
+        for argument in command.get_arguments() {
+            if let Some(long) = argument.get_long() {
+                assert!(TURN_FLAGS.iter().any(|flag| flag.long == long), "TURN_FLAGS is missing --{long}");
+            }
+        }
     }
 }
