@@ -61,7 +61,7 @@ pub(crate) fn require_active(gait_dir: &std::path::Path, session: &str) -> anyho
 /// the call hook to the registry it generates.
 pub mod decl {
     use super::session::{
-        AllowParams, BulkParams, PsParams, ReplyParams, SessionId, SessionsParams, UndoParams,
+        AllowParams, DiscardParams, PersistParams, PsParams, ReplyParams, SessionId, SessionsParams, UndoParams,
         UnlockParams,
     };
     use super::session::{
@@ -123,11 +123,11 @@ pub mod decl {
                     access: [writes, destructive], audience: owner, op: super::session::undo,
                     errors: [OpError], paths: [cli] },
         /// Merge a session onto main and remove its worktree, or all idle sessions with `--all --yes`.
-        "persist" => { params: BulkParams, output: SessionAct,
+        "persist" => { params: PersistParams, output: SessionAct,
                        access: writes, audience: owner, op: super::session::persist,
                        errors: [OpError], paths: [cli] },
         /// Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
-        "discard" => { params: BulkParams, output: SessionAct,
+        "discard" => { params: DiscardParams, output: SessionAct,
                        access: [writes, destructive], audience: owner, op: super::session::discard,
                        errors: [OpError], paths: [cli] },
         /// Approve the permission requests a session is waiting on.
@@ -306,10 +306,22 @@ pub fn min_registry() -> op_registry::Registry<GaitContext> {
     registry
 }
 
+/// A state conflict an op reports is a caller mistake: a usage error, exit 2.
+fn conflict_is_usage(error: anyhow::Error) -> anyhow::Error {
+    match coded_error::downcast_ref::<gait_ops::OpError>(&error) {
+        Some(gait_ops::OpError::Conflict(message)) => coded_error::into_anyhow(op_registry::UsageError::Conflicts {
+            field: "operation".into(),
+            other: message.clone(),
+        }),
+        _ => error,
+    }
+}
+
 /// A registry whose turn opens `repl` for `-i`.
 pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     let mut registry = decl::registry();
     registry.set_call_hook(std::sync::Arc::new(GaitCallHook));
+    registry.set_error_mapper(conflict_is_usage);
     registry.merge(workspace::decl::registry());
     #[cfg(feature = "full")]
     registry.merge(manual::decl::registry());

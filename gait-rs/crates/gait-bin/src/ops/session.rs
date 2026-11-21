@@ -201,11 +201,45 @@ pub struct UndoParams {
     pub list: bool,
 }
 
-/// `persist` and `discard` act on one session or on all idle ones.
+fn check_bulk(id: &Option<Ref>, all: bool, yes: bool, dry_run: bool) -> Result<(), UsageError> {
+    if id.is_some() == all {
+        return Err(UsageError::OneOf { group: "id or all".into() });
+    }
+    if all && !yes && !dry_run {
+        return Err(UsageError::InvalidField {
+            name: "all".into(),
+            reason: "--all needs --yes unless --dry-run".into(),
+        });
+    }
+    Ok(())
+}
+
+/// The target and acknowledgement for `persist`.
 #[derive(Debug, Clone, OpParams)]
-pub struct BulkParams {
+#[op(validate = validate_persist)]
+pub struct PersistParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
-    pub id: Option<String>,
+    #[op(subject = "session", id_only)]
+    pub id: Option<Ref>,
+    /// Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
+    pub all: bool,
+    /// Confirm acting on all sessions.
+    pub yes: bool,
+    /// Show what would be acted on and change nothing.
+    pub dry_run: bool,
+}
+
+fn validate_persist(p: &PersistParams) -> Result<(), UsageError> {
+    check_bulk(&p.id, p.all, p.yes, p.dry_run)
+}
+
+/// The target and acknowledgement for `discard`.
+#[derive(Debug, Clone, OpParams)]
+#[op(validate = validate_discard)]
+pub struct DiscardParams {
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    #[op(subject = "session", id_only)]
+    pub id: Option<Ref>,
     /// Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
     pub all: bool,
     /// Confirm acting on all sessions.
@@ -214,6 +248,10 @@ pub struct BulkParams {
     pub dry_run: bool,
     /// Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
     pub force: bool,
+}
+
+fn validate_discard(p: &DiscardParams) -> Result<(), UsageError> {
+    check_bulk(&p.id, p.all, p.yes, p.dry_run)
 }
 
 /// Where an allowed pattern is remembered.
@@ -380,44 +418,36 @@ pub async fn undo(
     })
 }
 
-/// Which sessions a `persist` or `discard` covers; exactly one of `--id` and `--all`.
-fn target(params: &BulkParams) -> anyhow::Result<()> {
-    if params.id.is_some() == params.all {
-        return Err(coded_error::into_anyhow(UsageError::OneOf { group: "target".into() }));
-    }
-    if params.all && !params.yes && !params.dry_run {
-        return Err(coded_error::into_anyhow(UsageError::RequiresIf {
-            field: "yes".into(),
-            other: "all".into(),
-        }));
-    }
-    Ok(())
-}
-
-fn act(gait_dir: &Path, verb: BulkVerb, params: BulkParams) -> anyhow::Result<SessionAct> {
+fn act(
+    gait_dir: &Path,
+    verb: BulkVerb,
+    id: Option<Ref>,
+    dry_run: bool,
+    force: bool,
+) -> anyhow::Result<SessionAct> {
     use gait_ops::session::{bulk_act, classify_bulk, require_session};
-    target(&params)?;
     let done = match verb {
         BulkVerb::Persist => "persisted",
         BulkVerb::Discard => "discarded",
     };
-    let plan: BulkPlan = match &params.id {
+    let plan: BulkPlan = match &id {
         Some(id) => {
-            require_session(gait_dir, id)?;
+            require_session(gait_dir, id.as_raw())?;
             let plan = classify_bulk(gait_dir, verb)?;
-            if !plan.eligible.iter().any(|s| s == id) {
+            if !plan.eligible.iter().any(|s| s == id.as_raw()) {
                 let why = plan
                     .skipped
                     .iter()
-                    .find(|(s, _)| s == id)
+                    .find(|(s, _)| s == id.as_raw())
                     .map(|(_, state)| format!(" ({state})"))
                     .unwrap_or_default();
                 return Err(gait_ops::OpError::invalid(format!(
-                    "session {id} is not eligible to {}{why}",
+                    "session {} is not eligible to {}{why}",
+                    id.as_raw(),
                     if verb == BulkVerb::Persist { "persist" } else { "discard" }
                 )));
             }
-            BulkPlan { verb, eligible: vec![id.clone()], skipped: Vec::new() }
+            BulkPlan { verb, eligible: vec![id.as_raw().to_owned()], skipped: Vec::new() }
         }
         None => classify_bulk(gait_dir, verb)?,
     };
@@ -426,8 +456,8 @@ fn act(gait_dir: &Path, verb: BulkVerb, params: BulkParams) -> anyhow::Result<Se
             .map(|(id, state)| SkippedSession { session_id: id.clone(), state: state.clone() })
             .collect::<Vec<_>>()
     };
-    if params.dry_run || plan.eligible.is_empty() {
-        let action = if params.dry_run { "dry-run" } else { done };
+    if dry_run || plan.eligible.is_empty() {
+        let action = if dry_run { "dry-run" } else { done };
         return Ok(SessionAct {
             action: action.into(),
             skipped: skipped(&plan.skipped),
@@ -439,7 +469,7 @@ fn act(gait_dir: &Path, verb: BulkVerb, params: BulkParams) -> anyhow::Result<Se
     }
     // A single session is its own acknowledgement; for many, `force` is the
     // second opt-in the discard gate asks for.
-    let force = params.id.is_some() || params.force || verb == BulkVerb::Persist;
+    let force = id.is_some() || force || verb == BulkVerb::Persist;
     let outcome = bulk_act(gait_dir, &plan, true, force)?;
     Ok(SessionAct {
         action: done.into(),
@@ -462,19 +492,19 @@ fn act(gait_dir: &Path, verb: BulkVerb, params: BulkParams) -> anyhow::Result<Se
 /// Merge a session onto main and remove its worktree, or all idle sessions with `--all --yes`.
 pub async fn persist(
     ctx: &GaitContext,
-    params: BulkParams,
+    params: PersistParams,
     _opts: CallOptions,
 ) -> anyhow::Result<SessionAct> {
-    act(&dir(ctx)?, BulkVerb::Persist, params)
+    act(&dir(ctx)?, BulkVerb::Persist, params.id, params.dry_run, false)
 }
 
 /// Remove a session's worktree without merging; unrecoverable. `--all --yes --force` does it for all idle sessions.
 pub async fn discard(
     ctx: &GaitContext,
-    params: BulkParams,
+    params: DiscardParams,
     _opts: CallOptions,
 ) -> anyhow::Result<SessionAct> {
-    act(&dir(ctx)?, BulkVerb::Discard, params)
+    act(&dir(ctx)?, BulkVerb::Discard, params.id, params.dry_run, params.force)
 }
 
 /// Approve the permission requests a session is waiting on.

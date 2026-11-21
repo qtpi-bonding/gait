@@ -2,7 +2,7 @@
 //! plugins gait can use. Thin over `gait_ops::extension`.
 use super::{infra, GaitContext};
 use clap::ValueEnum;
-use op_registry::{CallOptions, OpParams, Ref};
+use op_registry::{CallOptions, OpParams, Ref, UsageError};
 use std::collections::BTreeMap;
 
 /// What kind of extension.
@@ -106,7 +106,32 @@ output! {
     }
 }
 
+fn validate_register(p: &ExtensionRegisterParams) -> Result<(), UsageError> {
+    match p.kind {
+        Kind::Mcp => {
+            if p.url.is_none() && p.command.is_none() {
+                return Err(UsageError::AtLeastOne { group: "url or command".into() });
+            }
+        }
+        Kind::Skill => {
+            if p.description.is_none() {
+                return Err(UsageError::MissingField { name: "description".into() });
+            }
+            if p.content.is_none() && p.path.is_none() {
+                return Err(UsageError::AtLeastOne { group: "content or path".into() });
+            }
+        }
+        Kind::Plugin => {
+            if p.wasm.is_none() {
+                return Err(UsageError::MissingField { name: "wasm".into() });
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, OpParams)]
+#[op(validate = validate_register)]
 pub struct ExtensionRegisterParams {
     /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
     #[op(subject = "extension", id_only, absent_ok)]
@@ -115,8 +140,10 @@ pub struct ExtensionRegisterParams {
     #[op(value_enum)]
     pub kind: Kind,
     /// The URL of an MCP server that is already running.
+    #[op(one_of_optional = "mcp_source")]
     pub url: Option<String>,
     /// The program that starts an MCP server.
+    #[op(one_of_optional = "mcp_source")]
     pub command: Option<String>,
     /// The arguments for `--command`, as one string split on spaces.
     #[op(allow_hyphen)]
@@ -126,8 +153,10 @@ pub struct ExtensionRegisterParams {
     pub description: Option<String>,
     /// The text of a skill, given inline.
     #[op(allow_hyphen)]
+    #[op(one_of_optional = "skill_source")]
     pub content: Option<String>,
     /// A file to read a skill from.
+    #[op(one_of_optional = "skill_source")]
     pub path: Option<String>,
     /// The `.wasm` file of a plugin.
     pub wasm: Option<String>,

@@ -177,6 +177,19 @@ fn bulk_persist_and_discard_need_yes() {
 }
 
 #[test]
+fn register_with_two_sources_is_a_usage_error() {
+    assert_usage(&["register", "--id", "x", "--kind", "mcp", "--url", "http://a", "--command", "b"]);
+    assert_usage(&["register", "--id", "x", "--kind", "skill", "--description", "d", "--content", "c", "--path", "p"]);
+    assert_usage(&["register", "--id", "x", "--kind", "mcp"]);
+}
+
+#[test]
+fn a_state_conflict_is_a_usage_error() {
+    // `--scope agent` without `--agent` is an `OpError::Conflict` from the library.
+    assert_usage(&["register", "--id", "x", "--kind", "mcp", "--url", "http://a", "--scope", "agent"]);
+}
+
+#[test]
 fn bulk_on_an_empty_workspace_is_an_empty_result() {
     let workspace = tempfile::TempDir::new().unwrap();
     assert!(gait().args(["init", "--gait-dir"]).arg(workspace.path()).status().unwrap().success());
