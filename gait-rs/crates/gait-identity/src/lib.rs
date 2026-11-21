@@ -772,7 +772,7 @@ mod tests {
         let now = identity_crypto::now_unix();
         let ttl = identity_crypto::DEFAULT_DELEGATION_SECONDS;
         let margin = identity_crypto::DEFAULT_RENEW_MARGIN_SECONDS;
-        assert_eq!(margin, 7 * 86_400);
+        assert_eq!(margin, 21 * 86_400);
         assert!(!renew_minted(&layout, now).unwrap());
         assert!(!renew_minted(&layout, now + ttl - margin - 600).unwrap());
         assert!(renew_minted(&layout, now + ttl - margin + 600).unwrap());
