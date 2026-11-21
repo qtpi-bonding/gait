@@ -125,25 +125,3 @@ pub async fn link(
     })
 }
 
-/// The workspace ops, merged into the registry.
-pub mod decl {
-    use super::{InitParams, InitResult, LinkParams, LinkResult};
-    use crate::ops::{GaitContext, Globals};
-    use gait_cli::cli::error::CliError;
-    use gait_ops::OpError;
-
-    op_registry::ops! {
-        Ctx = GaitContext;
-        globals = Globals;
-        pillar = "gait";
-        bin = "gait"; version = env!("CARGO_PKG_VERSION"); about = "AI coding agent";
-        /// Create a gait directory at `--gait-dir`: config, a default agent, skills and sessions, as a git repository.
-        "init" => { params: InitParams, output: InitResult,
-                    access: writes, audience: owner, local: super::init,
-                    errors: [OpError, CliError], paths: [cli] },
-        /// Point the current directory at the gait directory `--gait-dir` by writing a `.gaitref` file.
-        "link" => { params: LinkParams, output: LinkResult,
-                    access: writes, audience: owner, local: super::link,
-                    errors: [OpError, CliError], paths: [cli] },
-    }
-}

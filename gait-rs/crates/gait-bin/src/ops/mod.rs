@@ -88,6 +88,9 @@ pub mod decl {
         ModeAddParams, ModeAdded, ModeClearParams, ModeItem, ModeListParams, ModeRef,
         ModeSelectParams, ModeSelected,
     };
+    use super::workspace::{InitParams, InitResult, LinkParams, LinkResult};
+    #[cfg(feature = "local")]
+    use super::local::{LocalRunner, LocalRunnerParams, LocalSetup, LocalSetupParams};
     use super::{GaitContext, Globals};
     use gait_cli::cli::error::CliError;
     use gait_ops::OpError;
@@ -103,6 +106,7 @@ pub mod decl {
             "mode" => "Named permission modes, and which one a session uses.",
             "config" => "Keys of the gait directory's gait.jsonc.",
             "daemons" => "Background processes that sessions started.",
+            "local" => "Local models run by llama.cpp: set up a profile and manage its runner.",
         };
         /// List the active sessions, most recently updated first.
         "sessions" => { params: SessionsParams, output: Vec<SessionItem>,
@@ -270,6 +274,14 @@ pub mod decl {
         "unload" => { params: ExtensionLoadParams, output: ExtensionLoaded,
                       access: writes, audience: owner, op: super::extension::unload,
                       errors: [OpError, CliError], paths: [cli] },
+        /// Create a gait directory at `--gait-dir`: config, a default agent, skills and sessions, as a git repository.
+        "init" => { params: InitParams, output: InitResult,
+                    access: writes, audience: owner, local: super::workspace::init,
+                    errors: [OpError, CliError], paths: [cli] },
+        /// Point the current directory at the gait directory `--gait-dir` by writing a `.gaitref` file.
+        "link" => { params: LinkParams, output: LinkResult,
+                    access: writes, audience: owner, local: super::workspace::link,
+                    errors: [OpError, CliError], paths: [cli] },
     }
 }
 
@@ -314,11 +326,10 @@ pub fn min_registry() -> op_registry::Registry<GaitContext> {
 pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
     let mut registry = decl::registry();
     registry.set_call_hook(std::sync::Arc::new(GaitCallHook));
-    registry.merge(workspace::decl::registry());
+    // The group of the manual ops cannot be declared conditionally, and the
+    // `manual` op of `gait-min` is named like it: they stay a block of their own.
     #[cfg(feature = "full")]
     registry.merge(manual::decl::registry());
-    #[cfg(feature = "local")]
-    registry.merge(local::decl::registry());
     #[cfg(feature = "workflow")]
     registry.push_extra(workflow_command(), run_workflow);
     match repl {

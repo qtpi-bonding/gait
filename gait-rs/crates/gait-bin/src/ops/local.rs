@@ -159,33 +159,3 @@ pub async fn stop(
     runner(ctx, params, "stop").await
 }
 
-/// The local-model ops, merged into the registry when the feature is on.
-pub mod decl {
-    use super::{LocalRunner, LocalRunnerParams, LocalSetup, LocalSetupParams};
-    use crate::ops::GaitContext;
-    use crate::ops::Globals;
-    use gait_cli::cli::error::CliError;
-    use gait_ops::OpError;
-
-    op_registry::ops! {
-        Ctx = GaitContext;
-        globals = Globals;
-        pillar = "gait";
-        bin = "gait"; version = env!("CARGO_PKG_VERSION"); about = "AI coding agent";
-        groups = {
-            "local" => "Local models run by llama.cpp: set up a profile and manage its runner.",
-        };
-        /// Write a local inference profile for a Qwen2.5-Coder GGUF file.
-        "local setup" => { params: LocalSetupParams, output: LocalSetup,
-                           access: writes, audience: owner, op: super::setup,
-                           errors: [OpError, CliError], paths: [cli] },
-        /// Show whether the local model runner for a profile is running.
-        "local status" => { params: LocalRunnerParams, output: LocalRunner,
-                            access: reads, audience: owner, op: super::status,
-                            errors: [OpError, CliError], paths: [cli] },
-        /// Stop the local model runner for a profile.
-        "local stop" => { params: LocalRunnerParams, output: LocalRunner,
-                          access: writes, audience: owner, op: super::stop,
-                          errors: [OpError, CliError], paths: [cli] },
-    }
-}
