@@ -3,7 +3,7 @@
 # allowlist, no process::exit in CLI/binary sources, and the crates that must
 # stay telemetry-free. Every cargo build goes through cargo-slot.
 # The linter is installed on demand at the Cargo.lock rev (see below).
-# The shared check scripts come from the concord-telemetry source cargo already
+# Shared check scripts come from the concord-telemetry source cargo already
 # resolved (found through cargo metadata); CONCORD_TELEMETRY_DIR overrides it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,13 +19,10 @@ export CARGO_SLOT
 # Cargo.lock: the lookup script ships with concord-telemetry, is found through
 # cargo metadata, and installs that rev into ~/.cache/concord-lint/<rev>.
 # CONCORD_LINT=/path overrides it (no rev check).
-ct_manifest=""
 if [ -z "${CONCORD_LINT:-}" ] || [ -z "${CONCORD_TELEMETRY_DIR:-}" ]; then
     ct_manifest="$("$CARGO_SLOT" cargo metadata --format-version 1 --locked |
         python3 -c 'import json,sys; print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"] == "concord-telemetry"))')"
 fi
-# The directory holding the shared scripts/: the checkout root, one above the
-# concord-telemetry crate.
 telemetry_dir="${CONCORD_TELEMETRY_DIR:-$(cd "$(dirname "$ct_manifest")/.." && pwd)}"
 lint="${CONCORD_LINT:-}"
 if [ -z "$lint" ]; then
@@ -34,10 +31,7 @@ if [ -z "$lint" ]; then
     lint="$HOME/.cache/concord-lint/$("$for_lock" Cargo.lock)/bin/concord-lint"
 fi
 "$lint" --local fields.local.toml --baseline lint-baseline.txt crates/*/src crates/*/tests src
-[ -x "$telemetry_dir/scripts/check-otel-dependents.sh" ] || {
-    echo "$telemetry_dir/scripts/check-otel-dependents.sh is not an executable file; point CONCORD_TELEMETRY_DIR at a concord-telemetry checkout" >&2
-    exit 1
-}
+[ -x "$telemetry_dir/scripts/check-otel-dependents.sh" ] || { echo "check-otel-dependents.sh not found or not executable at $telemetry_dir/scripts/check-otel-dependents.sh" >&2; exit 1; }
 "$telemetry_dir/scripts/check-otel-dependents.sh" -C . concord-telemetry
 # The default gait-bin build exports telemetry.
 "$telemetry_dir/scripts/check-has-telemetry.sh" -p gait-bin
