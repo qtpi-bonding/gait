@@ -649,6 +649,7 @@ async fn relay_brain_turn_inner(
         let signal = match timed {
             Ok(Ok(s)) => {
                 state.ever_active = true;
+                state.watchdog.alive();
                 s
             }
             Ok(Err(e)) => {

@@ -1,6 +1,9 @@
 //! Watchdog: liveness detection for the relay loop (ping grace, phase caps,
 //! absolute backstop). See `WatchdogCfg::default` for the env knobs
 //! (`GAIT_TEST_WATCHDOG_PING_MS`) that shrink these for integration tests.
+//! Once armed by the first Diagnostic ping, any signal from the brain counts as
+//! liveness, so a streaming brain whose ping is late or lost is not killed;
+//! total silence still breaches at 2 x ping_ms.
 
 use crate::diagnostic::Phase;
 
@@ -102,6 +105,14 @@ impl Watchdog {
         self.last_ping_at = Some(std::time::Instant::now());
     }
 
+    /// Any signal read from the brain is proof of life once a first ping armed
+    /// the watchdog. An unarmed watchdog stays unarmed, and phase state is untouched.
+    pub(crate) fn alive(&mut self) {
+        if self.last_ping_at.is_some() {
+            self.last_ping_at = Some(std::time::Instant::now());
+        }
+    }
+
     /// Check for a breach at a timeout tick. Delegates to `watchdog_breach`.
     pub(crate) fn breach(&self, spine_phase: SpinePhase) -> Option<&'static str> {
         let since = self.last_ping_at.map(|t| t.elapsed().as_millis() as u64);
@@ -124,6 +135,50 @@ mod tests {
             ping_ms: 15_000,
             absolute_backstop_ms: 720_000,
         }
+    }
+
+    fn live_wd() -> Watchdog {
+        Watchdog {
+            cfg: WatchdogCfg {
+                ping_ms: 40,
+                absolute_backstop_ms: 720_000,
+            },
+            last_phase: Phase::TurnBegin,
+            last_phase_elapsed_ms: 0,
+            last_ping_at: None,
+        }
+    }
+
+    #[test]
+    fn alive_signals_keep_an_armed_watchdog_from_breaching() {
+        let mut w = live_wd();
+        w.observe(Phase::Streaming, 1);
+        for _ in 0..8 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            w.alive();
+        }
+        // 160ms of elapsed time > 2*ping_ms = 80ms, but signals kept it alive.
+        assert!(w.breach(SpinePhase::BrainPhase).is_none());
+        assert_eq!(w.phase(), Phase::Streaming);
+    }
+
+    #[test]
+    fn silence_after_a_ping_still_breaches() {
+        let mut w = live_wd();
+        w.observe(Phase::Streaming, 1);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(
+            w.breach(SpinePhase::BrainPhase),
+            Some("no diagnostic ping (brain wedged)")
+        );
+    }
+
+    #[test]
+    fn alive_before_the_first_ping_does_not_arm() {
+        let mut w = live_wd();
+        w.alive();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(w.breach(SpinePhase::BrainPhase).is_none());
     }
 
     #[test]
