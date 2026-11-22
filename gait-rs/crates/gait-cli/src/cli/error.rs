@@ -152,7 +152,7 @@ mod tests {
     fn failed_with_keeps_a_transient_cause_for_run_error() {
         use coded_error::cli::exit_code_anyhow;
         let busy = coded_error::into_anyhow(gait_ops::OpError::SessionBusy("s".into()));
-        let err = CliError::failed_with("[gait] run error", busy);
+        let err = CliError::failed_with("[gait] turn error", busy);
         assert_eq!(exit_code_anyhow(&err), 75);
     }
 
@@ -168,7 +168,7 @@ mod tests {
 
         let message = "the linked codex credentials expired; run `codex login` again";
         let e = coded_error::into_anyhow(gait_auth::AuthError::Expired(message.into()));
-        let err = CliError::failed_with("[gait] run error", e);
+        let err = CliError::failed_with("[gait] turn error", e);
         let facts = coded_error::from_anyhow(&err).unwrap().facts();
 
         assert_eq!(facts.code, "gait.auth.expired");
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(exit_code_anyhow(&err), 65);
         assert_eq!(
             text(&err),
-            "[gait] run error: the linked codex credentials expired; run `codex login` again"
+            "[gait] turn error: the linked codex credentials expired; run `codex login` again"
         );
     }
 
@@ -186,7 +186,7 @@ mod tests {
 
         let message = "the linked codex credentials expired; run `codex login` again";
         let e = coded_error::into_anyhow(gait_auth::AuthError::Expired(message.into()));
-        let err = mark_recorded(CliError::failed_with("[gait] run error", e));
+        let err = mark_recorded(CliError::failed_with("[gait] turn error", e));
         let facts = coded_error::from_anyhow(&err).unwrap().facts();
 
         assert_eq!(facts.code, "gait.auth.expired");
@@ -194,7 +194,7 @@ mod tests {
         assert!(is_recorded(&err));
         assert_eq!(
             text(&err),
-            "[gait] run error: the linked codex credentials expired; run `codex login` again"
+            "[gait] turn error: the linked codex credentials expired; run `codex login` again"
         );
     }
 }

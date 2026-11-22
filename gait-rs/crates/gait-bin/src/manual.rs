@@ -543,6 +543,29 @@ mod tests {
         );
     }
 
+    /// The retired spellings must not survive anywhere in the generated manual.
+    #[cfg(feature = "full")]
+    #[test]
+    fn manual_has_no_retired_spellings() {
+        let rendered = render_full().unwrap();
+        assert!(
+            !rendered.contains("--agent-dir"),
+            "retired --agent-dir flag in the manual"
+        );
+        assert!(
+            !rendered.contains("GAIT_AGENT_DIR"),
+            "retired GAIT_AGENT_DIR in the manual"
+        );
+        assert!(
+            !rendered.contains("agent dir"),
+            "retired \"agent dir\" wording in the manual"
+        );
+        assert!(
+            !rendered.contains("run error"),
+            "retired \"run error\" in the manual"
+        );
+    }
+
     #[test]
     fn renders_live_command_metadata() {
         let rendered = render_with("guides:\n  - title: Sessions\n    cli_cmds: [sessions]\n    repl_cmds: [/new]\n    body: |\n      Manage sessions.\n").unwrap();

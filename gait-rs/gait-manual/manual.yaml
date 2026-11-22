@@ -27,8 +27,8 @@ guides:
 
       `-R`/`--result-schema` (a file) and `--result-schema-json` (inline) declare a JSON Schema
       the final `structured_done` result must match; the two are mutually exclusive. Under `-e`,
-      the run's workspace lives under a scratch temp directory that is deleted on exit —
-      `--gait-dir` is *not* where an ephemeral run writes, and its diagnostics are lost with it
+      the turn's workspace lives under a scratch temp directory that is deleted on exit —
+      `--gait-dir` is *not* where an ephemeral turn writes, and its diagnostics are lost with it
       unless `GAIT_DEBUG=1` is set, which keeps the scratch directory and prints its path.
 
   - title: Sessions

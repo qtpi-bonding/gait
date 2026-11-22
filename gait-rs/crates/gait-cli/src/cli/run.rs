@@ -446,7 +446,7 @@ pub async fn cmd_run(
             .run_result
             .as_ref()
             .and_then(failure_error)
-            .unwrap_or_else(|| CliError::failed("[gait] run failed; see the diagnostic above"));
+            .unwrap_or_else(|| CliError::failed("[gait] turn failed; see the diagnostic above"));
         // A turn that recorded its own failure must not be recorded again by `report`.
         return Err(if sink.failure_recorded {
             super::error::mark_recorded(error)
@@ -461,7 +461,7 @@ pub async fn cmd_run(
     // a failure, mirroring the old `WorkflowOutcome` mapping's implicit
     // "anything else is fine" behavior for `Completed`/`NodeOpen`.
     if !outcome.completed && !outcome.opened {
-        return Err(CliError::failed("[gait] run did not complete"));
+        return Err(CliError::failed("[gait] turn did not complete"));
     }
     Ok(0)
 }
@@ -525,7 +525,7 @@ mod tests {
         assert!(failure_error(&run_failed(None, None)).is_none());
         assert_eq!(
             coded_error::cli::exit_code_anyhow(&CliError::failed(
-                "[gait] run failed; see the diagnostic above"
+                "[gait] turn failed; see the diagnostic above"
             )),
             69
         );

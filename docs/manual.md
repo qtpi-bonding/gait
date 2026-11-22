@@ -47,8 +47,8 @@ continues an existing session by id; `-n`/`--max-iter` caps agentic steps.
 
 `-R`/`--result-schema` (a file) and `--result-schema-json` (inline) declare a JSON Schema
 the final `structured_done` result must match; the two are mutually exclusive. Under `-e`,
-the run's workspace lives under a scratch temp directory that is deleted on exit —
-`--gait-dir` is *not* where an ephemeral run writes, and its diagnostics are lost with it
+the turn's workspace lives under a scratch temp directory that is deleted on exit —
+`--gait-dir` is *not* where an ephemeral turn writes, and its diagnostics are lost with it
 unless `GAIT_DEBUG=1` is set, which keeps the scratch directory and prints its path.
 
 #### `gait`
@@ -262,8 +262,8 @@ Options:
 
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -301,13 +301,13 @@ up from the current directory (`gait link` writes these), then the current direc
 If no gait-dir is found, commands that need one exit 65 with `no gait dir: pass
 --gait-dir <path> or set $GAIT_DIR`.
 
-`--agent-dir <path>` names the agent identity directory whose keys sign direct events.
-It sets `GAIT_AGENT_DIR` for the process and every child it spawns, so brain
+`--identity-dir <path>` names the agent identity directory whose keys sign direct events.
+It sets `GAIT_IDENTITY_DIR` for the process and every child it spawns, so brain
 processes read the same identity. If the directory cannot be loaded, gait exits 65 at
 startup and names the directory.
 
 Known gap: the detached-daemon exit hook runs in the sandboxed hand, which cannot read
-the agent directory, so it cannot sign. Its completion notice is appended unsigned; it
+the identity directory, so it cannot sign. Its completion notice is appended unsigned; it
 still wakes an idle parent, and the parent shows it as `[daemon:<name>] [unverified]`.
 The planned fix is a supervisor outside the sandbox that runs the hook and signs.
 
@@ -510,8 +510,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -550,8 +550,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -588,8 +588,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -629,8 +629,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -670,8 +670,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -720,8 +720,8 @@ Options:
       --transcript
           Undo the transcript only.
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
       --list
           List the turns and their checkpoints instead of undoing.
@@ -776,8 +776,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -826,11 +826,11 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
-
       --force
           Override a safety check: `init` may create the gait directory inside a codebase's git repository (a turn there then needs `--allow-intree`), `discard --all` may discard more than one session, `manual install` replaces an existing manual.
+
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -882,8 +882,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -923,8 +923,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -976,8 +976,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -1020,8 +1020,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1058,8 +1058,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1103,8 +1103,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1151,8 +1151,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1202,8 +1202,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1250,8 +1250,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1298,8 +1298,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1343,8 +1343,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1388,8 +1388,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1433,8 +1433,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1470,8 +1470,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1515,8 +1515,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1566,8 +1566,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1614,8 +1614,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1659,8 +1659,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1701,8 +1701,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1746,8 +1746,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1800,11 +1800,11 @@ Options:
       --steer <steer>
           Free-form steering text added to the prompt.
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
-
       --description <description>
           A one-line description; required when registering a skill.
+
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1851,8 +1851,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1896,8 +1896,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1941,8 +1941,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -1989,8 +1989,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -2031,8 +2031,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -2076,8 +2076,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -2121,8 +2121,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -2180,11 +2180,11 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
-
       --args <args>
           The arguments for `--command`, as one string split on spaces.
+
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
       --description <description>
           A one-line description; required when registering a skill.
@@ -2280,8 +2280,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
       --session <session>
           The session id the change applies to.
@@ -2336,8 +2336,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2389,8 +2389,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2445,8 +2445,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2501,8 +2501,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2546,8 +2546,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -2588,8 +2588,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -2636,8 +2636,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help
@@ -2676,8 +2676,8 @@ Options:
           
           [env: GAIT_DIR]
 
-      --agent-dir <agent_dir>
-          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+      --identity-dir <identity_dir>
+          Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every child it spawns.
 
   -h, --help
           Print help

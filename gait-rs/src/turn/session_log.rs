@@ -54,7 +54,7 @@ impl SessionLog {
     }
 
     /// In-memory transcript seeded with `seed` (e.g. the one-off user input). No
-    /// file, no lock — the ephemeral run persists nothing.
+    /// file, no lock — the ephemeral turn persists nothing.
     pub(crate) fn ephemeral(seed: Vec<Event>) -> Self {
         Self::Ephemeral {
             events: Mutex::new(seed),

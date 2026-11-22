@@ -94,7 +94,7 @@ async fn a_failed_turn_run_yields_one_error_record_the_turns() {
         .expect_err("the turn fails");
     assert_eq!(
         gait_cli::cli::error::text(&error),
-        "[gait] run failed; see the diagnostic above"
+        "[gait] turn failed; see the diagnostic above"
     );
     assert_eq!(gait_bin::report(&error), ExitCode::from(69));
     let records = all_errors(&cap);
