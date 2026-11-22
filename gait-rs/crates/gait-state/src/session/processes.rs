@@ -104,7 +104,7 @@ pub fn migrate_legacy_registry(gait_dir: &Path) -> Result<(), ProcessesError> {
 }
 
 fn ensure_migrated(gait_dir: &Path) -> io::Result<()> {
-    migrate_legacy_registry(gait_dir).map_err(|e| io::Error::other(e.to_string()))
+    migrate_legacy_registry(gait_dir).map_err(io::Error::other)
 }
 
 // ---------------------------------------------------------------------------
