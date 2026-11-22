@@ -58,7 +58,7 @@ pub fn cmd_process_exit(args: ProcessExitArgs) -> anyhow::Result<Option<WakeRequ
         .join(&args.session)
         .join(format!("{}.log", args.name));
     // `started_at` disambiguates pid-reuse across separate runs of a
-    // same-named process — exactly the field DaemonStart carries it for.
+    // same-named process — exactly the field ProcessStart carries it for.
     let start = processes::history(&args.gait_dir)
         .ok()
         .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == args.name))
@@ -67,7 +67,7 @@ pub fn cmd_process_exit(args: ProcessExitArgs) -> anyhow::Result<Option<WakeRequ
     let idempotency_key = format!("{}@{}", args.name, start.started_at);
     let c = Completion {
         payload: crate::proto::events::with_process_trace(
-            crate::proto::events::daemon_update(
+            crate::proto::events::process_update(
                 args.name.clone(),
                 args.exit,
                 status,

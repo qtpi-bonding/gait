@@ -26,15 +26,15 @@ use crate::proto::gait::log::v1 as pb;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Line {
-    Start(pb::DaemonStart),
-    Stop(pb::DaemonStop),
+    Start(pb::ProcessStart),
+    Stop(pb::ProcessStop),
 }
 
 // ---------------------------------------------------------------------------
 // One-time migration of the legacy registry file name.
 // ---------------------------------------------------------------------------
 
-/// The registry's file name before the `daemons` -> `processes` rename.
+/// The registry's file name before the rename to `processes.jsonl`.
 pub const LEGACY_REGISTRY_FILE: &str = "daemons.jsonl";
 /// The registry's file name.
 pub const REGISTRY_FILE: &str = "processes.jsonl";
@@ -111,12 +111,12 @@ fn ensure_migrated(gait_dir: &Path) -> io::Result<()> {
 // Registry API
 // ---------------------------------------------------------------------------
 
-/// Append a `DaemonStart` entry to `<gait_dir>/processes.jsonl`.
+/// Append a `ProcessStart` entry to `<gait_dir>/processes.jsonl`.
 ///
 /// Returns `Err(AlreadyExists)` if a live process with the same name is already
 /// registered in the gait-dir registry.  Note: this check is advisory (TOCTOU
 /// window between the read and the write); for a CLI tool that is acceptable.
-pub fn append_start(gait_dir: &Path, rec: &pb::DaemonStart) -> io::Result<()> {
+pub fn append_start(gait_dir: &Path, rec: &pb::ProcessStart) -> io::Result<()> {
     ensure_migrated(gait_dir)?;
     // Check for duplicate name among currently-active records.
     let existing = active(gait_dir)?;
@@ -139,7 +139,7 @@ pub fn append_start(gait_dir: &Path, rec: &pb::DaemonStart) -> io::Result<()> {
     Ok(())
 }
 
-/// Append a `DaemonStop` entry to `<gait_dir>/processes.jsonl`.
+/// Append a `ProcessStop` entry to `<gait_dir>/processes.jsonl`.
 ///
 /// `exit_code` is the exit status of the process command: 0 for normal exit,
 /// 124 for timeout-kill, negative for signal-terminated processes.
@@ -148,7 +148,7 @@ pub fn append_stop(gait_dir: &Path, name: &str, exit_code: i32) -> io::Result<()
     let path = gait_dir.join(REGISTRY_FILE);
     let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
     f.lock_exclusive()?;
-    let line = serde_json::to_string(&Line::Stop(pb::DaemonStop {
+    let line = serde_json::to_string(&Line::Stop(pb::ProcessStop {
         name: name.to_owned(),
         exit_code,
     }))
@@ -160,7 +160,7 @@ pub fn append_stop(gait_dir: &Path, name: &str, exit_code: i32) -> io::Result<()
 
 /// Read `<gait_dir>/processes.jsonl` and return the last-known record for every
 /// process that has a `Start` with no subsequent `Stop`.
-pub fn active(gait_dir: &Path) -> io::Result<Vec<pb::DaemonStart>> {
+pub fn active(gait_dir: &Path) -> io::Result<Vec<pb::ProcessStart>> {
     ensure_migrated(gait_dir)?;
     let path = gait_dir.join(REGISTRY_FILE);
     if !path.exists() {
@@ -169,7 +169,7 @@ pub fn active(gait_dir: &Path) -> io::Result<Vec<pb::DaemonStart>> {
     let f = OpenOptions::new().read(true).open(&path)?;
     f.lock_shared()?;
     let reader = BufReader::new(&f);
-    let mut records: Vec<pb::DaemonStart> = Vec::new();
+    let mut records: Vec<pb::ProcessStart> = Vec::new();
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
@@ -204,7 +204,7 @@ pub fn active(gait_dir: &Path) -> io::Result<Vec<pb::DaemonStart>> {
 /// Unlike `active()`, this never drops a name once it's been stopped — it's
 /// the source for a full/history view (`gait processes list --all`) rather
 /// than "what's live right now".
-pub fn history(gait_dir: &Path) -> io::Result<Vec<(pb::DaemonStart, Option<i32>)>> {
+pub fn history(gait_dir: &Path) -> io::Result<Vec<(pb::ProcessStart, Option<i32>)>> {
     ensure_migrated(gait_dir)?;
     let path = gait_dir.join(REGISTRY_FILE);
     if !path.exists() {
@@ -213,7 +213,7 @@ pub fn history(gait_dir: &Path) -> io::Result<Vec<(pb::DaemonStart, Option<i32>)
     let f = OpenOptions::new().read(true).open(&path)?;
     f.lock_shared()?;
     let reader = BufReader::new(&f);
-    let mut records: Vec<(pb::DaemonStart, Option<i32>)> = Vec::new();
+    let mut records: Vec<(pb::ProcessStart, Option<i32>)> = Vec::new();
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
@@ -309,7 +309,7 @@ pub fn stopped_for_session(gait_dir: &Path, session: &str) -> Vec<(String, i32)>
 /// has the same start-time (guards against pid reuse).
 ///
 /// Fail-closed: any read failure → `false`.
-pub fn is_alive(rec: &pb::DaemonStart) -> bool {
+pub fn is_alive(rec: &pb::ProcessStart) -> bool {
     // 1. Is the pid present in the kernel's process table?
     if unsafe { libc::kill(rec.pid, 0) } != 0 {
         return false;
@@ -331,8 +331,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn make_rec(name: &str, pid: i32) -> pb::DaemonStart {
-        pb::DaemonStart {
+    fn make_rec(name: &str, pid: i32) -> pb::ProcessStart {
+        pb::ProcessStart {
             name: name.to_owned(),
             pid,
             pgid: pid,
@@ -389,7 +389,7 @@ mod tests {
         let my_pid = std::process::id() as i32;
         let start = crate::process::proc_start_time(my_pid)
             .expect("proc_start_time should work for own pid");
-        let rec = pb::DaemonStart {
+        let rec = pb::ProcessStart {
             name: "self".to_owned(),
             pid: my_pid,
             pgid: my_pid,
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn is_alive_false_for_dead_pid() {
         // Use pid 1 with a deliberately wrong start-time so identity check fails.
-        let rec = pb::DaemonStart {
+        let rec = pb::ProcessStart {
             name: "dead".to_owned(),
             pid: 1,
             pgid: 1,
@@ -453,7 +453,7 @@ mod tests {
 
         let started_at = crate::process::proc_start_time(pid).expect("proc_start_time for child");
 
-        let rec = pb::DaemonStart {
+        let rec = pb::ProcessStart {
             name: "test-sleep-alive".to_owned(),
             pid,
             pgid,
@@ -503,7 +503,7 @@ mod tests {
 
         let started_at = crate::process::proc_start_time(pid).expect("proc_start_time for child");
 
-        let rec = pb::DaemonStart {
+        let rec = pb::ProcessStart {
             name: "test-sleep-stop".to_owned(),
             pid,
             pgid,

@@ -578,7 +578,7 @@ async fn relay_brain_turn_inner(
         let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
         let dirty_files = repos.codebase.dirty_files(codebase);
         let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "null".to_string());
-        let daemons = running_processes(gait_dir);
+        let processes = running_processes(gait_dir);
         let init = BrainInit {
             config_json,
             events,
@@ -587,7 +587,7 @@ async fn relay_brain_turn_inner(
                 dirty_files,
             }),
             profile_json,
-            daemons,
+            processes,
             credential_json: credential
                 .as_ref()
                 .map(credential_to_wire_json)
@@ -991,13 +991,13 @@ fn record_terminal_failure(
 /// registry entry on each call only grows the prompt.
 fn running_processes(
     gait_dir: &std::path::Path,
-) -> Vec<crate::proto::gait::sandbox::v1::DaemonStatus> {
+) -> Vec<crate::proto::gait::sandbox::v1::ProcessStatus> {
     use crate::session::processes::{active, is_alive};
     active(gait_dir)
         .unwrap_or_default()
         .into_iter()
         .filter(is_alive)
-        .map(|r| crate::proto::gait::sandbox::v1::DaemonStatus {
+        .map(|r| crate::proto::gait::sandbox::v1::ProcessStatus {
             alive: true,
             name: r.name,
             pid: r.pid,
@@ -1011,7 +1011,7 @@ mod tests {
     #[test]
     fn dead_processes_are_not_listed_in_the_status() {
         let dir = tempfile::tempdir().unwrap();
-        let start = crate::proto::gait::log::v1::DaemonStart {
+        let start = crate::proto::gait::log::v1::ProcessStart {
             name: "gone".into(),
             pid: i32::MAX,
             pgid: i32::MAX,

@@ -586,16 +586,16 @@ impl MessagesState {
         self.push_user(content, &ev.id);
     }
 
-    fn push_daemon_update(&mut self, du: &pb::DaemonUpdate, id: &str) {
-        let status = pb::DaemonStatus::try_from(du.status)
+    fn push_process_update(&mut self, du: &pb::ProcessUpdate, id: &str) {
+        let status = pb::ProcessStatus::try_from(du.status)
             .map(|s| match s {
-                pb::DaemonStatus::Done => "done",
-                pb::DaemonStatus::Killed => "killed",
-                pb::DaemonStatus::Unspecified => "unspecified",
+                pb::ProcessStatus::Done => "done",
+                pb::ProcessStatus::Killed => "killed",
+                pb::ProcessStatus::Unspecified => "unspecified",
             })
             .unwrap_or("unspecified");
         let content = format!(
-            "[daemon:{}] {} — exit {} — log: {}",
+            "[process:{}] {} — exit {} — log: {}",
             du.name, status, du.exit_code, du.log_path
         );
         self.push_user(content, id);
@@ -735,7 +735,7 @@ impl Projection for ActiveMessages {
                 let _ = ();
             } // metadata only
             payload::Kind::AgentUpdate(au) => st.push_agent_update(au, ev),
-            payload::Kind::DaemonUpdate(du) => st.push_daemon_update(du, &ev.id),
+            payload::Kind::ProcessUpdate(du) => st.push_process_update(du, &ev.id),
             payload::Kind::Clarify(c) => st.push_clarify(c, &ev.id),
             payload::Kind::ClarifyReply(cr) => st.push_clarify_reply(cr, &ev.id),
             payload::Kind::ClarifyConvergence(cc) => st.push_clarify_convergence(cc, &ev.id),
@@ -842,7 +842,7 @@ impl ActiveRawMessages {
     }
 
     /// True for a signed event whose signature does not verify (or has no
-    /// verifier). AgentUpdate/DaemonUpdate still fold such an event, labelled
+    /// verifier). AgentUpdate/ProcessUpdate still fold such an event, labelled
     /// `unverified`, so the model sees that something reported in.
     fn is_unverifiable_signed(&self, ev: &Event, session_id: &str) -> bool {
         let signed = ev.provenance.iter().any(|p| p.signed_message.is_some());
@@ -999,21 +999,21 @@ impl Projection for ActiveRawMessages {
                     attribution: Vec::new(),
                 });
             }
-            payload::Kind::DaemonUpdate(du) => {
+            payload::Kind::ProcessUpdate(du) => {
                 // The detached-process exit hook cannot sign, so a process notice
                 // with no provenance at all is unverified too.
                 let unverified =
                     ev.provenance.is_empty() || self.is_unverifiable_signed(ev, &st.session_id);
-                let status = pb::DaemonStatus::try_from(du.status)
+                let status = pb::ProcessStatus::try_from(du.status)
                     .map(|s| match s {
-                        pb::DaemonStatus::Done => "done",
-                        pb::DaemonStatus::Killed => "killed",
-                        pb::DaemonStatus::Unspecified => "unspecified",
+                        pb::ProcessStatus::Done => "done",
+                        pb::ProcessStatus::Killed => "killed",
+                        pb::ProcessStatus::Unspecified => "unspecified",
                     })
                     .unwrap_or("unspecified");
                 let label = if unverified { " [unverified]" } else { "" };
                 let content = format!(
-                    "[daemon:{}]{} {} — exit {} — log: {}",
+                    "[process:{}]{} {} — exit {} — log: {}",
                     du.name, label, status, du.exit_code, du.log_path
                 );
                 st.base.push(Message::User {

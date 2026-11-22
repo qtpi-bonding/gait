@@ -21,7 +21,7 @@ use crate::sandbox::{DenyPolicy, NetworkPolicy, SandboxScope};
 use crate::tools::fs_backend::{BufferedFs, FsBackend, LocalFs};
 use crate::tools::{builtin_tools, ToolCtx};
 use gait_proto::gait::sandbox::v1::{
-    hand_response, network_scope::Mode, DaemonRecordProto, Feedback, HandError, HandResponse,
+    hand_response, network_scope::Mode, ProcessRecordProto, Feedback, HandError, HandResponse,
     Impulse, OutputCaptureMode as ProtoOutputCaptureMode,
 };
 
@@ -278,7 +278,7 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     // Extract "__process" sideband if the shell tool spawned a detached process.
     // The shell tool embeds the ProcessRecord fields under this key so it can
     // travel through the execute() return value without a separate channel.
-    let process_record: Option<DaemonRecordProto> = if let Some(obj) = result_json.as_object_mut() {
+    let process_record: Option<ProcessRecordProto> = if let Some(obj) = result_json.as_object_mut() {
         if let Some(d) = obj.remove("__process") {
             let name = d
                 .get("name")
@@ -303,7 +303,7 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(DaemonRecordProto {
+            Some(ProcessRecordProto {
                 name,
                 pid,
                 pgid,
@@ -440,7 +440,7 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
         result: Some(result_proto),
         events: rec.take_buffer(),
         denied,
-        daemon: process_record,
+        process: process_record,
         final_content,
         whitelist_match_items: vec![],
         sandbox_denied,

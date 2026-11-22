@@ -87,7 +87,7 @@ fn make_input(auto: bool) -> gait_core::turn::TurnInput {
         sandbox_cfg: Default::default(),
         relay: None,
         initial_git: None,
-        daemons: vec![],
+        processes: vec![],
     }
 }
 

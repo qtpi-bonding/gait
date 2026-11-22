@@ -229,8 +229,8 @@ impl Tool for ShellTool {
 
             // Architecture note: the hand runtime (hand.rs) calls execute() and wraps the
             // returned Value into HandResponse { Feedback { result, ... } }. To carry the
-            // DaemonRecordProto up to the spine we embed it as a "__process" key in the
-            // result JSON. hand.rs detects this key, extracts it into Feedback.daemon, and
+            // ProcessRecordProto up to the spine we embed it as a "__process" key in the
+            // result JSON. hand.rs detects this key, extracts it into Feedback.process, and
             // removes it from the result before forwarding.
             return Ok(serde_json::json!({
                 "output": format!(

@@ -2041,10 +2041,10 @@ fn active_unlock_session_grant_survives_run_complete() {
 }
 
 #[test]
-fn daemon_update_renders_as_user_message() {
-    // The ActiveMessages projection folds a DaemonUpdate event into a user
-    // message formatted as "[daemon:<name>] <status> — exit <code> — log: <path>".
-    let bodies = vec![events::daemon_update(
+fn process_update_renders_as_user_message() {
+    // The ActiveMessages projection folds a ProcessUpdate event into a user
+    // message formatted as "[process:<name>] <status> — exit <code> — log: <path>".
+    let bodies = vec![events::process_update(
         "build".into(),
         0,
         "done",
@@ -2058,7 +2058,7 @@ fn daemon_update_renders_as_user_message() {
             content: MessageContent::Text(t),
             ..
         } => {
-            assert!(t.contains("[daemon:build]"), "got: {t}");
+            assert!(t.contains("[process:build]"), "got: {t}");
             assert!(t.contains("exit 0"), "got: {t}");
             assert!(t.contains("/tmp/build.log"), "got: {t}");
         }
@@ -2067,12 +2067,12 @@ fn daemon_update_renders_as_user_message() {
 }
 
 #[test]
-fn daemon_update_raw_messages_includes_user_message() {
+fn process_update_raw_messages_includes_user_message() {
     // The ActiveRawMessages projection (raw transcript, no coalescing) must
-    // also render DaemonUpdate as a User message so the transcript survives
+    // also render ProcessUpdate as a User message so the transcript survives
     // mutation flows that route through the raw projection.
     use std::collections::HashMap;
-    let evs = mint_events(vec![events::daemon_update(
+    let evs = mint_events(vec![events::process_update(
         "svc-x".into(),
         124,
         "killed",
@@ -2086,7 +2086,7 @@ fn daemon_update_raw_messages_includes_user_message() {
             content: MessageContent::Text(t),
             ..
         } => {
-            assert!(t.contains("[daemon:svc-x]"), "got: {t}");
+            assert!(t.contains("[process:svc-x]"), "got: {t}");
             assert!(t.contains("killed"), "got: {t}");
             assert!(t.contains("exit 124"), "got: {t}");
         }
@@ -2276,11 +2276,11 @@ fn signed_agent_update_with_a_verifier_folds_with_the_principal_id() {
 }
 
 #[test]
-fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
+fn signed_process_update_without_a_verifier_folds_labelled_unverified() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
     let mut ev = scoped_mint(
-        events::daemon_update(
+        events::process_update(
             "svc".into(),
             0,
             "done",
@@ -2313,7 +2313,7 @@ fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
     else {
         panic!("expected a user message");
     };
-    assert!(t.contains("[daemon:svc] [unverified]"), "got: {t}");
+    assert!(t.contains("[process:svc] [unverified]"), "got: {t}");
 
     let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
     let Message::User {
@@ -2324,17 +2324,17 @@ fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
         panic!("expected a user message");
     };
     assert!(
-        t.starts_with("[daemon:svc] done"),
+        t.starts_with("[process:svc] done"),
         "verified update has no unverified label, got: {t}"
     );
 }
 
 #[test]
-fn unsigned_daemon_update_folds_labelled_unverified() {
+fn unsigned_process_update_folds_labelled_unverified() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
     let ev = scoped_mint(
-        events::daemon_update(
+        events::process_update(
             "svc".into(),
             0,
             "done",
@@ -2361,7 +2361,7 @@ fn unsigned_daemon_update_folds_labelled_unverified() {
     else {
         panic!("expected a user message");
     };
-    assert!(t.starts_with("[daemon:svc] [unverified] done"), "got: {t}");
+    assert!(t.starts_with("[process:svc] [unverified] done"), "got: {t}");
 }
 
 #[test]

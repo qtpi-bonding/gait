@@ -58,7 +58,7 @@ message Feedback {
   google.protobuf.Value result = 1;
   repeated gait.log.v1.Event events = 2;
   optional gait.log.v1.SandboxUnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
-  optional DaemonRecordProto daemon = 5;        // set when the hand spawned a background daemon
+  optional ProcessRecordProto process = 5;        // set when the hand spawned a background process
   optional string final_content = 6;  // delegated write/edit: tool's final file content
   repeated gait.log.v1.SandboxWhitelistMatchItem whitelist_match_items = 7;
   optional gait.log.v1.SandboxDenied sandbox_denied = 8;
@@ -80,10 +80,10 @@ message ArchiveOutput {
   google.protobuf.Value result = 2;
 }
 
-// Metadata for a daemon spawned by the shell tool (detached=true).
+// Metadata for a process spawned by the shell tool (detached=true).
 // Carried from hand → spine via Feedback so the spine (sole gait-dir writer)
-// can append a DaemonStart entry to daemons.jsonl.
-message DaemonRecordProto {
+// can append a ProcessStart entry to processes.jsonl.
+message ProcessRecordProto {
   string name       = 1;
   int32  pid        = 2;
   int32  pgid       = 3;
@@ -227,8 +227,8 @@ message Notify {
 // before the relay loop. Carries everything the brain would otherwise read from
 // disk at startup: config, the full session log (events), and the turn's git
 // snapshot. The brain reads this raw before start_nerve takes stdin.
-// Live-status snapshot of one daemon entry from the gait-dir-level registry.
-message DaemonStatus {
+// Live-status snapshot of one process entry from the gait-dir-level registry.
+message ProcessStatus {
   string name     = 1;
   int32  pid      = 2;
   bool   alive    = 3;
@@ -240,7 +240,7 @@ message BrainInit {
   repeated gait.log.v1.Event events = 2;   // full session log (includes this turn's user input + SessionStart)
   GitStatus git = 3;                       // turn-start codebase git snapshot
   string profile_json = 4;                 // serialized gait_core::profile::Profile (JSON)
-  repeated DaemonStatus daemons = 5;       // active daemons in this gait-dir (global registry, shared across sessions)
+  repeated ProcessStatus processes = 5;       // active processes in this gait-dir (global registry, shared across sessions)
   // Private spine→brain bootstrap material. Never written to session events,
   // diagnostics, or the process environment.
   string credential_json = 6;

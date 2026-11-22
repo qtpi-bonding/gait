@@ -308,7 +308,7 @@ startup and names the directory.
 
 Known gap: the detached-process exit hook runs in the sandboxed hand, which cannot read
 the agent directory, so it cannot sign. Its completion notice is appended unsigned; it
-still wakes an idle parent, and the parent shows it as `[daemon:<name>] [unverified]`.
+still wakes an idle parent, and the parent shows it as `[process:<name>] [unverified]`.
 The planned fix is a supervisor outside the sandbox that runs the hook and signs.
 
 Most commands exit 0 on success. A rejected command exits with a code by error class:

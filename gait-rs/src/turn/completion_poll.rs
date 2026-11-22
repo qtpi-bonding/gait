@@ -25,7 +25,7 @@ use crate::proto::gait::log::v1::Event;
 use crate::session::completion::Completion;
 
 /// Idempotency keys (see `Completion`, `gait-state::session::completion`) for
-/// processes that already have a `DaemonUpdate` event in this session's log.
+/// processes that already have a `ProcessUpdate` event in this session's log.
 ///
 /// Used as the dedup ledger: the per-step poll reads this set and a completion
 /// whose idempotency_key is in the set has already been surfaced in a prior
@@ -37,7 +37,7 @@ use crate::session::completion::Completion;
 pub fn surfaced_process_idempotency_keys(events: &[Event]) -> HashSet<String> {
     let mut out = HashSet::new();
     for ev in events {
-        if let Some(payload::Kind::DaemonUpdate(du)) = event_kind(ev) {
+        if let Some(payload::Kind::ProcessUpdate(du)) = event_kind(ev) {
             out.insert(du.idempotency_key.clone());
         }
     }
@@ -82,7 +82,7 @@ pub fn pending_process_completions(
         let idempotency_key = format!("{name}@{started_at}");
         out.push(Completion {
             payload: crate::proto::events::with_process_trace(
-                crate::proto::events::daemon_update(
+                crate::proto::events::process_update(
                     name,
                     exit_code,
                     status,
@@ -108,7 +108,7 @@ pub fn pending_process_completions(
                 let idempotency_key = format!("{}@{}", rec.name, rec.started_at);
                 out.push(Completion {
                     payload: crate::proto::events::with_process_trace(
-                        crate::proto::events::daemon_update(
+                        crate::proto::events::process_update(
                             rec.name.clone(),
                             -9,
                             crate::session::processes::classify_exit(-9),
@@ -129,7 +129,7 @@ pub fn pending_process_completions(
 /// 0 if the registry is unreadable or the process is not present (the latter
 /// shouldn't happen for a `stopped_for_session` entry, but matching the
 /// previous behavior keeps tests passing).
-fn start_for(gait_dir: &Path, name: &str) -> crate::proto::gait::log::v1::DaemonStart {
+fn start_for(gait_dir: &Path, name: &str) -> crate::proto::gait::log::v1::ProcessStart {
     crate::session::processes::history(gait_dir)
         .ok()
         .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == name))
@@ -223,16 +223,16 @@ mod tests {
     }
 
     #[test]
-    fn surfaced_names_collects_daemon_updates() {
+    fn surfaced_names_collects_process_updates() {
         let events = vec![
-            ev(crate::proto::events::daemon_update(
+            ev(crate::proto::events::process_update(
                 "a".into(),
                 0,
                 "done",
                 "/l".into(),
                 "a@1".into(),
             )),
-            ev(crate::proto::events::daemon_update(
+            ev(crate::proto::events::process_update(
                 "b".into(),
                 1,
                 "done",
@@ -251,7 +251,7 @@ mod tests {
             ev(crate::proto::events::user_text("hello".into())),
         ];
         let s = surfaced_process_idempotency_keys(&events);
-        assert!(s.is_empty(), "no DaemonUpdate events → empty set");
+        assert!(s.is_empty(), "no ProcessUpdate events → empty set");
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
         // idempotency keys (one per started_at); the surfaced set must key
         // on the idempotency_key, NOT on the process name, so the second run
         // is not silently swallowed as a duplicate of the first.
-        let events = vec![ev(crate::proto::events::daemon_update(
+        let events = vec![ev(crate::proto::events::process_update(
             "build".into(),
             0,
             "done",
@@ -286,7 +286,7 @@ mod tests {
         // Process "done1" explicitly stopped (owned by "S", exit code 0).
         // We need a real Start on disk so stopped_for_session can match the
         // owning-session field back.
-        let start1 = pb::DaemonStart {
+        let start1 = pb::ProcessStart {
             name: "done1".into(),
             pid: 555_001,
             pgid: 555_001,
@@ -316,7 +316,7 @@ mod tests {
         let pgid = unsafe { libc::getpgid(pid) };
         assert!(pgid > 0);
         let started_at = crate::process::proc_start_time(pid).expect("proc_start_time");
-        let start2 = pb::DaemonStart {
+        let start2 = pb::ProcessStart {
             name: "live1".into(),
             pid,
             pgid,
@@ -331,7 +331,7 @@ mod tests {
 
         // Process "other" explicitly stopped (owned by a DIFFERENT session) —
         // the poll must NOT surface it.
-        let start3 = pb::DaemonStart {
+        let start3 = pb::ProcessStart {
             name: "other".into(),
             pid: 555_003,
             pgid: 555_003,
@@ -355,7 +355,7 @@ mod tests {
         let names: HashSet<String> = pending
             .iter()
             .map(|c| match completion_kind(c) {
-                payload::Kind::DaemonUpdate(du) => du.name,
+                payload::Kind::ProcessUpdate(du) => du.name,
                 _ => unreachable!(),
             })
             .collect();
@@ -375,12 +375,12 @@ mod tests {
 
         // Surface the entry: exit_code must be the recorded 0, status "done".
         for c in &pending {
-            if let payload::Kind::DaemonUpdate(du) = completion_kind(c) {
+            if let payload::Kind::ProcessUpdate(du) = completion_kind(c) {
                 assert_eq!(du.name, "done1");
                 assert_eq!(du.exit_code, 0, "done1 exit_code = 0");
                 assert_eq!(
-                    crate::proto::gait::log::v1::DaemonStatus::try_from(du.status).unwrap(),
-                    crate::proto::gait::log::v1::DaemonStatus::Done
+                    crate::proto::gait::log::v1::ProcessStatus::try_from(du.status).unwrap(),
+                    crate::proto::gait::log::v1::ProcessStatus::Done
                 );
                 assert!(
                     du.log_path.ends_with("done1.log"),
@@ -412,7 +412,7 @@ mod tests {
         // Register a Start whose pid points at a real but transient process:
         // spawn sleep, immediately wait() it (no Stop appended), then poll.
         let pid = 1_i32; // pid 1 is alive but identity (start-time) never matches
-        let start = pb::DaemonStart {
+        let start = pb::ProcessStart {
             name: "dead-killed".into(),
             pid,
             pgid: pid,
@@ -432,7 +432,7 @@ mod tests {
         let mut names: Vec<String> = pending
             .iter()
             .map(|c| match completion_kind(c) {
-                payload::Kind::DaemonUpdate(du) => du.name,
+                payload::Kind::ProcessUpdate(du) => du.name,
                 _ => unreachable!(),
             })
             .collect();
@@ -440,12 +440,12 @@ mod tests {
         assert_eq!(names, vec!["dead-killed".to_string()], "got: {names:?}");
 
         for c in &pending {
-            if let payload::Kind::DaemonUpdate(du) = completion_kind(c) {
+            if let payload::Kind::ProcessUpdate(du) = completion_kind(c) {
                 assert_eq!(du.name, "dead-killed");
                 assert_eq!(du.exit_code, -9, "killed-no-stop uses exit_code = -9");
                 assert_eq!(
-                    crate::proto::gait::log::v1::DaemonStatus::try_from(du.status).unwrap(),
-                    crate::proto::gait::log::v1::DaemonStatus::Killed
+                    crate::proto::gait::log::v1::ProcessStatus::try_from(du.status).unwrap(),
+                    crate::proto::gait::log::v1::ProcessStatus::Killed
                 );
             }
         }

@@ -362,7 +362,7 @@ fn turn_input_initial_git_some_carries_seeded_hash() {
         sandbox_cfg: crate::config::SandboxConfig::default(),
         relay: None,
         initial_git: Some(snap.clone()),
-        daemons: vec![],
+        processes: vec![],
     };
     let git = input.initial_git.expect("initial_git should be Some");
     assert_eq!(git.head_hash, "seeded-abc123");

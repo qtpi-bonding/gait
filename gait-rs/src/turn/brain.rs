@@ -307,8 +307,8 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             .map(|g| g.dirty_files.clone())
             .unwrap_or_default(),
     };
-    let daemons: Vec<(String, i32, bool, String)> = init
-        .daemons
+    let processes: Vec<(String, i32, bool, String)> = init
+        .processes
         .iter()
         .map(|d| (d.name.clone(), d.pid, d.alive, d.log_path.clone()))
         .collect();
@@ -341,7 +341,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
         stream_fwd_tx,
         log_mirror,
         initial_git,
-        daemons,
+        processes,
         cancel: tokio_util::sync::CancellationToken::new(),
     };
 
@@ -402,7 +402,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                     sandbox_cfg: cfg.sandbox_cfg.clone(),
                     relay: cfg.relay,
                     initial_git: cfg.initial_git.clone(),
-                    daemons: cfg.daemons.clone(),
+                    processes: cfg.processes.clone(),
                 };
                 // 3. Build remote-sink Recorder (streams via Nerve, not to disk).
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -532,7 +532,7 @@ struct BrainDriver {
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
     log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,
     initial_git: crate::turn::GitSnapshot,
-    daemons: Vec<(String, i32, bool, String)>,
+    processes: Vec<(String, i32, bool, String)>,
     /// Live per-turn cancellation token (Task: wire turn cancellation). A
     /// teardown SIGTERM (sent by the spine's `kill_all` before its 300ms→SIGKILL
     /// escalation — see `crate::turn::hand::install_sigterm_guard` for the same
@@ -576,7 +576,7 @@ impl BrainDriver {
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: Some(self.nerve_writer.clone()),
             initial_git: Some(self.initial_git.clone()),
-            daemons: self.daemons.clone(),
+            processes: self.processes.clone(),
         }
     }
 
@@ -683,7 +683,7 @@ mod tests {
             stream_fwd_tx,
             log_mirror: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             initial_git: crate::turn::GitSnapshot::default(),
-            daemons: Vec::new(),
+            processes: Vec::new(),
             cancel: cancel.clone(),
         };
 

@@ -38,7 +38,7 @@ pub struct LoopConfig {
     pub sandbox_cfg: crate::config::SandboxConfig,
     pub relay: Option<crate::turn::nerve::NerveWriter>,
     pub initial_git: Option<crate::turn::GitSnapshot>,
-    pub daemons: Vec<(String, i32, bool, String)>,
+    pub processes: Vec<(String, i32, bool, String)>,
 }
 /// Embedder-supplied bridge to an editor's live buffers (ACP `fs/read_text_file`
 /// / `fs/write_text_file`). Injected via [`BrainLaunch::fs_delegate`]; `None`

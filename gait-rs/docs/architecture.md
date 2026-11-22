@@ -310,7 +310,7 @@ workflow's live channel.
 ## The Ops Boundary (`gait-ops`)
 
 Turns aren't the only thing shared across frontends — the deterministic command verbs (`link`,
-`init`, session admin, permissions, extensions, auth, daemons: ~21 verbs) are too. Before the
+`init`, session admin, permissions, extensions, auth, processes: ~21 verbs) are too. Before the
 `gait-ops` crate existed, every such verb lived as a `cmd_*` function in `gait-cli`, fusing logic +
 terminal I/O + `process::exit` into one CLI-only blob — a REPL or ACP adapter couldn't call it
 without spawning a subprocess (which is exactly what the REPL did for `undo`/`unlock`/`load`/

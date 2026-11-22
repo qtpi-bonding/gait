@@ -460,4 +460,58 @@ mod tests {
         let error = read_events(&path).unwrap_err().to_string();
         assert!(error.contains("unsupported event log version"), "{error}");
     }
+
+    #[test]
+    fn a_process_update_event_round_trips_and_the_old_key_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        append(
+            &path,
+            body(payload::Kind::ProcessUpdate(
+                crate::gait::log::v1::ProcessUpdate {
+                    name: "build".into(),
+                    ..Default::default()
+                },
+            )),
+        )
+        .unwrap();
+
+        let events = read_events(&path).unwrap();
+        match events[0].body.as_ref() {
+            Some(event::Body::Payload(payload)) => match payload.kind.as_ref() {
+                Some(payload::Kind::ProcessUpdate(update)) => assert_eq!(update.name, "build"),
+                other => panic!("expected ProcessUpdate, got {other:?}"),
+            },
+            other => panic!("expected payload body, got {other:?}"),
+        }
+
+        let line = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        let payload = value["payload"]
+            .as_object()
+            .expect("payload object");
+        assert!(payload.contains_key("processUpdate"));
+
+        // The retired spellings, assembled so no source file spells them.
+        let retired = ["dae", "mon"].concat();
+        let retired_camel = format!("{retired}Update");
+        let retired_snake = format!("{retired}_update");
+        assert!(!payload.contains_key(&retired_camel));
+
+        for old_key in [retired_camel, retired_snake] {
+            let mut old = value.clone();
+            let payload = old["payload"].as_object_mut().unwrap();
+            let process = payload.remove("processUpdate").unwrap();
+            payload.insert(old_key.clone(), process);
+            std::fs::write(&path, format!("{}\n", old)).unwrap();
+            assert!(read_events(&path).is_err(), "{old_key} must be rejected");
+        }
+
+        let mut snake = value;
+        let payload = snake["payload"].as_object_mut().unwrap();
+        let process = payload.remove("processUpdate").unwrap();
+        payload.insert("process_update".into(), process);
+        std::fs::write(&path, format!("{}\n", snake)).unwrap();
+        assert!(read_events(&path).is_ok(), "snake_case must be accepted");
+    }
 }

@@ -154,8 +154,8 @@ pub struct TurnInput {
     /// When `Some` (spine path), the turn-start git snapshot supplied by the spine
     /// via BrainInit — the brain does not read git itself. `None` reads disk.
     pub initial_git: Option<GitSnapshot>,
-    /// Active processes injected by the brain from BrainInit.daemons. Empty on direct runs.
-    pub daemons: Vec<(String, i32, bool, String)>,
+    /// Active processes injected by the brain from BrainInit.processes. Empty on direct runs.
+    pub processes: Vec<(String, i32, bool, String)>,
 }
 
 // `SessionLock` now lives in `crate::session::lock` (moved down into the state
@@ -266,7 +266,7 @@ pub async fn run_turn(
         pre_events,
         current_run,
         current_turn,
-        daemons,
+        processes,
         initial_git: _initial_git,
         agent_whitelist,
         classify_policy,
@@ -288,7 +288,7 @@ pub async fn run_turn(
         relay.as_ref(),
         &codebase_hash,
         &dirty_files,
-        &daemons,
+        &processes,
         &effective_allow,
         &deny,
         auto,
@@ -332,7 +332,7 @@ pub async fn run_turn(
         deny: &deny,
         preview_policy,
         auto,
-        daemons: &daemons,
+        processes: &processes,
         ingestor: &ingestor,
         system_prompt: &system_prompt,
         codebase_hash: &codebase_hash,

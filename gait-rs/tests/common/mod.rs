@@ -238,7 +238,7 @@ impl TurnDriver for MockDriver {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         }
     }
     fn on_turn_error(&mut self, sink: &mut dyn TurnSink, e: anyhow::Error) -> ControlFlow<()> {

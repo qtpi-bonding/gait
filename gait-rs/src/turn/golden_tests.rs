@@ -194,7 +194,7 @@ enum BodyKind {
         phase: String,
     },
     HookRun,
-    DaemonUpdate,
+    ProcessUpdate,
     AgentUpdate,
     ClarifyConvergence,
     InformConvergence,
@@ -255,7 +255,7 @@ fn body_kind(b: &event::Body) -> BodyKind {
             phase: error_phase_to_string(e.phase),
         },
         payload::Kind::HookRun(_) => BodyKind::HookRun,
-        payload::Kind::DaemonUpdate(_) => BodyKind::DaemonUpdate,
+        payload::Kind::ProcessUpdate(_) => BodyKind::ProcessUpdate,
         payload::Kind::AgentUpdate(_) => BodyKind::AgentUpdate,
         payload::Kind::ClarifyConvergence(_) => BodyKind::ClarifyConvergence,
         payload::Kind::InformConvergence(_) => BodyKind::InformConvergence,
@@ -272,7 +272,7 @@ fn body_kind(b: &event::Body) -> BodyKind {
         payload::Kind::Raw(r) => BodyKind::Raw {
             type_str: r.r#type.clone(),
         },
-        payload::Kind::DaemonStart(_) | payload::Kind::DaemonStop(_) => BodyKind::DaemonUpdate,
+        payload::Kind::ProcessStart(_) | payload::Kind::ProcessStop(_) => BodyKind::ProcessUpdate,
         payload::Kind::Agent(_)
         | payload::Kind::RunStart(_)
         | payload::Kind::TurnStart(_)
@@ -342,7 +342,7 @@ fn render_body(b: &BodyKind) -> String {
         BodyKind::ThinkingBlock => "ThinkingBlock".into(),
         BodyKind::Error { phase } => format!("Error phase={}", phase),
         BodyKind::HookRun => "HookRun".into(),
-        BodyKind::DaemonUpdate => "DaemonUpdate".into(),
+        BodyKind::ProcessUpdate => "ProcessUpdate".into(),
         BodyKind::AgentUpdate => "AgentUpdate".into(),
         BodyKind::ClarifyConvergence => "ClarifyConvergence".into(),
         BodyKind::InformConvergence => "InformConvergence".into(),
@@ -433,7 +433,7 @@ impl Fixture {
                 sandbox_cfg: SandboxConfig::default(),
                 relay: None,
                 initial_git: None,
-                daemons: vec![],
+                processes: vec![],
             },
             result_schema: None,
         }

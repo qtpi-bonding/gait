@@ -71,7 +71,7 @@ pub(crate) async fn apply_if_pending(
     relay: Option<&crate::turn::nerve::NerveWriter>,
     codebase_hash: &str,
     dirty_files: &[String],
-    daemons: &[(String, i32, bool, String)],
+    processes: &[(String, i32, bool, String)],
     effective_allow: &[String],
     deny: &[String],
     auto: bool,
@@ -415,7 +415,7 @@ pub(crate) async fn apply_if_pending(
         state.turn_ctx = Some(super::prompt::build_turn_context(
             codebase_hash,
             dirty_files,
-            daemons,
+            processes,
         ));
     }
 

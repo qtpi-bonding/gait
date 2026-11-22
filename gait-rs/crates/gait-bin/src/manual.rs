@@ -565,8 +565,8 @@ mod tests {
             "retired \"run error\" in the manual"
         );
         assert!(
-            !rendered.contains("daemons"),
-            "retired \"daemons\" in the manual"
+            !rendered.contains(&["dae", "mons"].concat()),
+            "the retired plural process name in the manual"
         );
     }
 

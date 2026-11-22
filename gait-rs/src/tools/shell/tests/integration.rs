@@ -818,7 +818,7 @@ async fn detached_output_appears_in_log_file() {
 #[tokio::test]
 async fn detached_process_record_proto_fields_populated() {
     // The __process proto must contain all required fields that the spine uses to
-    // write a DaemonStart record into processes.jsonl.
+    // write a ProcessStart record into processes.jsonl.
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
     let result = tool
@@ -995,12 +995,12 @@ async fn foreground_result_echoes_explicit_cwd_param() {
     );
 }
 
-/// The spine writes a DaemonStart record into `<gait_dir>/processes.jsonl` using
+/// The spine writes a ProcessStart record into `<gait_dir>/processes.jsonl` using
 /// the `__process` proto returned by the shell tool.  This test exercises that
 /// round-trip directly: spawn a process, extract the proto, call
 /// `processes::append_start`, then verify `processes::active()` lists the process.
 #[tokio::test]
-async fn detached_daemon_start_record_lands_in_processes_jsonl() {
+async fn detached_process_start_record_lands_in_processes_jsonl() {
     use crate::session::processes;
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
@@ -1020,8 +1020,8 @@ async fn detached_daemon_start_record_lands_in_processes_jsonl() {
     let proto = process_proto(&result);
     let pid = proto.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
 
-    // Reconstruct the DaemonStart (proto) as spine would, then write it.
-    let rec = crate::proto::gait::log::v1::DaemonStart {
+    // Reconstruct the ProcessStart (proto) as spine would, then write it.
+    let rec = crate::proto::gait::log::v1::ProcessStart {
         name: proto
             .get("name")
             .and_then(|v| v.as_str())

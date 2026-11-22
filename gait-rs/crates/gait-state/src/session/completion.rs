@@ -40,7 +40,7 @@ pub struct WakeRequest {
 /// and must never be deduped against each other; see `matches()` below.
 #[derive(Debug, Clone)]
 pub struct Completion {
-    /// Matches what `events::agent_update`/`events::daemon_update` already
+    /// Matches what `events::agent_update`/`events::process_update` already
     /// return — no extraction/wrapping needed.
     pub payload: crate::proto::gait::log::v1::event::Body,
     pub idempotency_key: String,
@@ -80,7 +80,7 @@ impl Completion {
         use crate::proto::gait::log::v1::payload;
         match crate::proto::event_kind(ev) {
             Some(payload::Kind::AgentUpdate(au)) => au.idempotency_key == self.idempotency_key,
-            Some(payload::Kind::DaemonUpdate(du)) => du.idempotency_key == self.idempotency_key,
+            Some(payload::Kind::ProcessUpdate(du)) => du.idempotency_key == self.idempotency_key,
             _ => false,
         }
     }
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn completion_carries_idempotency_key_not_derived_from_payload_values() {
         let c1 = Completion {
-            payload: crate::proto::events::daemon_update(
+            payload: crate::proto::events::process_update(
                 "build".into(),
                 0,
                 "done",
@@ -313,7 +313,7 @@ mod tests {
         init_parent(gait_dir, "parent-unsigned");
 
         let c = Completion {
-            payload: crate::proto::events::daemon_update(
+            payload: crate::proto::events::process_update(
                 "svc".to_string(),
                 0,
                 "done",
@@ -386,7 +386,7 @@ mod tests {
 
     fn process_completion(name: &str, exit_code: i32, status: &str, log_path: &str) -> Completion {
         Completion {
-            payload: crate::proto::events::daemon_update(
+            payload: crate::proto::events::process_update(
                 name.to_string(),
                 exit_code,
                 status,
@@ -425,8 +425,8 @@ mod tests {
         let log =
             std::fs::read_to_string(crate::session::live::log_path(gd.path(), "sparent")).unwrap();
         assert!(
-            log.contains("\"daemonUpdate\""),
-            "expected daemonUpdate in log, got: {log}"
+            log.contains("\"processUpdate\""),
+            "expected processUpdate in log, got: {log}"
         );
     }
 
@@ -488,7 +488,7 @@ mod tests {
         let log =
             std::fs::read_to_string(crate::session::live::log_path(gd.path(), "sdup")).unwrap();
         // Exactly one event line: the dedup hit must not append a duplicate.
-        let event_lines = log.lines().filter(|l| l.contains("daemonUpdate")).count();
+        let event_lines = log.lines().filter(|l| l.contains("processUpdate")).count();
         assert_eq!(event_lines, 1, "expected 1 event line, got: {log}");
     }
 

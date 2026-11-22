@@ -110,7 +110,7 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
         sandbox_cfg: Default::default(),
         relay: None,
         initial_git: None,
-        daemons: vec![],
+        processes: vec![],
     };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<embed::StreamItem>();

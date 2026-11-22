@@ -127,9 +127,9 @@ CancellationSignal cancellation_signal = 55;
     ThinkingBlock      thinking_block      = 58;
     SandboxUnlock      sandbox_unlock      = 59;
     SandboxUnlockReply sandbox_unlock_reply = 60;
-    DaemonStart        daemon_start        = 61;
-    DaemonStop         daemon_stop         = 62;
-    DaemonUpdate       daemon_update       = 63;
+    ProcessStart        process_start        = 61;
+    ProcessStop         process_stop         = 62;
+    ProcessUpdate       process_update       = 63;
     Registry           registry            = 64;
     Mode               mode                = 65;
     SandboxWhitelistMatch sandbox_whitelist_match = 66;
@@ -805,8 +805,8 @@ message LlmCallCompleted {
   bool           had_text        = 3;  // true if the model produced any text or thinking this step
 }
 
-// Daemon lifecycle events — written to the session log when a daemon is spawned/stopped.
-message DaemonStart {
+// Process lifecycle events — written to the session log when a process is spawned/stopped.
+message ProcessStart {
   string name       = 1;  // logical name chosen by the caller
   int32  pid        = 2;
   int32  pgid       = 3;
@@ -815,36 +815,36 @@ message DaemonStart {
   string cwd        = 6;
   string log_path   = 7;
   string session    = 8;  // owning session id — which parent to notify/wake on exit
-  // The trace carrier of the turn that started the daemon (W3C keys), so the
+  // The trace carrier of the turn that started the process (W3C keys), so the
   // wake on its exit links back to that turn. Absent without telemetry.
   optional string traceparent = 9;
   optional string tracestate  = 10;
   optional string baggage     = 11;
 }
 
-// DaemonStop carries the exit code so consumers (retrace / cli) can tell apart
+// ProcessStop carries the exit code so consumers (retrace / cli) can tell apart
 // "exited 0" from "killed by signal" without an extra round-trip.
-message DaemonStop {
+message ProcessStop {
   string name      = 1;
   int32  exit_code = 2;  // command exit status (124 = timeout-kill, negative = signal)
 }
 
-enum DaemonStatus {
-  DAEMON_STATUS_UNSPECIFIED = 0;
-  DAEMON_STATUS_DONE        = 1;  // exited on its own
-  DAEMON_STATUS_KILLED      = 2;  // killed (timeout / signal)
+enum ProcessStatus {
+  PROCESS_STATUS_UNSPECIFIED = 0;
+  PROCESS_STATUS_DONE        = 1;  // exited on its own
+  PROCESS_STATUS_KILLED      = 2;  // killed (timeout / signal)
 }
 
-message DaemonUpdate {
-  string       name      = 1;  // the daemon's logical name (NOT a session id)
+message ProcessUpdate {
+  string       name      = 1;  // the process's logical name (NOT a session id)
   int32        exit_code = 2;
-  DaemonStatus status    = 3;
+  ProcessStatus status    = 3;
   string       log_path  = 4;
   // Stable idempotency key for dedup (see Completion, gait-state::session::completion).
   // `{name}@{started_at}` — disambiguates pid-reuse across separate runs of a
-  // same-named daemon (DaemonStart.started_at already exists for exactly this).
+  // same-named process (ProcessStart.started_at already exists for exactly this).
   string       idempotency_key = 5;
-  // The carrier of the turn that started the daemon, copied from DaemonStart.
+  // The carrier of the turn that started the process, copied from ProcessStart.
   optional string traceparent = 6;
   optional string tracestate  = 7;
   optional string baggage     = 8;

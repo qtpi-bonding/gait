@@ -278,20 +278,20 @@ pub fn agent_update(
     }))
 }
 
-/// `DaemonUpdate` — completion event for a detached process. Status string →
-/// proto enum; the rendered form lives in `retrace::push_daemon_update` and
+/// `ProcessUpdate` — completion event for a detached process. Status string →
+/// proto enum; the rendered form lives in `retrace::push_process_update` and
 /// its inline mirror at the raw-projection site.
-pub fn daemon_update(
+pub fn process_update(
     name: String,
     exit_code: i32,
     status: &str,
     log_path: String,
     idempotency_key: String,
 ) -> pb::event::Body {
-    wire::body(pb::payload::Kind::DaemonUpdate(pb::DaemonUpdate {
+    wire::body(pb::payload::Kind::ProcessUpdate(pb::ProcessUpdate {
         name,
         exit_code,
-        status: daemon_status(status),
+        status: process_status(status),
         log_path,
         idempotency_key,
         ..Default::default()
@@ -299,11 +299,11 @@ pub fn daemon_update(
 }
 
 /// Copies the trace carrier of the turn that started a process onto its
-/// `DaemonUpdate`, so the wake on exit links back to that turn. Any other
+/// `ProcessUpdate`, so the wake on exit links back to that turn. Any other
 /// body is returned unchanged.
-pub fn with_process_trace(mut body: pb::event::Body, start: &pb::DaemonStart) -> pb::event::Body {
+pub fn with_process_trace(mut body: pb::event::Body, start: &pb::ProcessStart) -> pb::event::Body {
     if let pb::event::Body::Payload(payload) = &mut body {
-        if let Some(pb::payload::Kind::DaemonUpdate(update)) = payload.kind.as_mut() {
+        if let Some(pb::payload::Kind::ProcessUpdate(update)) = payload.kind.as_mut() {
             update.traceparent = start.traceparent.clone();
             update.tracestate = start.tracestate.clone();
             update.baggage = start.baggage.clone();
@@ -818,11 +818,11 @@ fn agent_status(s: &str) -> i32 {
     a as i32
 }
 
-fn daemon_status(s: &str) -> i32 {
+fn process_status(s: &str) -> i32 {
     let a = match s {
-        "done" => pb::DaemonStatus::Done,
-        "killed" => pb::DaemonStatus::Killed,
-        _ => pb::DaemonStatus::Unspecified,
+        "done" => pb::ProcessStatus::Done,
+        "killed" => pb::ProcessStatus::Killed,
+        _ => pb::ProcessStatus::Unspecified,
     };
     a as i32
 }

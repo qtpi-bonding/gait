@@ -135,7 +135,7 @@ async fn dispatcher_native_map_shares_real_instance_identity_with_state_tools() 
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         None,
     )
@@ -206,7 +206,7 @@ async fn min_turn_setup_never_touches_extension_types() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         None,
     )
@@ -274,7 +274,7 @@ async fn min_dynamic_catalog_lists_skills_but_not_mcp() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         None,
     )
@@ -518,7 +518,7 @@ async fn run_turn_writes_brain_events_without_coordinator_lifecycle() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -579,7 +579,7 @@ async fn run_turn_brackets_each_step_with_llm_call_events() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -659,7 +659,7 @@ async fn output_tool_result_used_in_turn_result() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -715,7 +715,7 @@ async fn output_tool_exempt_from_permission_gating() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -773,7 +773,7 @@ async fn permission_gating_pauses_turn_in_non_auto_mode() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -826,7 +826,7 @@ async fn run_turn_returns_done_result_on_completion() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -878,7 +878,7 @@ async fn run_turn_returns_permissions_when_paused() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -924,7 +924,7 @@ async fn streaming_text_does_not_produce_extra_transcript_events() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -997,7 +997,7 @@ async fn denied_tool_gets_blocked_result_without_prompting() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1090,7 +1090,7 @@ async fn deny_wins_when_tool_in_both_allow_and_deny() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1202,7 +1202,7 @@ async fn resume_executes_approved_tool_directly() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1291,7 +1291,7 @@ async fn resume_recovers_from_crash_mid_tool_call() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1408,7 +1408,7 @@ async fn resume_recovers_from_crash_mid_parallel_batch() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1568,7 +1568,7 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1692,7 +1692,7 @@ async fn resume_with_scope_mode_shows_whitelist_prefix() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1766,7 +1766,7 @@ async fn run_turn_persists_codebase_path_in_session_start() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -1867,7 +1867,7 @@ async fn load_skill_emits_toggle_event() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
     )
     .await
@@ -1974,7 +1974,7 @@ async fn enable_rejects_skill_outside_agent_whitelist() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
     )
     .await
@@ -2068,7 +2068,7 @@ async fn config_enabled_union_does_not_bypass_skill_whitelist_at_seed() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
     )
     .await
@@ -2144,7 +2144,7 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -2232,7 +2232,7 @@ async fn supervised_write_inside_codebase_returns_done() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -2317,7 +2317,7 @@ async fn auto_mode_shell_denial_propagates_as_tool_failure() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -2393,7 +2393,7 @@ async fn shell_eacces_supervised_pause() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -2474,7 +2474,7 @@ async fn supervised_read_outside_ceiling_pauses_with_unlock() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -2592,7 +2592,7 @@ async fn schema_bound_plain_text_then_structured_done_succeeds() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -2657,7 +2657,7 @@ async fn schema_bound_plain_text_always_errors_after_nudges() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -2715,7 +2715,7 @@ async fn run_turn_primitive_drives_one_turn_with_mock_provider() {
         sandbox_cfg: crate::config::SandboxConfig::default(),
         relay: None,
         initial_git: None,
-        daemons: vec![],
+        processes: vec![],
     };
 
     let result = run_turn(&session, &emitter, caps, input).await.unwrap();
@@ -3192,7 +3192,7 @@ async fn verified_goal_failure_nudges_then_success_finishes_same_turn() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -3293,7 +3293,7 @@ async fn verified_goal_exhaustion_fails_turn() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -3438,7 +3438,7 @@ async fn verified_goal_schema_and_verifier_failure_combined() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )
@@ -3570,7 +3570,7 @@ async fn verified_goal_implicit_with_schema_and_verifier() {
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
-            daemons: vec![],
+            processes: vec![],
         },
         crate::git::Repos::production(),
     )

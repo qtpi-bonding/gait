@@ -1,5 +1,5 @@
 //! End-to-end idle-wake: a detached process finishes, the registry records a
-//! `Stop`, and the parent's session log gains a `daemon_update` event (the
+//! `Stop`, and the parent's session log gains a `process_update` event (the
 //! wake). It runs the `gait` binary Cargo built for this package as the
 //! `__process-exit` hook, so it never depends on a `gait` on the PATH.
 #![cfg(feature = "full")]
@@ -48,7 +48,7 @@ async fn detached_process_wakes_idle_parent_on_exit() {
                 .any(|l| l.contains("\"kind\":\"stop\"") && l.contains("\"name\":\"t\""));
         }
         if let Ok(raw) = std::fs::read_to_string(&parent_log) {
-            update_recorded = raw.contains("daemon_update") || raw.contains("daemonUpdate");
+            update_recorded = raw.contains("process_update") || raw.contains("processUpdate");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -60,7 +60,7 @@ async fn detached_process_wakes_idle_parent_on_exit() {
     );
     assert!(
         update_recorded,
-        "parent log.jsonl never got a daemon_update event within 20s; contents: {}",
+        "parent log.jsonl never got a process_update event within 20s; contents: {}",
         std::fs::read_to_string(&parent_log).unwrap_or_default()
     );
 
@@ -72,10 +72,10 @@ async fn detached_process_wakes_idle_parent_on_exit() {
         .find(|ev| {
             matches!(
                 gait_core::proto::event_kind(ev),
-                Some(gait_core::proto::gait::log::v1::payload::Kind::DaemonUpdate(_))
+                Some(gait_core::proto::gait::log::v1::payload::Kind::ProcessUpdate(_))
             )
         })
-        .expect("a daemon_update event");
+        .expect("a process_update event");
     assert!(
         update.provenance.is_empty(),
         "the process-exit notice must be unsigned"

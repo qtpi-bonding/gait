@@ -228,8 +228,8 @@ pub(crate) async fn within<F: Future>(span: Span, fut: F) -> F::Output {
 
 /// Stamps a process's start record with the carrier of the turn starting it.
 pub(crate) fn with_start_carrier(
-    #[allow(unused_mut)] mut start: crate::proto::gait::log::v1::DaemonStart,
-) -> crate::proto::gait::log::v1::DaemonStart {
+    #[allow(unused_mut)] mut start: crate::proto::gait::log::v1::ProcessStart,
+) -> crate::proto::gait::log::v1::ProcessStart {
     #[cfg(feature = "telemetry")]
     {
         let carrier = concord_telemetry::carrier::capture();
@@ -242,7 +242,7 @@ pub(crate) fn with_start_carrier(
 
 /// A short span for a process's wake, linked to the turn that started the
 /// process. Closed as soon as it is made: it marks the wake and its cause.
-pub(crate) fn note_process_wake(update: &crate::proto::gait::log::v1::DaemonUpdate) {
+pub(crate) fn note_process_wake(update: &crate::proto::gait::log::v1::ProcessUpdate) {
     #[cfg(feature = "telemetry")]
     {
         let span = tracing::info_span!(parent: None, "gait.daemon_update", daemon = %update.name);
@@ -266,7 +266,7 @@ pub(crate) fn note_process_wake(update: &crate::proto::gait::log::v1::DaemonUpda
 pub(crate) fn note_process_wake_body(body: &crate::proto::gait::log::v1::event::Body) {
     use crate::proto::gait::log::v1::{event::Body, payload::Kind};
     if let Body::Payload(payload) = body {
-        if let Some(Kind::DaemonUpdate(update)) = payload.kind.as_ref() {
+        if let Some(Kind::ProcessUpdate(update)) = payload.kind.as_ref() {
             note_process_wake(update);
         }
     }

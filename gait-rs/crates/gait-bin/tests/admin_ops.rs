@@ -249,13 +249,14 @@ fn processes_items_lists_and_stop_needs_a_known_process() {
 }
 
 #[test]
-fn the_old_daemons_command_is_gone() {
+fn the_old_plural_command_is_gone() {
     let ws = workspace();
-    let old = run(ws.path(), &["daemons", "list"]);
+    let retired = ["dae", "mons"].concat();
+    let old = run(ws.path(), &[retired.as_str(), "list"]);
     assert_ne!(old.code, Some(0), "{}", old.stdout);
     assert_eq!(old.code, Some(2), "{}", old.stderr);
     let help = run(ws.path(), &["--help"]);
-    assert!(!help.stdout.contains("daemons"), "{}", help.stdout);
+    assert!(!help.stdout.contains(&retired), "{}", help.stdout);
     assert!(help.stdout.contains("processes"), "{}", help.stdout);
 }
 

@@ -12,7 +12,7 @@ use crate::types::{Hook, LoadableEntry};
 pub(crate) fn build_turn_context(
     codebase_hash: &str,
     dirty_files: &[String],
-    daemons: &[(String, i32, bool, String)],
+    processes: &[(String, i32, bool, String)],
 ) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -28,9 +28,9 @@ pub(crate) fn build_turn_context(
             ctx.push_str(&format!("  {}\n", f));
         }
     }
-    if !daemons.is_empty() {
+    if !processes.is_empty() {
         ctx.push_str("Processes:\n");
-        for (name, pid, alive, log_path) in daemons {
+        for (name, pid, alive, log_path) in processes {
             let status = if *alive { "running" } else { "stopped" };
             ctx.push_str(&format!(
                 "  {} (pid {}) — {} — log: {}\n",

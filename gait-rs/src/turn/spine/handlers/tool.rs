@@ -611,11 +611,11 @@ pub async fn run_tool_as_spine(
 
     // If the hand spawned a detached process, record it in processes.jsonl.
     // The spine is the sole gait-dir writer; best-effort (ignore errors).
-    if let Some(ref rec) = feedback.daemon {
+    if let Some(ref rec) = feedback.process {
         // Build the proto-backed registry record. `session` is the owning
         // parent session id (Task 6 — Review Correction [E]); it is used by
         // `__process-exit` to look up which parent to wake on completion.
-        let dr = crate::proto::gait::log::v1::DaemonStart {
+        let dr = crate::proto::gait::log::v1::ProcessStart {
             name: rec.name.clone(),
             pid: rec.pid,
             pgid: rec.pgid,

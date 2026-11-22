@@ -342,7 +342,7 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
         .unwrap();
     let feedback = feedback_from_output(child.wait_with_output().unwrap());
     assert!(
-        feedback.daemon.is_some(),
+        feedback.process.is_some(),
         "hand must return before its process"
     );
 

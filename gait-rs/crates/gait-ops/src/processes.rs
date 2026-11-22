@@ -181,8 +181,8 @@ mod tests {
     use gait_state::proto::gait::log::v1 as pb;
     use gait_state::session::processes::append_start;
 
-    fn make_rec(name: &str, pid: i32) -> pb::DaemonStart {
-        pb::DaemonStart {
+    fn make_rec(name: &str, pid: i32) -> pb::ProcessStart {
+        pb::ProcessStart {
             name: name.to_owned(),
             pid,
             pgid: pid,
@@ -219,7 +219,7 @@ mod tests {
         let pid = child.id() as i32;
         let started_at =
             gait_state::process::proc_start_time(pid).expect("proc_start_time for child");
-        let alive = pb::DaemonStart {
+        let alive = pb::ProcessStart {
             name: "alive-process".to_owned(),
             pid,
             pgid: pid,
@@ -233,7 +233,7 @@ mod tests {
         append_start(dir.path(), &alive).unwrap();
 
         // A dead entry with no recorded Stop (fake pid, bogus started_at).
-        let dead = pb::DaemonStart {
+        let dead = pb::ProcessStart {
             name: "dead-process".to_owned(),
             pid: 999999,
             pgid: 999999,
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn list_heals_dead_entry_so_it_disappears_next_time() {
         let dir = tempfile::TempDir::new().unwrap();
-        let rec = pb::DaemonStart {
+        let rec = pb::ProcessStart {
             name: "zombie".to_owned(),
             pid: 999999,
             pgid: 999999,
@@ -340,7 +340,7 @@ mod tests {
     fn stop_on_dead_process_skips_signal_but_records() {
         let dir = tempfile::TempDir::new().unwrap();
         // Create a process record with a pid that's definitely not running.
-        let rec = pb::DaemonStart {
+        let rec = pb::ProcessStart {
             name: "dead-process".to_owned(),
             pid: 999999,
             pgid: 999999,

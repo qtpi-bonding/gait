@@ -165,7 +165,7 @@ pub(crate) struct TurnEnv<'a> {
     pub deny: &'a [String],
     pub preview_policy: crate::config::PreviewPolicy,
     pub auto: bool,
-    pub daemons: &'a [(String, i32, bool, String)],
+    pub processes: &'a [(String, i32, bool, String)],
     pub ingestor: &'a crate::session::Ingestor,
     /// Needed by `finalize()`'s `post_turn` `HookContext` (Task 6).
     pub system_prompt: &'a str,

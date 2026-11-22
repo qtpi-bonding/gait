@@ -363,7 +363,7 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
     // Merge consecutive messages with the same role. The Anthropic API rejects
     // adjacent same-role turns with HTTP 400. The most common trigger after
     // Part 2's live-turn poll: a ToolResult (role "user") immediately followed
-    // by a daemon_update event folded to a User message (also role "user").
+    // by a process_update event folded to a User message (also role "user").
     // We merge by accumulating content blocks — purely structural, no text concat.
     merge_consecutive_same_role(collected)
 }
@@ -678,7 +678,7 @@ mod tests {
             Message::User {
                 id: String::new(),
                 content: gait_types::types::MessageContent::Text(
-                    "[daemon:build] done — exit 0 — log: /tmp/build.log".into(),
+                    "[process:build] done — exit 0 — log: /tmp/build.log".into(),
                 ),
                 attribution: Vec::new(),
             },
