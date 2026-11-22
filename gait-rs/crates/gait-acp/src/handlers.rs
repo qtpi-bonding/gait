@@ -869,7 +869,10 @@ mod tests {
             wire.data.as_ref().unwrap()["code"],
             "gait.acp.prompt.attestation_required"
         );
-        assert_eq!(cap.errors_where(|_| true).len(), 1);
+        let data = wire.data.as_ref().unwrap();
+        let fingerprint = data["fingerprint"].clone();
+        let records = cap.errors_where(|record| record.fingerprint == fingerprint);
+        assert_eq!(records.len(), 1);
     }
 
     #[test]
