@@ -376,20 +376,27 @@ mod macos {
 mod linux {
     use super::*;
     use std::os::unix::process::CommandExt;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
     use std::sync::Mutex;
+
+    /// Per-process counter making cgroup directory names unique per owner
+    /// containment. Without this, two concurrent turns in one process (e.g.
+    /// gait-acp hosting many sessions) would share one `gait-{pid}` cgroup and
+    /// `kill_all` on one turn would kill the others' brains.
+    static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(0);
 
     // ── helpers ────────────────────────────────────────────────────────────────
 
     /// Try to create a delegated cgroup for this process.  Returns the path on
     /// success; returns `None` if cgroup v2 is not available/writable.
-    fn try_create_cgroup(pid: u32) -> Option<std::path::PathBuf> {
+    fn try_create_cgroup(pid: u32, cgroup_id: u64) -> Option<std::path::PathBuf> {
         let uid = unsafe { libc::getuid() };
+        let name = format!("gait-{pid}-{cgroup_id}");
 
         // Try the user-session delegated subtree first (systemd + user delegation).
         let candidates = [
-            format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/gait-{pid}"),
-            format!("/sys/fs/cgroup/gait-{pid}"),
+            format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{name}"),
+            format!("/sys/fs/cgroup/{name}"),
         ];
 
         for candidate in &candidates {
@@ -426,7 +433,8 @@ mod linux {
         /// Create a fresh (non-inherited) cgroup containment for the top-level spine.
         pub fn new_owner() -> Self {
             let pid = std::process::id();
-            let cgroup_dir = try_create_cgroup(pid);
+            let cgroup_id = NEXT_CGROUP_ID.fetch_add(1, Ordering::Relaxed);
+            let cgroup_dir = try_create_cgroup(pid, cgroup_id);
             Self {
                 cgroup_dir,
                 pgid: AtomicI32::new(0),
@@ -467,6 +475,23 @@ mod linux {
         fn enroll_in_cgroup(&self, pid: u32) {
             if let Some(ref dir) = self.cgroup_dir {
                 let _ = std::fs::write(dir.join("cgroup.procs"), pid.to_string());
+            }
+        }
+    }
+
+    impl Drop for CgroupContainment {
+        fn drop(&mut self) {
+            if !self.inherited {
+                // Best-effort cleanup of this turn's cgroup dirs. rmdir fails
+                // harmlessly while processes remain inside; ignore all errors.
+                if let Some(ref dir) = self.cgroup_dir {
+                    let _ = std::fs::remove_dir(dir);
+                }
+                if let Ok(guard) = self.detached_dir.lock() {
+                    if let Some(ref dir) = *guard {
+                        let _ = std::fs::remove_dir(dir);
+                    }
+                }
             }
         }
     }
@@ -772,6 +797,85 @@ mod linux {
             assert_eq!(
                 alive, 0,
                 "detached child (pid {det_pid}) should survive kill_all"
+            );
+        }
+
+        /// Regression: two owner containments in ONE process (gait-acp hosts
+        /// many sessions) must get distinct cgroup dirs, so kill_all on one
+        /// turn cannot kill the other turns' brains.
+        #[test]
+        fn linux_two_owners_do_not_kill_each_other() {
+            // Build the owners concretely so we can see whether cgroup v2 mode
+            // is actually available (the trait hides cgroup_dir from us).
+            let a = CgroupContainment::new_owner();
+            if a.cgroup_dir.is_none() {
+                return;
+            }
+            let b = CgroupContainment::new_owner();
+
+            // Spawn each child DIRECTLY (not via spawn_enrolled, which would
+            // append --cascade-group and make plain `sleep` exit at once), then
+            // move it INTO its owner's cgroup via register_pid.
+            let mut cmd_a = Command::new("sleep");
+            cmd_a.arg("60");
+            let mut child_a = cmd_a.spawn().expect("spawn sleep a");
+            let pid_a = child_a.id() as i32;
+            a.register_pid(pid_a);
+
+            let mut cmd_b = Command::new("sleep");
+            cmd_b.arg("60");
+            let mut child_b = cmd_b.spawn().expect("spawn sleep b");
+            let pid_b = child_b.id() as i32;
+            b.register_pid(pid_b);
+
+            // Both children must be alive and enrolled before we kill anything.
+            assert!(
+                child_a.try_wait().expect("try_wait a").is_none(),
+                "child A (pid {pid_a}) should be alive before kill_all"
+            );
+            assert!(
+                child_b.try_wait().expect("try_wait b").is_none(),
+                "child B (pid {pid_b}) should be alive before kill_all"
+            );
+
+            // Kill only turn A.
+            a.kill_all().expect("kill_all a");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+
+            // Reap A: it must be dead.
+            let _ = child_a.wait();
+            let alive_a = unsafe { libc::kill(pid_a, 0) };
+            assert_eq!(
+                alive_a, -1,
+                "kill_all on containment A should have killed its own child (pid {pid_a})"
+            );
+
+            // B must still be alive — this FAILS on the old code, which shared
+            // one `gait-{pid}` cgroup dir between both owners.
+            assert!(
+                child_b.try_wait().expect("try_wait b").is_none(),
+                "kill_all on containment A must NOT kill containment B's child (pid {pid_b})"
+            );
+
+            // Clean up B.
+            b.kill_all().expect("kill_all b");
+            let _ = child_b.wait();
+        }
+
+        /// Regression: two owner containments in one process must not share a
+        /// cgroup directory name (the old code named them `gait-{pid}`).
+        #[test]
+        fn linux_owner_cgroup_names_are_unique() {
+            let a = CgroupContainment::new_owner();
+            let b = CgroupContainment::new_owner();
+            // Without a writable cgroup v2 the containment degrades to pgid mode
+            // and there is no directory to compare.
+            let (Some(dir_a), Some(dir_b)) = (a.cgroup_dir.clone(), b.cgroup_dir.clone()) else {
+                return;
+            };
+            assert_ne!(
+                dir_a, dir_b,
+                "two owner containments in one process must get distinct cgroup dirs"
             );
         }
     }
