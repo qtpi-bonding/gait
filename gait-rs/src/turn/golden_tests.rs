@@ -70,6 +70,7 @@ enum GoldenStep {
 struct GoldenProvider {
     steps: Vec<GoldenStep>,
     call_idx: AtomicUsize,
+    parked: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl GoldenProvider {
@@ -77,7 +78,13 @@ impl GoldenProvider {
         Self {
             steps,
             call_idx: AtomicUsize::new(0),
+            parked: None,
         }
+    }
+
+    fn with_parked_signal(mut self, tx: std::sync::mpsc::Sender<()>) -> Self {
+        self.parked = Some(tx);
+        self
     }
 }
 
@@ -101,6 +108,7 @@ impl Provider for GoldenProvider {
             .get(idx)
             .cloned()
             .unwrap_or(GoldenStep::Ok(vec![]));
+        let parked = self.parked.clone();
         Ok(match step {
             GoldenStep::Ok(chunks) => Box::pin(stream! {
                 for c in chunks { yield Ok(c); }
@@ -109,6 +117,9 @@ impl Provider for GoldenProvider {
                 yield Err::<StreamChunk, ProviderError>(e());
             }),
             GoldenStep::WaitCancel => Box::pin(stream! {
+                if let Some(tx) = parked {
+                    let _ = tx.send(());
+                }
                 // Park forever until the caller's `tokio::select!` arm picks up
                 // cancellation. `crate::turn::mod::cancel_token_fut` resolves when
                 // the turn's token is cancelled — we never yield anything before
@@ -666,15 +677,15 @@ fn golden_cancel_early() {
 #[test]
 fn golden_cancel_mid_stream() {
     let cancel = tokio_util::sync::CancellationToken::new();
-    let cancel_for_task = cancel.clone();
-    let provider = GoldenProvider::new(vec![GoldenStep::WaitCancel]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let provider = GoldenProvider::new(vec![GoldenStep::WaitCancel]).with_parked_signal(tx);
     let mut fx = Fixture::new(provider, vec![], true);
     fx.session_id = "sgcancelmid01".into();
-    fx.input.cancel = Some(cancel_for_task.clone());
-    // Trigger cancellation halfway through. The stream will be parked; the
-    // turn loop's `tokio::select!` arm will resolve first.
+    fx.input.cancel = Some(cancel.clone());
+    // Trigger cancellation only after the stream has actually been polled and
+    // parked; the turn loop's `tokio::select!` arm will resolve first.
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        let _ = rx.recv();
         cancel.cancel();
     });
     run_scenario("cancel_mid_stream", fx);
