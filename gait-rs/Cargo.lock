@@ -3519,8 +3519,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "op-registry"
-version = "0.4.0"
-source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=5ad22036c1c249146914e9462374c331877f770e#5ad22036c1c249146914e9462374c331877f770e"
+version = "0.4.1"
+source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=71516054e828d5f2ba09d50c964f8f48d89c81d2#71516054e828d5f2ba09d50c964f8f48d89c81d2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3539,8 +3539,8 @@ dependencies = [
 
 [[package]]
 name = "op-registry-derive"
-version = "0.4.0"
-source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=5ad22036c1c249146914e9462374c331877f770e#5ad22036c1c249146914e9462374c331877f770e"
+version = "0.4.1"
+source = "git+https://github.com/qtpi-bonding/op-registry.git?rev=71516054e828d5f2ba09d50c964f8f48d89c81d2#71516054e828d5f2ba09d50c964f8f48d89c81d2"
 dependencies = [
  "proc-macro2",
  "quote",

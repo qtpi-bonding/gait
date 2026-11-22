@@ -341,6 +341,8 @@ mod kit {
             banned_words: &[
                 "round-", "Task ", "/Users/", "/home/", "gait_ops", "Mirrors",
             ],
+            // no flag names are allowed to carry different wording across commands
+            homonyms: &[],
         };
         let warnings = testing::assert_help_complete(&registry(), &rules);
         for warning in warnings {

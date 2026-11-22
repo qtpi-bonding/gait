@@ -19,7 +19,7 @@ concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telem
 identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "b4b3da5d857e0311798e843f433d9177ca7f7c7a" }
 identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "b4b3da5d857e0311798e843f433d9177ca7f7c7a" }
 message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "b2008d828100b81525a0bc4d85a0a2d3c8c8c9d2" }
-op-registry = { git = "https://github.com/qtpi-bonding/op-registry.git", rev = "5ad22036c1c249146914e9462374c331877f770e", default-features = false, features = ["manual"] }
+op-registry = { git = "https://github.com/qtpi-bonding/op-registry.git", rev = "71516054e828d5f2ba09d50c964f8f48d89c81d2", default-features = false, features = ["manual"] }
 
 # Full debug info + macOS's split-debuginfo=unpacked means every one of this
 # workspace's ~57 test binaries pays a real dSYM-generation cost at link time.
