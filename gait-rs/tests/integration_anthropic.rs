@@ -83,6 +83,34 @@ struct MockSse {
     url: String,
 }
 
+/// Like `mock_sse_server`, but the response uses `Transfer-Encoding: chunked`
+/// and the body ends mid-chunk (a truncated chunk followed by socket shutdown),
+/// so the client observes a transport error rather than a clean EOF.
+async fn mock_sse_server_dropped(frames: Vec<&'static str>) -> MockSse {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let url = format!("http://{}/v1", addr);
+
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            let _ = sock.write_all(header.as_bytes()).await;
+            for frame in frames {
+                let chunk = format!("{:x}\r\n{}\r\n", frame.len(), frame);
+                let _ = sock.write_all(chunk.as_bytes()).await;
+            }
+            // Deliberately truncated chunk: announces 255 bytes, sends 3.
+            let _ = sock.write_all(b"ff\r\nabc").await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    MockSse { url }
+}
+
 impl MockSse {
     fn url(&self) -> String {
         self.url.clone()
@@ -210,5 +238,125 @@ async fn partial_usage_then_incomplete_is_accounted_once() {
     assert_eq!(
         input_tokens_seen, 100,
         "partial usage must be counted exactly once per stream pass"
+    );
+}
+
+#[tokio::test]
+async fn stream_transport_drop_yields_sse_error() {
+    use gait_core::anthropic::AnthropicProvider;
+
+    // Same frames as the clean-EOF incomplete test, but the chunked body ends
+    // mid-chunk: a transport error, not a clean EOF.
+    let server = mock_sse_server_dropped(vec![
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n",
+    ])
+    .await;
+
+    let provider = AnthropicProvider::new(
+        "k".into(),
+        "claude-x".into(),
+        Some(server.url()),
+        false,
+        gait_core::transport::ProviderTransport::new(
+            gait_core::transport::TransportConfig::default(),
+        )
+        .expect("transport"),
+    );
+    let mut stream = provider
+        .stream(
+            "sys",
+            &[],
+            &[],
+            &gait_core::config::LlmParamsConfig::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut last = None;
+    while let Some(item) = stream.next().await {
+        last = Some(item);
+    }
+    let err = match last {
+        Some(Err(e)) => e,
+        other => panic!("expected a terminal Sse error, got {:?}", other),
+    };
+    let display = err.to_string();
+    match &err {
+        ProviderError::Sse(msg) => {
+            assert!(
+                !display.is_empty() && !msg.is_empty(),
+                "Sse error Display text must be non-empty, got: {display:?}"
+            );
+        }
+        other => panic!(
+            "expected ProviderError::Sse, got {:?} (Display: {display})",
+            other
+        ),
+    }
+    assert!(
+        !matches!(err, ProviderError::StreamIncomplete { .. }),
+        "transport drop must NOT surface as StreamIncomplete"
+    );
+}
+
+#[tokio::test]
+async fn partial_usage_then_transport_drop_is_accounted_once() {
+    use gait_core::anthropic::AnthropicProvider;
+
+    // MessageStart (100 input tokens) + content_block_start + one delta, then a
+    // mid-chunk transport drop.
+    let server = mock_sse_server_dropped(vec![
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"x\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-x\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+    ])
+    .await;
+
+    let provider = AnthropicProvider::new(
+        "k".into(),
+        "claude-x".into(),
+        Some(server.url()),
+        false,
+        gait_core::transport::ProviderTransport::new(
+            gait_core::transport::TransportConfig::default(),
+        )
+        .expect("transport"),
+    );
+    let mut stream = provider
+        .stream(
+            "sys",
+            &[],
+            &[],
+            &gait_core::config::LlmParamsConfig::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut input_tokens_seen: u32 = 0;
+    let mut got_sse = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(StreamChunk::StepUsage(u)) => input_tokens_seen += u.input_tokens,
+            Err(ProviderError::Sse(_)) => {
+                got_sse = true;
+                break;
+            }
+            Err(ProviderError::StreamIncomplete { .. }) => {
+                panic!("transport drop must not surface as StreamIncomplete")
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        got_sse,
+        "expected ProviderError::Sse after mid-chunk transport drop"
+    );
+    assert_eq!(
+        input_tokens_seen, 100,
+        "usage from message_start must be counted exactly once despite transport drop"
     );
 }
