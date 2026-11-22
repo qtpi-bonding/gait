@@ -732,7 +732,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "concord-fields"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=f7b30e2f607624ccc8b375009a018f26f388df76#f7b30e2f607624ccc8b375009a018f26f388df76"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a8caabd151c4e398efdd1a5eb97c9d6545b72c6e#a8caabd151c4e398efdd1a5eb97c9d6545b72c6e"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -741,8 +741,8 @@ dependencies = [
 
 [[package]]
 name = "concord-telemetry"
-version = "0.5.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=f7b30e2f607624ccc8b375009a018f26f388df76#f7b30e2f607624ccc8b375009a018f26f388df76"
+version = "0.6.0"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a8caabd151c4e398efdd1a5eb97c9d6545b72c6e#a8caabd151c4e398efdd1a5eb97c9d6545b72c6e"
 dependencies = [
  "anyhow",
  "coded-error",
@@ -767,7 +767,7 @@ dependencies = [
 [[package]]
 name = "concord-telemetry-derive"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=f7b30e2f607624ccc8b375009a018f26f388df76#f7b30e2f607624ccc8b375009a018f26f388df76"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a8caabd151c4e398efdd1a5eb97c9d6545b72c6e#a8caabd151c4e398efdd1a5eb97c9d6545b72c6e"
 dependencies = [
  "concord-fields",
  "proc-macro2",
@@ -2720,7 +2720,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "identity-crypto"
 version = "0.12.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=d7514fc567ed118aa7108ca75ce9a5129e2507d1#d7514fc567ed118aa7108ca75ce9a5129e2507d1"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=b4b3da5d857e0311798e843f433d9177ca7f7c7a#b4b3da5d857e0311798e843f433d9177ca7f7c7a"
 dependencies = [
  "chrono",
  "hex",
@@ -2738,7 +2738,7 @@ dependencies = [
 [[package]]
 name = "identity-keyfile"
 version = "0.12.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=d7514fc567ed118aa7108ca75ce9a5129e2507d1#d7514fc567ed118aa7108ca75ce9a5129e2507d1"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=b4b3da5d857e0311798e843f433d9177ca7f7c7a#b4b3da5d857e0311798e843f433d9177ca7f7c7a"
 dependencies = [
  "identity-crypto",
  "libc",
@@ -3257,8 +3257,8 @@ dependencies = [
 
 [[package]]
 name = "message-attestation"
-version = "0.5.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=371cc18622dfdbcfa9f05f0c12d247402e046e01#371cc18622dfdbcfa9f05f0c12d247402e046e01"
+version = "0.6.0"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=b2008d828100b81525a0bc4d85a0a2d3c8c8c9d2#b2008d828100b81525a0bc4d85a0a2d3c8c8c9d2"
 dependencies = [
  "coded-error",
  "getrandom 0.4.2",

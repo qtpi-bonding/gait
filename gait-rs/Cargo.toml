@@ -14,11 +14,11 @@ repository = "https://github.com/qtpi-bonding/gait"
 # lists it.
 [workspace.dependencies]
 coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "de21d22e31baff78eae7d4ca817b87430bff1f81", default-features = false }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "f7b30e2f607624ccc8b375009a018f26f388df76" }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a8caabd151c4e398efdd1a5eb97c9d6545b72c6e" }
 concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telemetry-proto.git", rev = "4892badae333cfa7ebfdb4f17c76d65bb63612e4" }
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "d7514fc567ed118aa7108ca75ce9a5129e2507d1" }
-identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "d7514fc567ed118aa7108ca75ce9a5129e2507d1" }
-message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "371cc18622dfdbcfa9f05f0c12d247402e046e01" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "b4b3da5d857e0311798e843f433d9177ca7f7c7a" }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "b4b3da5d857e0311798e843f433d9177ca7f7c7a" }
+message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "b2008d828100b81525a0bc4d85a0a2d3c8c8c9d2" }
 op-registry = { git = "https://github.com/qtpi-bonding/op-registry.git", rev = "5ad22036c1c249146914e9462374c331877f770e", default-features = false, features = ["manual"] }
 
 # Full debug info + macOS's split-debuginfo=unpacked means every one of this
