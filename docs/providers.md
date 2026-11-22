@@ -48,7 +48,7 @@ gait --model openai-codex/<model> "your task"
 
 The Codex source follows Codex's own home precedence: an explicit `--home`, then `CODEX_HOME`, then `~/.codex`. `gait auth unlink --id openai-codex` removes only gait's non-secret binding. Codex keyring-backed auth is not supported yet; configure Codex's `cli_auth_credentials_store` as `file` for this integration.
 
-A linked Codex login is only as fresh as the Codex CLI keeps it: gait never refreshes it. When its access token has expired, a turn fails before any request with `gait.auth.expired` ("the linked codex credentials expired; run `codex login` again"); for gait's own login the error says to run `gait auth login --id openai-codex`.
+A linked Codex login is only as fresh as the Codex CLI keeps it: gait never refreshes it and does not check its expiry locally. When the server rejects an expired access token with a 401, the turn fails with `gait.auth.expired` ("the codex credentials expired; run `codex login` again for a linked codex login, or `gait auth login --id openai-codex`").
 
 Gait's own credential map and external-source pointers live at
 `$GAIT_HOME/auth.json`, where `GAIT_HOME` defaults to `~/.gait-home`.
