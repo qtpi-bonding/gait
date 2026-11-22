@@ -27,6 +27,9 @@ pub struct SessionEntry {
     /// token so a prior turn's cause never leaks into the next.
     pub cancel_cause: crate::notice_meta::CauseSlot,
     pub join: Option<std::thread::JoinHandle<()>>,
+    /// True once the turn's response has been handed to the client (or the
+    /// turn failed); reset by `set_cascade` at the start of the next prompt.
+    pub turn_settled: bool,
     /// The running turn's `acp.prompt` span, so a cancel can note itself on it.
     pub prompt_span: Option<tracing::Span>,
     /// `gait/idempotency_key` values already seen for this session's whole
@@ -55,6 +58,7 @@ impl SessionMap {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 cancel_cause: Default::default(),
                 join: None,
+                turn_settled: false,
                 prompt_span: None,
                 seen_idempotency_keys: std::collections::HashSet::new(),
             },
@@ -82,6 +86,7 @@ impl SessionMap {
                     cancel: tokio_util::sync::CancellationToken::new(),
                     cancel_cause: Default::default(),
                     join: None,
+                    turn_settled: false,
                     prompt_span: None,
                     seen_idempotency_keys: std::collections::HashSet::new(),
                 },
@@ -114,6 +119,17 @@ impl SessionMap {
     pub fn set_cascade(&self, session_id: &str, handle: gait_core::embed::CascadeKillHandle) {
         if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
             e.cascade = Some(handle);
+            e.turn_settled = false;
+        }
+    }
+
+    /// Mark the current turn as settled: its response has been sent to the
+    /// client, so the client's next prompt must not be rejected as busy even
+    /// though the turn thread is still alive while it tears down. No-op for an
+    /// unknown session.
+    pub fn mark_turn_settled(&self, session_id: &str) {
+        if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
+            e.turn_settled = true;
         }
     }
 
@@ -209,12 +225,20 @@ impl SessionMap {
     /// request (which is going to be rejected once it reaches `SessionLock`
     /// anyway) clobbers the first turn's live bookkeeping in the window
     /// before its own rejection lands.
+    ///
+    /// A turn counts as live only while its join handle exists, the thread has
+    /// not finished, AND the turn has not yet been marked settled. The turn
+    /// thread sends the client its response before it returns from its closure
+    /// and tears down its runtime/LocalSet, so `is_finished()` alone is still
+    /// false in the window where the client has already seen the response and
+    /// may immediately send its next prompt; without the settled flag that
+    /// next prompt would spuriously fail with a transient `session_busy`.
     pub fn has_live_turn(&self, session_id: &str) -> bool {
         self.0
             .lock()
             .unwrap()
             .get(session_id)
-            .is_some_and(|e| e.join.as_ref().is_some_and(|j| !j.is_finished()))
+            .is_some_and(|e| e.join.as_ref().is_some_and(|j| !j.is_finished()) && !e.turn_settled)
     }
 
     /// Whether `key` has already been recorded as seen for `session_id` — a
@@ -617,6 +641,49 @@ mod tests {
     fn has_seen_idempotency_key_false_for_unknown_session() {
         let m = SessionMap::new();
         assert!(!m.has_seen_idempotency_key("nope", "k1"));
+    }
+
+    #[test]
+    fn has_live_turn_false_once_turn_settled_even_while_thread_runs() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        m.set_turn_thread(
+            "s",
+            std::thread::spawn(move || {
+                let _ = rx.recv();
+            }),
+        );
+        assert!(m.has_live_turn("s"), "running, unsettled turn is live");
+        m.mark_turn_settled("s");
+        assert!(
+            !m.has_live_turn("s"),
+            "a settled turn is not live even while its thread is still running"
+        );
+        drop(tx); // let the thread finish so the test doesn't leak it
+    }
+
+    #[test]
+    fn set_cascade_reopens_a_settled_turn() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        m.set_turn_thread(
+            "s",
+            std::thread::spawn(move || {
+                let _ = rx.recv();
+            }),
+        );
+        m.mark_turn_settled("s");
+        // A new prompt starts: set_cascade runs before the new turn thread is
+        // spawned, so the turn is unsettled again even though a thread (the
+        // previous one, still alive) is tracked.
+        m.set_cascade("s", gait_core::embed::CascadeKillHandle::new());
+        assert!(
+            m.has_live_turn("s"),
+            "a fresh prompt makes the turn live again"
+        );
+        drop(tx); // let the thread finish so the test doesn't leak it
     }
 
     #[test]

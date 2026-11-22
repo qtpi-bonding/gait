@@ -583,6 +583,9 @@ pub fn build_agent_with_attestation(
                                     },
                                 }
                             };
+                            // Settle the turn before the client can see the response,
+                            // so its next prompt is not rejected as busy.
+                            map_thread.mark_turn_settled(&sid_thread);
                             // Resolve the deferred prompt; a failed send just means the
                             // connection already closed (drain will reap this thread).
                             let _ = match stop {
