@@ -297,7 +297,7 @@ pub async fn run_one(
     (sink, calls)
 }
 
-/// Publishes one agent identity for this test process through `GAIT_AGENT_DIR`,
+/// Publishes one agent identity for this test process through `GAIT_IDENTITY_DIR`,
 /// where `gait` finds it at process entry (the spine reads it at turn start).
 /// The directory lives as long as the process, so every test sees a valid one.
 pub fn publish_agent_identity() {
@@ -310,5 +310,5 @@ pub fn publish_agent_identity() {
             .as_secs() as i64;
         identity_keyfile::testkit::TempIdentityDir::new(now, 86_400)
     });
-    std::env::set_var("GAIT_AGENT_DIR", agent.path());
+    std::env::set_var("GAIT_IDENTITY_DIR", agent.path());
 }

@@ -67,7 +67,7 @@ pub fn owner_from_meta(
 /// own-device set is NOT cached: each [`Attestor::verify`] reloads the agent
 /// keys, so a device renewed or rotated after startup is recognised.
 pub struct Attestor {
-    agent_dir: PathBuf,
+    identity_dir: PathBuf,
     self_id: PrincipalId,
     trusted: Vec<PrincipalId>,
     state: Arc<DeliveryState>,
@@ -108,16 +108,16 @@ fn lock(set: &Mutex<HashSet<(String, u64)>>) -> MutexGuard<'_, HashSet<(String, 
 }
 
 impl Attestor {
-    /// Opens the attestation state for the agent in `agent_dir`, keeping its
+    /// Opens the attestation state for the agent in `identity_dir`, keeping its
     /// replay and dedupe state under `state_dir`, and checking at startup that
     /// the agent has a device to accept deliveries for.
-    pub fn open(agent_dir: &Path, state_dir: &Path, trusted: Vec<PrincipalId>) -> Result<Self> {
-        let public = gait_identity::load_keys(agent_dir)?.public();
-        ensure_own_devices(agent_dir, &public.device_keys_at(now_unix()))?;
+    pub fn open(identity_dir: &Path, state_dir: &Path, trusted: Vec<PrincipalId>) -> Result<Self> {
+        let public = gait_identity::load_keys(identity_dir)?.public();
+        ensure_own_devices(identity_dir, &public.device_keys_at(now_unix()))?;
         let self_id = public.principal_id.clone();
         let state = DeliveryState::open(state_dir, &self_id.to_string())?;
         Ok(Self {
-            agent_dir: agent_dir.to_owned(),
+            identity_dir: identity_dir.to_owned(),
             self_id,
             trusted,
             state: Arc::new(state),
@@ -132,7 +132,7 @@ impl Attestor {
 
     /// Verifies the delivery in a prompt's `_meta` object. `Ok(None)` when
     /// there is none. Any rejection is an error, and records nothing. The own
-    /// devices are read from the agent directory now, as of the system clock.
+    /// devices are read from the identity directory now, as of the system clock.
     pub fn verify(
         &self,
         meta: &serde_json::Map<String, serde_json::Value>,
@@ -149,10 +149,10 @@ impl Attestor {
         between_read_and_claim: impl FnOnce(),
     ) -> Result<Option<VerifiedBatch>> {
         let now = now_unix();
-        let own_devices = gait_identity::load_keys(&self.agent_dir)?
+        let own_devices = gait_identity::load_keys(&self.identity_dir)?
             .public()
             .device_keys_at(now);
-        ensure_own_devices(&self.agent_dir, &own_devices)?;
+        ensure_own_devices(&self.identity_dir, &own_devices)?;
         let policy = DeliveryPolicy {
             trusted: &self.trusted,
             self_id: &self.self_id,
@@ -226,11 +226,11 @@ impl Attestor {
     }
 }
 
-fn ensure_own_devices(agent_dir: &Path, own_devices: &[PublicKey]) -> Result<()> {
+fn ensure_own_devices(identity_dir: &Path, own_devices: &[PublicKey]) -> Result<()> {
     if own_devices.is_empty() {
         bail!(
             "the agent at {} has no device signing key to accept deliveries for",
-            agent_dir.display()
+            identity_dir.display()
         );
     }
     Ok(())
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn open_codes_a_loose_agent_dir() {
+    fn open_codes_a_loose_identity_dir() {
         let keys = identity_keyfile::testkit::TempIdentityDir::new(0, 86_400);
         std::fs::set_permissions(keys.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let state = tempfile::tempdir().unwrap();

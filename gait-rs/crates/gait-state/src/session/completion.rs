@@ -107,7 +107,7 @@ pub fn notify_parent(
 
 /// Like [`notify_parent`] but the appended event carries no provenance, so the
 /// receiver folds it as `Unverified`. Only for the detached-daemon exit hook,
-/// which runs in the sandboxed hand and cannot read the agent dir to sign.
+/// which runs in the sandboxed hand and cannot read the identity dir to sign.
 pub fn notify_parent_unsigned(
     gait_dir: &Path,
     repos: &crate::git::Repos,
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn notify_parent_returns_no_parent_without_agent_dir() {
+    fn notify_parent_returns_no_parent_without_identity_dir() {
         let dir = TempDir::new().unwrap();
         let gait_dir = dir.path();
         init_parent(gait_dir, "parent-noid");

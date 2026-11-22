@@ -3,9 +3,9 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().collect();
-    // `--agent-dir` must reach the environment before any thread exists, so
+    // `--identity-dir` must reach the environment before any thread exists, so
     // it is read from the raw arguments, ahead of the registry's own parse.
-    gait_bin::apply_agent_dir_flag(&raw);
+    gait_bin::apply_identity_dir_flag(&raw);
     let identity = IdentityContext::from_env();
     let agent_id = identity
         .as_ref()

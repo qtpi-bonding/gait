@@ -72,7 +72,7 @@ fn globals_have_no_machine_paths_in_help() {
     let (code, stdout, _) = run(&["gait", "--help"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("--gait-dir"), "{stdout}");
-    assert!(stdout.contains("--agent-dir"), "{stdout}");
+    assert!(stdout.contains("--identity-dir"), "{stdout}");
     for banned in ["/Users/", "/home/"] {
         assert!(
             !stdout.contains(banned),
@@ -145,7 +145,7 @@ fn gait_dir_resolves_from_flag_env_and_gaitref() {
 fn from_globals_does_no_io_even_for_a_missing_gait_dir() {
     let globals = Globals {
         gait_dir: Some(PathBuf::from("/nonexistent/x")),
-        agent_dir: None,
+        identity_dir: None,
     };
     assert!(<GaitContext as op_registry::CliContext>::from_globals(&globals).is_ok());
 }
@@ -159,7 +159,7 @@ fn resolver_gives_the_apps_not_found_for_missing_objects() {
     let dir = tempfile::tempdir().unwrap();
     let globals = Globals {
         gait_dir: Some(dir.path().to_path_buf()),
-        agent_dir: None,
+        identity_dir: None,
     };
     let ctx = <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap();
     for kind in ["inference", "mode", "daemon"] {
@@ -195,7 +195,7 @@ mod session_ops {
     fn ctx(dir: &Path) -> GaitContext {
         let globals = Globals {
             gait_dir: Some(dir.to_path_buf()),
-            agent_dir: None,
+            identity_dir: None,
         };
         <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap()
     }
@@ -322,7 +322,7 @@ mod kit {
         );
         let globals = Globals {
             gait_dir: Some(dir.path().to_path_buf()),
-            agent_dir: None,
+            identity_dir: None,
         };
         let ctx = <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap();
         (dir, ctx)

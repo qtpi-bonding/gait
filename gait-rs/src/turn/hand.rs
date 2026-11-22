@@ -958,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_identity_dir_is_denied_with_gait_agent_dir_and_deny_env_unset() {
+    fn machine_identity_dir_is_denied_with_gait_identity_dir_and_deny_env_unset() {
         let dir = tempfile::TempDir::new().unwrap();
         gait_ops::workspace::run_init(dir.path()).unwrap();
         let machine = tempfile::TempDir::new().unwrap();

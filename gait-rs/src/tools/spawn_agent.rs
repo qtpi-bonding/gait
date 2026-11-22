@@ -36,7 +36,7 @@ pub(crate) fn wall_clock_secs() -> i64 {
 pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()> {
     let identity = opts.identity.ok_or_else(|| {
         anyhow::anyhow!(
-            "spawn_agent: no agent identity configured (GAIT_AGENT_DIR unset); cannot sign the child's task"
+            "spawn_agent: no agent identity configured (GAIT_IDENTITY_DIR unset); cannot sign the child's task"
         )
     })?;
     opts.repos

@@ -47,7 +47,7 @@ impl HandDenyError {
 
 /// The `GAIT_IDENTITY_DENY` value handed to a spawned tool hand: the agent's
 /// identity folders plus, when identity is in use, the machine identity
-/// directory. "Identity in use" means `GAIT_AGENT_DIR` is set and non-empty, or
+/// directory. "Identity in use" means `GAIT_IDENTITY_DIR` is set and non-empty, or
 /// `<gait_dir>/identity` or `identity-root` exists (or cannot be inspected). Fails closed only when identity is in
 /// use — an unresolvable or `:`-containing machine directory is then an error;
 /// otherwise the machine entry is simply skipped.
@@ -55,13 +55,13 @@ fn hand_identity_deny_env(
     gait_dir: &Path,
     var: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<String, HandDenyError> {
-    let agent_dir = match var("GAIT_AGENT_DIR") {
+    let identity_dir = match var("GAIT_IDENTITY_DIR") {
         Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
         _ => gait_dir.join("identity"),
     };
     // An unreadable path counts as present: fail closed.
     let present = |p: std::path::PathBuf| p.try_exists().unwrap_or(true);
-    let identity_in_use = var("GAIT_AGENT_DIR").is_some_and(|d| !d.is_empty())
+    let identity_in_use = var("GAIT_IDENTITY_DIR").is_some_and(|d| !d.is_empty())
         || present(gait_dir.join("identity"))
         || present(gait_dir.join("identity-root"));
     let machine = match gait_identity::machine_dir_with(&var) {
@@ -69,7 +69,7 @@ fn hand_identity_deny_env(
         Err(e) if identity_in_use => return Err(HandDenyError::MachineDirUnresolved(e)),
         Err(_) => None,
     };
-    let mut paths = gait_identity::agent_deny_paths(&agent_dir);
+    let mut paths = gait_identity::agent_deny_paths(&identity_dir);
     paths.extend(machine);
     // A ':' path cannot ride the list: refuse when identity is in use or the
     // path exists; a standalone gait skips an entry that is not there.
@@ -1071,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_deny_env_covers_machine_dir_without_gait_agent_dir() {
+    fn hand_deny_env_covers_machine_dir_without_gait_identity_dir() {
         let value = hand_identity_deny_env(
             Path::new("/g"),
             env_of(&[("MACHINE_IDENTITY_DIR", "/m/mi"), ("HOME", "/h")]),
@@ -1082,10 +1082,10 @@ mod tests {
     }
 
     #[test]
-    fn hand_deny_env_uses_the_default_machine_dir_and_the_handed_agent_dir() {
+    fn hand_deny_env_uses_the_default_machine_dir_and_the_handed_identity_dir() {
         let value = hand_identity_deny_env(
             Path::new("/g"),
-            env_of(&[("GAIT_AGENT_DIR", "/agents/a"), ("HOME", "/h")]),
+            env_of(&[("GAIT_IDENTITY_DIR", "/agents/a"), ("HOME", "/h")]),
         )
         .unwrap();
         let parts: Vec<&str> = value.split(':').collect();
@@ -1134,10 +1134,10 @@ mod tests {
     }
 
     #[test]
-    fn hand_deny_env_treats_identity_root_or_an_empty_agent_dir_var_correctly() {
+    fn hand_deny_env_treats_identity_root_or_an_empty_identity_dir_var_correctly() {
         let gait = tempfile::TempDir::new().unwrap();
-        // Empty GAIT_AGENT_DIR is not "in use": no identity dirs, no machine dir => Ok.
-        assert!(hand_identity_deny_env(gait.path(), env_of(&[("GAIT_AGENT_DIR", "")])).is_ok());
+        // Empty GAIT_IDENTITY_DIR is not "in use": no identity dirs, no machine dir => Ok.
+        assert!(hand_identity_deny_env(gait.path(), env_of(&[("GAIT_IDENTITY_DIR", "")])).is_ok());
         std::fs::create_dir(gait.path().join("identity-root")).unwrap();
         assert!(hand_identity_deny_env(gait.path(), env_of(&[])).is_err());
     }
@@ -1147,7 +1147,7 @@ mod tests {
         let err = hand_identity_deny_env(
             Path::new("/g"),
             env_of(&[
-                ("GAIT_AGENT_DIR", "/agents/a"),
+                ("GAIT_IDENTITY_DIR", "/agents/a"),
                 ("MACHINE_IDENTITY_DIR", "/m/a:b"),
                 ("HOME", "/h"),
             ]),
@@ -1169,9 +1169,11 @@ mod tests {
 
     #[test]
     fn hand_deny_env_fails_closed_when_the_machine_dir_is_not_computable() {
-        let err =
-            hand_identity_deny_env(Path::new("/g"), env_of(&[("GAIT_AGENT_DIR", "/agents/a")]))
-                .unwrap_err();
+        let err = hand_identity_deny_env(
+            Path::new("/g"),
+            env_of(&[("GAIT_IDENTITY_DIR", "/agents/a")]),
+        )
+        .unwrap_err();
         assert!(
             format!("{err:#}").contains("machine identity directory"),
             "{err:#}"
@@ -1183,7 +1185,7 @@ mod tests {
         let err: anyhow::Error = hand_identity_deny_env(
             Path::new("/g"),
             env_of(&[
-                ("GAIT_AGENT_DIR", "/agents/a"),
+                ("GAIT_IDENTITY_DIR", "/agents/a"),
                 ("MACHINE_IDENTITY_DIR", "/m/a:b"),
                 ("HOME", "/h"),
             ]),
@@ -1201,10 +1203,12 @@ mod tests {
 
     #[test]
     fn hand_deny_env_unresolved_machine_dir_is_the_typed_variant() {
-        let err: anyhow::Error =
-            hand_identity_deny_env(Path::new("/g"), env_of(&[("GAIT_AGENT_DIR", "/agents/a")]))
-                .unwrap_err()
-                .into();
+        let err: anyhow::Error = hand_identity_deny_env(
+            Path::new("/g"),
+            env_of(&[("GAIT_IDENTITY_DIR", "/agents/a")]),
+        )
+        .unwrap_err()
+        .into();
         assert!(
             matches!(
                 err.downcast_ref::<HandDenyError>(),

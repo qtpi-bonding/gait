@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().collect();
-    // `--agent-dir` must reach the environment before any thread exists.
-    gait_bin::apply_agent_dir_flag(&raw);
+    // `--identity-dir` must reach the environment before any thread exists.
+    gait_bin::apply_identity_dir_flag(&raw);
     let identity = gait_identity::IdentityContext::from_env();
     let agent_id = identity
         .as_ref()

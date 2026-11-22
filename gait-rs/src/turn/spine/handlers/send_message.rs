@@ -82,14 +82,14 @@ mod tests {
         // Planted names that must never reach the send command.
         // SAFETY: test-only, the names are unique to this test.
         unsafe {
-            std::env::set_var("GAIT_AGENT_DIR", "/secret");
+            std::env::set_var("GAIT_IDENTITY_DIR", "/secret");
             std::env::set_var("OPENAI_API_KEY", "k");
         }
         let env = child_env();
         assert!(env.iter().all(|(k, _)| crate::env_passes_to_children(k)));
         assert!(!env
             .iter()
-            .any(|(k, _)| k == "GAIT_AGENT_DIR" || k == "OPENAI_API_KEY"));
+            .any(|(k, _)| k == "GAIT_IDENTITY_DIR" || k == "OPENAI_API_KEY"));
     }
 
     #[tokio::test]
@@ -130,7 +130,7 @@ mod tests {
             ],
             audience: deliverer(),
         };
-        unsafe { std::env::set_var("GAIT_AGENT_DIR", "/secret") };
+        unsafe { std::env::set_var("GAIT_IDENTITY_DIR", "/secret") };
         let fb = send_with(
             &config,
             serde_json::json!({"to": ["room:r1"], "body": "hi"}),
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(message.body, "hi");
         let _ = agent;
         let env = std::fs::read_to_string(&envf).unwrap();
-        assert!(!env.contains("GAIT_AGENT_DIR"), "{env}");
+        assert!(!env.contains("GAIT_IDENTITY_DIR"), "{env}");
     }
 
     #[tokio::test]

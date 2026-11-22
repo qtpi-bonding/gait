@@ -971,7 +971,7 @@ mod tests {
         let sb = reload_config(agent_path.parent().unwrap()).sandbox;
         assert!(
             sb.readable.iter().any(|p| p == "/etc/hosts"),
-            "agent-scope grant must land in the agent dir's sandbox.readable; got {:?}",
+            "agent-scope grant must land in the identity dir's sandbox.readable; got {:?}",
             sb.readable
         );
 

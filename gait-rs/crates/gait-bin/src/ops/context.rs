@@ -11,9 +11,9 @@ pub struct Globals {
     /// directory are used.
     #[op(env = "GAIT_DIR")]
     pub gait_dir: Option<PathBuf>,
-    /// Agent identity directory. Sets GAIT_AGENT_DIR for this process and every
+    /// Agent identity directory. Sets GAIT_IDENTITY_DIR for this process and every
     /// child it spawns.
-    pub agent_dir: Option<PathBuf>,
+    pub identity_dir: Option<PathBuf>,
 }
 
 /// What an op runs against. Built from the globals with no I/O: the gait

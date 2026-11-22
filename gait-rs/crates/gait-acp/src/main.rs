@@ -14,7 +14,7 @@
 //! (e.g. by `structmuxd`). A trusted deliverer is named by its PRINCIPAL id;
 //! the delivery proves the deliverer's device through its root-to-device
 //! delegation. The delivery replay and dedupe state live under the state dir
-//! (default `$GAIT_DIR`). The agent identity comes from `GAIT_AGENT_DIR`, read
+//! (default `$GAIT_DIR`). The agent identity comes from `GAIT_IDENTITY_DIR`, read
 //! by `IdentityContext`. Unrecognized argv is left alone (no clap dependency
 //! here today), except the removed flags, which are refused.
 use std::path::PathBuf;
@@ -57,7 +57,7 @@ enum ConfigError {
     #[coded(code = "reply_instructions_unreadable", class = Logical)]
     ReplyInstructionsUnreadable(String, String),
     #[error(
-        "--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory"
+        "--require-attestation needs an agent identity: set GAIT_IDENTITY_DIR to the identity directory"
     )]
     #[coded(code = "attestation_needs_identity", class = Logical)]
     AttestationNeedsIdentity,
@@ -205,9 +205,9 @@ fn main() -> std::process::ExitCode {
     let _telemetry = gait_core::telemetry::FlushGuard;
     let mut verifier = None;
     if let Some(ctx) = &identity {
-        if !is_role && std::env::var_os("GAIT_AGENT_DIR").is_none() {
+        if !is_role && std::env::var_os("GAIT_IDENTITY_DIR").is_none() {
             // SAFETY: still single-threaded; set before any runtime or child exists.
-            unsafe { std::env::set_var("GAIT_AGENT_DIR", ctx.agent_dir()) };
+            unsafe { std::env::set_var("GAIT_IDENTITY_DIR", ctx.identity_dir()) };
         }
         let v = match gait_identity::DirectVerifier::from_context(ctx) {
             Ok(v) => Arc::new(v),
@@ -258,7 +258,11 @@ fn main() -> std::process::ExitCode {
     }
     let attestor = match (identity.as_ref(), state_dir.as_deref()) {
         (Some(ctx), Some(state_dir)) => {
-            match Attestor::open(ctx.agent_dir(), state_dir, flags.trusted_deliverers.clone()) {
+            match Attestor::open(
+                ctx.identity_dir(),
+                state_dir,
+                flags.trusted_deliverers.clone(),
+            ) {
                 Ok(attestor) => Some(Arc::new(attestor)),
                 Err(error) => return fatal(error),
             }

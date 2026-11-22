@@ -21,7 +21,7 @@ fn gait_acp_refuses_a_loose_attestation_dir_and_exits_once() {
         .arg("--require-attestation")
         .arg("--state-dir")
         .arg(gait.path())
-        .env_remove("GAIT_AGENT_DIR")
+        .env_remove("GAIT_IDENTITY_DIR")
         .env_remove("GAIT_DIR")
         .stdin(Stdio::null())
         .output()

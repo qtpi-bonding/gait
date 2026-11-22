@@ -50,7 +50,7 @@ pub struct ToolCtx {
     /// (spine-supplied buffer, set by the hand for delegated ops).
     pub fs: Arc<dyn FsBackend>,
     /// The agent's identity, used to sign direct events this tool writes
-    /// (`spawn_agent`). `None` when no agent directory was supplied; tools that
+    /// (`spawn_agent`). `None` when no identity directory was supplied; tools that
     /// need it fail hard rather than writing unsigned events.
     pub identity: Option<Arc<gait_identity::IdentityContext>>,
 }

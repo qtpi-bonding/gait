@@ -488,7 +488,7 @@ mod tests {
             "OTEL_EXPORTER_OTLP_TRACES_HEADERS"
         ));
         assert!(!crate::env_passes_to_children("AWS_SECRET_ACCESS_KEY"));
-        assert!(!crate::env_passes_to_children("GAIT_AGENT_DIR"));
+        assert!(!crate::env_passes_to_children("GAIT_IDENTITY_DIR"));
         assert!(!crate::env_passes_to_children("OPENAI_API_KEY"));
     }
 

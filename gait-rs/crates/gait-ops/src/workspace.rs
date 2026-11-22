@@ -66,9 +66,9 @@ pub fn run_init(gait_dir: &Path) -> std::io::Result<()> {
 /// never clobbers) and ensure USER.md and sessions/ are gitignored.
 pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     // agents/default/ — Phase 4 directory form
-    let default_agent_dir = gait_dir.join("agents").join("default");
-    std::fs::create_dir_all(&default_agent_dir)?;
-    let default_agent = default_agent_dir.join("AGENT.md");
+    let default_identity_dir = gait_dir.join("agents").join("default");
+    std::fs::create_dir_all(&default_identity_dir)?;
+    let default_agent = default_identity_dir.join("AGENT.md");
     if !default_agent.exists() {
         std::fs::write(&default_agent, "")?;
     }
@@ -526,7 +526,7 @@ mod tests {
 
             assert!(
                 !dir.path().join("keyring.json").exists(),
-                "init must not create keyring.json; keys live in the agent dir"
+                "init must not create keyring.json; keys live in the identity dir"
             );
             let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
             assert!(

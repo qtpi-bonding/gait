@@ -54,21 +54,21 @@ pub async fn run_registry(
     op_registry::cli::run(&registry, argv, &ops::GaitHooks).await
 }
 
-/// The value of `--agent-dir` in the raw command line, as `--agent-dir PATH` or
-/// `--agent-dir=PATH`; the last one wins, and nothing after a bare `--` counts.
-pub fn agent_dir_arg(raw: &[String]) -> Option<std::path::PathBuf> {
+/// The value of `--identity-dir` in the raw command line, as `--identity-dir PATH` or
+/// `--identity-dir=PATH`; the last one wins, and nothing after a bare `--` counts.
+pub fn identity_dir_arg(raw: &[String]) -> Option<std::path::PathBuf> {
     let args = raw.get(1..).unwrap_or_default();
     let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let args = &args[..end];
     let mut found = None;
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--agent-dir" {
+        if args[i] == "--identity-dir" {
             if let Some(value) = args.get(i + 1) {
                 found = Some(std::path::PathBuf::from(value));
                 i += 1;
             }
-        } else if let Some(value) = args[i].strip_prefix("--agent-dir=") {
+        } else if let Some(value) = args[i].strip_prefix("--identity-dir=") {
             found = Some(std::path::PathBuf::from(value));
         }
         i += 1;
@@ -76,14 +76,14 @@ pub fn agent_dir_arg(raw: &[String]) -> Option<std::path::PathBuf> {
     found
 }
 
-/// Makes `--agent-dir` visible to this process and to every child it spawns by
-/// setting `GAIT_AGENT_DIR`. The registry also declares the flag, so help and
+/// Makes `--identity-dir` visible to this process and to every child it spawns by
+/// setting `GAIT_IDENTITY_DIR`. The registry also declares the flag, so help and
 /// parsing accept it, but the environment is only safe to mutate while the
 /// process is single-threaded: `main` calls this on the raw arguments before
 /// any thread exists.
-pub fn apply_agent_dir_flag(raw: &[String]) {
-    if let Some(dir) = agent_dir_arg(raw) {
-        std::env::set_var("GAIT_AGENT_DIR", dir);
+pub fn apply_identity_dir_flag(raw: &[String]) {
+    if let Some(dir) = identity_dir_arg(raw) {
+        std::env::set_var("GAIT_IDENTITY_DIR", dir);
     }
 }
 
@@ -94,7 +94,7 @@ pub fn apply_agent_dir_flag(raw: &[String]) {
 pub fn install_agent_identity(
     identity: anyhow::Result<Option<IdentityContext>>,
 ) -> anyhow::Result<()> {
-    let Some(ctx) = identity.context("GAIT_AGENT_DIR is set but cannot be loaded")? else {
+    let Some(ctx) = identity.context("GAIT_IDENTITY_DIR is set but cannot be loaded")? else {
         return Ok(());
     };
     install_process_verifier(Arc::new(DirectVerifier::from_context(&ctx)?));
@@ -168,23 +168,23 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn agent_dir_flag_sets_gait_agent_dir_env() {
-        let value = format!("/nonexistent/gait-agent-dir-flag-{}", std::process::id());
-        let previous = std::env::var_os("GAIT_AGENT_DIR");
-        let raw: Vec<String> = ["gait", "sessions", "--agent-dir", value.as_str()]
+    fn identity_dir_flag_sets_gait_identity_dir_env() {
+        let value = format!("/nonexistent/gait-identity-dir-flag-{}", std::process::id());
+        let previous = std::env::var_os("GAIT_IDENTITY_DIR");
+        let raw: Vec<String> = ["gait", "sessions", "--identity-dir", value.as_str()]
             .map(String::from)
             .to_vec();
-        apply_agent_dir_flag(&raw);
-        let observed = std::env::var_os("GAIT_AGENT_DIR");
+        apply_identity_dir_flag(&raw);
+        let observed = std::env::var_os("GAIT_IDENTITY_DIR");
         match previous {
-            Some(v) => std::env::set_var("GAIT_AGENT_DIR", v),
-            None => std::env::remove_var("GAIT_AGENT_DIR"),
+            Some(v) => std::env::set_var("GAIT_IDENTITY_DIR", v),
+            None => std::env::remove_var("GAIT_IDENTITY_DIR"),
         }
         assert_eq!(observed.as_deref(), Some(std::ffi::OsStr::new(&value)));
     }
 
     #[test]
-    fn unloadable_agent_dir_is_a_clear_startup_error() {
+    fn unloadable_identity_dir_is_a_clear_startup_error() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("no-such-agent");
         let err = install_agent_identity(IdentityContext::new(&missing).map(Some)).unwrap_err();
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_dir_is_read_from_raw_argv_in_both_spellings() {
+    fn identity_dir_is_read_from_raw_argv_in_both_spellings() {
         let raw = |args: &[&str]| -> Vec<String> {
             std::iter::once("gait")
                 .chain(args.iter().copied())
@@ -248,15 +248,18 @@ mod tests {
         };
         let path = |p: &str| Some(std::path::PathBuf::from(p));
         assert_eq!(
-            agent_dir_arg(&raw(&["--agent-dir", "/a", "task"])),
+            identity_dir_arg(&raw(&["--identity-dir", "/a", "task"])),
             path("/a")
         );
         assert_eq!(
-            agent_dir_arg(&raw(&["sessions", "--agent-dir=/b"])),
+            identity_dir_arg(&raw(&["sessions", "--identity-dir=/b"])),
             path("/b")
         );
-        assert_eq!(agent_dir_arg(&raw(&["--", "--agent-dir", "/c"])), None);
-        assert_eq!(agent_dir_arg(&raw(&["task"])), None);
+        assert_eq!(
+            identity_dir_arg(&raw(&["--", "--identity-dir", "/c"])),
+            None
+        );
+        assert_eq!(identity_dir_arg(&raw(&["task"])), None);
     }
 
     #[test]

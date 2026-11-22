@@ -16,7 +16,8 @@ fn gait() -> Command {
     cmd.stdin(Stdio::null())
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
         .env_remove("GAIT_DIR")
-        .env_remove("GAIT_AGENT_DIR");
+        .env_remove("GAIT_AGENT_DIR")
+        .env_remove("GAIT_IDENTITY_DIR");
     cmd
 }
 
@@ -513,4 +514,90 @@ fn a_turn_that_launches_the_brain_does_not_overflow_the_stack() {
         "no exit code (a signal?): {}",
         stderr(&out)
     );
+}
+
+#[test]
+fn identity_dir_flag_is_the_identity_dir() {
+    let (dir, cwd) = workspace();
+    let identity = tempfile::TempDir::new().unwrap();
+    let out = gait()
+        .args(["--gait-dir"])
+        .arg(dir.path())
+        .args(["--identity-dir"])
+        .arg(identity.path())
+        .args(["sessions"])
+        .current_dir(cwd.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("GAIT_IDENTITY_DIR is set but cannot be loaded"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn identity_dir_env_is_read_and_the_old_env_is_ignored() {
+    let (dir, cwd) = workspace();
+    let identity = tempfile::TempDir::new().unwrap();
+    let out = gait()
+        .args(["--gait-dir"])
+        .arg(dir.path())
+        .args(["sessions"])
+        .env("GAIT_IDENTITY_DIR", identity.path())
+        .current_dir(cwd.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("GAIT_IDENTITY_DIR is set but cannot be loaded"),
+        "{}",
+        stderr(&out)
+    );
+
+    let old_identity = tempfile::TempDir::new().unwrap();
+    let out = gait()
+        .args(["--gait-dir"])
+        .arg(dir.path())
+        .args(["sessions"])
+        .env_remove("GAIT_IDENTITY_DIR")
+        .env("GAIT_AGENT_DIR", old_identity.path())
+        .current_dir(cwd.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("cannot be loaded"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn the_old_agent_dir_flag_is_gone() {
+    let (dir, cwd) = workspace();
+    let old_identity = tempfile::TempDir::new().unwrap();
+    let out = gait()
+        .args(["--gait-dir"])
+        .arg(dir.path())
+        .args(["--agent-dir"])
+        .arg(old_identity.path())
+        .args(["sessions"])
+        .current_dir(cwd.path())
+        .output()
+        .unwrap();
+    assert!(
+        !stderr(&out).contains("cannot be loaded"),
+        "{}",
+        stderr(&out)
+    );
+
+    let help = run(cwd.path(), &["--help"]);
+    assert!(
+        stdout(&help).contains("--identity-dir"),
+        "{}",
+        stdout(&help)
+    );
+    assert!(!stdout(&help).contains("--agent-dir"), "{}", stdout(&help));
 }

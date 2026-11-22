@@ -9,7 +9,7 @@ fn role_argv_loads_the_agent_identity_before_dispatching() {
     let empty = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_gait-acp"))
         .arg("__brain")
-        .env("GAIT_AGENT_DIR", empty.path())
+        .env("GAIT_IDENTITY_DIR", empty.path())
         .stdin(Stdio::null())
         .output()
         .unwrap();

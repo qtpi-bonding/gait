@@ -1680,7 +1680,7 @@ fn session_log(session_id: &str) -> Vec<Event> {
     )]
 }
 
-/// A raw projection that verifies signatures with `ctx`'s agent directory.
+/// A raw projection that verifies signatures with `ctx`'s identity directory.
 fn verifying_projection(ctx: &gait_identity::IdentityContext) -> ActiveRawMessages {
     ActiveRawMessages {
         verifier: Some(Arc::new(

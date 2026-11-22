@@ -20,15 +20,15 @@ pub const OWNER_HINT_SUFFIX: &str = "; the path must be owned by the current use
 /// For replay state in an old format (the bare-number layout).
 pub const OLD_FORMAT_HINT: &str = "the file is in an old format and must be converted";
 
-/// Why an agent directory could not supply its identity. Every variant reads
+/// Why an identity directory could not supply its identity. Every variant reads
 /// `load agent identity from <dir>`; the keyfile failure is the `source`, so an
 /// anyhow chain prints the same text as before the coding.
 #[derive(Debug, thiserror::Error, coded_error::CodedError)]
 #[coded(namespace = "gait.identity")]
 pub enum IdentityError {
     #[error("load agent identity from {}", .dir.display())]
-    #[coded(code = "agent_dir_unloadable", class = Logical)]
-    AgentDirUnloadable {
+    #[coded(code = "identity_dir_unloadable", class = Logical)]
+    IdentityDirUnloadable {
         dir: PathBuf,
         #[source]
         source: KeyfileError,
@@ -131,7 +131,7 @@ impl IdentityError {
             KeyfileError::Missing(_)
             | KeyfileError::Io { .. }
             | KeyfileError::AlreadyInitialised(_)
-            | _ => Self::AgentDirUnloadable { dir, source },
+            | _ => Self::IdentityDirUnloadable { dir, source },
         }
     }
 }
@@ -160,10 +160,11 @@ pub fn owner_detail(path: &Path) -> String {
     }
 }
 
-/// Load the device keys in `agent_dir`, typing any failure as an `IdentityError`.
-pub fn load_keys(agent_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
-    identity_keyfile::DeviceKeys::load(agent_dir)
-        .map_err(|source| coded_error::into_anyhow(IdentityError::from_keyfile(agent_dir, source)))
+/// Load the device keys in `identity_dir`, typing any failure as an `IdentityError`.
+pub fn load_keys(identity_dir: &Path) -> Result<identity_keyfile::DeviceKeys> {
+    identity_keyfile::DeviceKeys::load(identity_dir).map_err(|source| {
+        coded_error::into_anyhow(IdentityError::from_keyfile(identity_dir, source))
+    })
 }
 
 /// The split layout gait mints under its state dir.
@@ -199,17 +200,17 @@ pub fn machine_dir() -> Result<PathBuf> {
 
 /// Folders the model must never read or write: the device folder, the root
 /// folder next to a minted one, and the machine identity directory.
-pub fn identity_deny_paths_with(agent_dir: &Path, machine: &Path) -> Vec<PathBuf> {
-    let mut paths = agent_deny_paths(agent_dir);
+pub fn identity_deny_paths_with(identity_dir: &Path, machine: &Path) -> Vec<PathBuf> {
+    let mut paths = agent_deny_paths(identity_dir);
     paths.push(machine.to_path_buf());
     paths
 }
 
 /// The device folder and, next to a minted one, the root folder (no machine directory).
-pub fn agent_deny_paths(agent_dir: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![agent_dir.to_path_buf()];
-    if agent_dir.file_name().and_then(|n| n.to_str()) == Some("identity") {
-        if let Some(parent) = agent_dir.parent() {
+pub fn agent_deny_paths(identity_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![identity_dir.to_path_buf()];
+    if identity_dir.file_name().and_then(|n| n.to_str()) == Some("identity") {
+        if let Some(parent) = identity_dir.parent() {
             paths.push(parent.join("identity-root"));
         }
     }
@@ -217,8 +218,8 @@ pub fn agent_deny_paths(agent_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// [`identity_deny_paths_with`] joined for [`DENY_PATHS_ENV`].
-pub fn deny_paths_env_value_with(agent_dir: &Path, machine: &Path) -> String {
-    join_paths(&identity_deny_paths_with(agent_dir, machine))
+pub fn deny_paths_env_value_with(identity_dir: &Path, machine: &Path) -> String {
+    join_paths(&identity_deny_paths_with(identity_dir, machine))
 }
 
 fn join_paths(paths: &[PathBuf]) -> String {
@@ -249,31 +250,31 @@ pub fn renew_minted(layout: &identity_keyfile::IdentityLayout, now: i64) -> Resu
 
 /// Identity material is deliberately represented by its directory, not cached keys.
 pub struct IdentityContext {
-    agent_dir: PathBuf,
+    identity_dir: PathBuf,
     agent_id: PrincipalId,
 }
 
 impl IdentityContext {
     pub fn from_env() -> Result<Option<Self>> {
-        match std::env::var_os("GAIT_AGENT_DIR") {
+        match std::env::var_os("GAIT_IDENTITY_DIR") {
             Some(path) => Self::new(PathBuf::from(path)).map(Some),
             None => Ok(None),
         }
     }
 
-    /// Load the folder `GAIT_AGENT_DIR` names (load only, never written); when
+    /// Load the folder `GAIT_IDENTITY_DIR` names (load only, never written); when
     /// it is unset, mint-or-load the split identity under `gait_dir` (device
     /// folder `<gait_dir>/identity`, root `<gait_dir>/identity-root`, outside
-    /// every sandbox grant). The caller exports `GAIT_AGENT_DIR` afterwards,
+    /// every sandbox grant). The caller exports `GAIT_IDENTITY_DIR` afterwards,
     /// before any thread or child exists, so role children only load.
     pub fn from_env_or_mint(gait_dir: &Path) -> Result<Self> {
-        if let Some(path) = std::env::var_os("GAIT_AGENT_DIR") {
+        if let Some(path) = std::env::var_os("GAIT_IDENTITY_DIR") {
             return Self::new(PathBuf::from(path));
         }
         Self::mint_or_load(gait_dir)
     }
 
-    /// The unset-`GAIT_AGENT_DIR` half of [`Self::from_env_or_mint`].
+    /// The unset-`GAIT_IDENTITY_DIR` half of [`Self::from_env_or_mint`].
     pub fn mint_or_load(gait_dir: &Path) -> Result<Self> {
         let layout = minted_layout(gait_dir)?;
         // The library only reports a loose device dir as DeviceOnly, which
@@ -298,11 +299,11 @@ impl IdentityContext {
         Self::new(layout.device_dir())
     }
 
-    pub fn new(agent_dir: impl Into<PathBuf>) -> Result<Self> {
-        let agent_dir = agent_dir.into();
-        let keys = load_keys(&agent_dir)?;
+    pub fn new(identity_dir: impl Into<PathBuf>) -> Result<Self> {
+        let identity_dir = identity_dir.into();
+        let keys = load_keys(&identity_dir)?;
         Ok(Self {
-            agent_dir,
+            identity_dir,
             agent_id: keys.principal_id,
         })
     }
@@ -311,12 +312,12 @@ impl IdentityContext {
         &self.agent_id
     }
 
-    pub fn agent_dir(&self) -> &std::path::Path {
-        &self.agent_dir
+    pub fn identity_dir(&self) -> &std::path::Path {
+        &self.identity_dir
     }
 
     fn keys(&self) -> Result<identity_keyfile::DeviceKeys> {
-        load_keys(&self.agent_dir)
+        load_keys(&self.identity_dir)
     }
 }
 
@@ -459,7 +460,7 @@ mod tests {
         assert_eq!(
             IdentityError::ALL_CODES,
             &[
-                "gait.identity.agent_dir_unloadable",
+                "gait.identity.identity_dir_unloadable",
                 "gait.identity.missing_keyfile",
                 "gait.identity.device_key_unreadable",
                 "gait.identity.delegation_expired",
@@ -479,7 +480,7 @@ mod tests {
             msg: "bad".into(),
         };
         let texts = [
-            IdentityError::AgentDirUnloadable {
+            IdentityError::IdentityDirUnloadable {
                 dir: dir.clone(),
                 source: keyfile(),
             },
@@ -508,7 +509,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let err = match IdentityContext::new(dir.path()) {
-            Ok(_) => panic!("an empty agent dir must not load"),
+            Ok(_) => panic!("an empty identity dir must not load"),
             Err(err) => err,
         };
         let typed = coded_error::downcast_ref::<IdentityError>(&err).expect("typed IdentityError");
@@ -778,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn verifier_works_after_the_agent_dir_becomes_unreadable() {
+    fn verifier_works_after_the_identity_dir_becomes_unreadable() {
         use std::os::unix::fs::PermissionsExt;
 
         let fixture = TempIdentityDir::new(1_000, 3_600);
@@ -792,7 +793,7 @@ mod tests {
         std::fs::set_permissions(fixture.path(), original).unwrap();
         assert!(
             sealed,
-            "chmod 000 must make the agent dir unloadable (tests do not run as root)"
+            "chmod 000 must make the identity dir unloadable (tests do not run as root)"
         );
         assert_eq!(verified, Some(ctx.agent_id().clone()));
     }
@@ -896,7 +897,7 @@ mod tests {
         let base = std::fs::canonicalize(gait.path()).unwrap();
         assert!(base.join("identity-root/root.jwk.json").exists());
         assert!(!base.join("identity/root.jwk.json").exists());
-        assert_eq!(first.agent_dir(), base.join("identity"));
+        assert_eq!(first.identity_dir(), base.join("identity"));
     }
 
     #[test]
@@ -1052,7 +1053,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn loading_through_a_symlinked_agent_dir_names_the_symlink() {
+    fn loading_through_a_symlinked_identity_dir_names_the_symlink() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("real");
         std::fs::create_dir(&real).unwrap();
@@ -1093,7 +1094,7 @@ mod tests {
                 "{label}: {text}"
             );
         }
-        // InvalidMode carries no path: the agent dir is named instead.
+        // InvalidMode carries no path: the identity dir is named instead.
         let (code, text) = mapped(KeyfileError::InvalidMode(0o644));
         assert_eq!(code, "gait.identity.identity_not_private");
         assert!(text.contains("/agents/one"), "{text}");
@@ -1108,9 +1109,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unmapped_keyfile_error_stays_the_generic_agent_dir_error() {
+    fn an_unmapped_keyfile_error_stays_the_generic_identity_dir_error() {
         let (code, text) = mapped(KeyfileError::OwnerRoot);
-        assert_eq!(code, "gait.identity.agent_dir_unloadable");
+        assert_eq!(code, "gait.identity.identity_dir_unloadable");
         assert_eq!(text, "load agent identity from /agents/one");
     }
 

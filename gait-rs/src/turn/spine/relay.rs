@@ -381,8 +381,8 @@ async fn relay_brain_turn_inner(
     if let Some(slot) = signal_slot {
         *slot.lock().unwrap() = Some(Arc::clone(&group));
     }
-    // The spine is the process entry for agent identity: read the agent dir once
-    // here and hand the context down. A broken agent dir fails the turn.
+    // The spine is the process entry for agent identity: read the identity dir once
+    // here and hand the context down. A broken identity dir fails the turn.
     let identity = gait_identity::IdentityContext::from_env()?.map(Arc::new);
     // ── Build the turn context once ────────────────────────────────────────
     // The ctx carries every spine-side handle the turn needs (gait-dir,

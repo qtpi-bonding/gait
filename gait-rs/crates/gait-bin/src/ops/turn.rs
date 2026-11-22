@@ -254,7 +254,7 @@ async fn execute(repl: Repl, globals: Globals, cli: TurnArgs) -> anyhow::Result<
     }
     let gait_dir = <GaitContext as op_registry::CliContext>::from_globals(&Globals {
         gait_dir: globals.gait_dir,
-        agent_dir: globals.agent_dir,
+        identity_dir: globals.identity_dir,
     })?
     .gait_dir()?;
     let codebase = cli

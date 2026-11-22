@@ -80,7 +80,7 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeReques
     };
     let repos = crate::git::Repos::production();
     // KNOWN GAP: this notice is sent unsigned. The hook runs in the sandboxed
-    // hand, which cannot read the agent dir, so it cannot sign; the receiver
+    // hand, which cannot read the identity dir, so it cannot sign; the receiver
     // folds it as Unverified. Planned fix: a supervisor outside the sandbox
     // runs the hook.
     let wake = match notify_parent_unsigned(&args.gait_dir, &repos, &args.session, &c) {

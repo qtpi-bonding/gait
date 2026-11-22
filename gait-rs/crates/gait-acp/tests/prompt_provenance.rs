@@ -233,7 +233,7 @@ fn new_deliverer(now: i64) -> Deliverer {
     }
 }
 
-/// One agent's fixtures: a real agent directory (its device is the recipient),
+/// One agent's fixtures: a real identity directory (its device is the recipient),
 /// a deliverer (multimatrix's role, supplied to gait only as a trusted
 /// principal id), one message author, and a state directory for replay state.
 struct Fixture {
@@ -804,7 +804,7 @@ async fn replay_of_a_confirmed_batch_is_rejected() {
             .unwrap();
     assert_eq!(verified(&first_events).len(), 1);
 
-    // A new process: a fresh Attestor over the same agent directory.
+    // A new process: a fresh Attestor over the same identity directory.
     let restarted = fixture.attestor();
     let (channel, server) =
         gait_acp::handlers::build_agent_with_attestation(SessionMap::new(), false, Some(restarted))

@@ -26,7 +26,7 @@ pub fn tick(ctx: &IdentityContext, verifier: &DirectVerifier, now: i64) {
 /// The minted layout, when `ctx` is the `<state>/identity` folder next to a
 /// sibling `identity-root`; otherwise an error (device-only folder: no renewal).
 fn split_layout_of(ctx: &IdentityContext) -> anyhow::Result<identity_keyfile::IdentityLayout> {
-    let device = ctx.agent_dir();
+    let device = ctx.identity_dir();
     let parent = device
         .parent()
         .ok_or_else(|| anyhow::anyhow!("no parent"))?;
