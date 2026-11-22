@@ -8,7 +8,7 @@ pub fn service_for_argv(arg1: Option<&str>, default: &'static str) -> &'static s
     match arg1 {
         Some("__brain") => "gait-brain",
         Some("__run-tool") => "gait-hand",
-        Some("__daemon-exit") => "gait-daemon-exit",
+        Some("__process-exit") => "gait-process-exit",
         Some("__local-runner") => "gait-local-runner",
         _ => default,
     }
@@ -16,7 +16,7 @@ pub fn service_for_argv(arg1: Option<&str>, default: &'static str) -> &'static s
 
 /// Puts the labels of a baggage header on `span`. `carrier::link_from` links a
 /// span without adopting the linked span's labels; a span that stands for the
-/// linked work (an answer, a daemon wake) adds them itself, here.
+/// linked work (an answer, a process wake) adds them itself, here.
 #[cfg(feature = "telemetry")]
 pub fn adopt_labels(span: &tracing::Span, baggage: Option<&str>) {
     if let Some(baggage) = baggage {
@@ -113,8 +113,8 @@ mod tests {
         assert_eq!(service_for_argv(Some("__brain"), "gait"), "gait-brain");
         assert_eq!(service_for_argv(Some("__run-tool"), "gait"), "gait-hand");
         assert_eq!(
-            service_for_argv(Some("__daemon-exit"), "gait"),
-            "gait-daemon-exit"
+            service_for_argv(Some("__process-exit"), "gait"),
+            "gait-process-exit"
         );
         assert_eq!(
             service_for_argv(Some("__local-runner"), "gait"),

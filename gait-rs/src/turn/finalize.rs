@@ -214,8 +214,8 @@ pub(crate) async fn finalize(
             if persist.is_unsealed() {
                 let events_snap = env.ingestor.events().unwrap_or_default();
                 let already_d =
-                    crate::turn::completion_poll::surfaced_daemon_idempotency_keys(&events_snap);
-                let pending_d = crate::turn::completion_poll::pending_daemon_completions(
+                    crate::turn::completion_poll::surfaced_process_idempotency_keys(&events_snap);
+                let pending_d = crate::turn::completion_poll::pending_process_completions(
                     env.gait_dir,
                     env.session_id,
                     &already_d,
@@ -778,8 +778,8 @@ mod tests {
             "expected Ok(Failed{{max_steps, max steps (100)}}), got: {result:?}"
         );
         assert!(fx.spy_hook.outcomes().is_empty());
-        // No pending daemon/agent completions in this fixture (empty ingestor,
-        // no daemons.jsonl) — the drain body is a no-op, so no commit either.
+        // No pending process/agent completions in this fixture (empty ingestor,
+        // no processes.jsonl) — the drain body is a no-op, so no commit either.
     }
 
     #[tokio::test]

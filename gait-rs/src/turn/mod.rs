@@ -154,7 +154,7 @@ pub struct TurnInput {
     /// When `Some` (spine path), the turn-start git snapshot supplied by the spine
     /// via BrainInit — the brain does not read git itself. `None` reads disk.
     pub initial_git: Option<GitSnapshot>,
-    /// Active daemons injected by the brain from BrainInit.daemons. Empty on direct runs.
+    /// Active processes injected by the brain from BrainInit.daemons. Empty on direct runs.
     pub daemons: Vec<(String, i32, bool, String)>,
 }
 
@@ -371,21 +371,21 @@ pub async fn run_turn(
             break 'turn finalize::StepOutcome::Cancelled;
         }
 
-        // Per-step completion poll (Part 2): surface finished daemon and child-agent
+        // Per-step completion poll (Part 2): surface finished process and child-agent
         // completions mid-turn by recording *_update events before the next LLM
         // request. Holds the session lock → emitter.record is the safe writer.
         // retrace folds the new events into the outgoing rebuild on the very next line.
         if persist.poll_completions_allowed() {
             let events_snap = ingestor.events().unwrap_or_default();
-            // Daemon completions
+            // Process completions
             let already_d =
-                crate::turn::completion_poll::surfaced_daemon_idempotency_keys(&events_snap);
-            for c in crate::turn::completion_poll::pending_daemon_completions(
+                crate::turn::completion_poll::surfaced_process_idempotency_keys(&events_snap);
+            for c in crate::turn::completion_poll::pending_process_completions(
                 &gait_dir,
                 &session_id,
                 &already_d,
             ) {
-                crate::trace::note_daemon_wake_body(&c.body());
+                crate::trace::note_process_wake_body(&c.body());
                 let _ = emitter.record(c.body());
             }
             // Child-agent completions (Stage 4, Task 4)

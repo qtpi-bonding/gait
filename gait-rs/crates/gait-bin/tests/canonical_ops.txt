@@ -10,8 +10,6 @@ auth_unlink
 config_get
 config_set
 config_show
-daemons_list
-daemons_stop
 deny
 disable
 discard
@@ -34,6 +32,8 @@ mode_select
 mode_show
 models
 persist
+processes_list
+processes_stop
 ps
 register
 reply

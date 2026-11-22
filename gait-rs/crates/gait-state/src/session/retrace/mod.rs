@@ -1000,7 +1000,7 @@ impl Projection for ActiveRawMessages {
                 });
             }
             payload::Kind::DaemonUpdate(du) => {
-                // The detached-daemon exit hook cannot sign, so a daemon notice
+                // The detached-process exit hook cannot sign, so a process notice
                 // with no provenance at all is unverified too.
                 let unverified =
                     ev.provenance.is_empty() || self.is_unverifiable_signed(ev, &st.session_id);

@@ -74,12 +74,14 @@ impl Resolve for GaitContext {
                 "mode" => {
                     gait_ops::mode::show(&self.gait_dir()?, name)?;
                 }
-                "daemon" => {
+                "process" => {
                     let gait_dir = self.gait_dir()?;
-                    let running = gait_state::session::daemons::active(&gait_dir)?;
+                    gait_state::session::processes::migrate_legacy_registry(&gait_dir)
+                        .map_err(coded_error::into_anyhow)?;
+                    let running = gait_state::session::processes::active(&gait_dir)?;
                     if !running.iter().any(|d| d.name == name) {
                         return Err(coded_error::into_anyhow(gait_ops::OpError::NotFound(
-                            format!("no daemon named '{name}'"),
+                            format!("no process named '{name}'"),
                         )));
                     }
                 }

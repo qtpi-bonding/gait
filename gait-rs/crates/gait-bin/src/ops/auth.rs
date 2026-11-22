@@ -94,7 +94,7 @@ output! {
 /// The provider every auth op but `list` acts on.
 #[derive(Debug, Clone, OpParams)]
 pub struct ProviderId {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
 }
@@ -104,7 +104,7 @@ pub struct AuthListParams {}
 
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthLinkParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// The tool whose credentials are used, for example `codex`.
@@ -116,7 +116,7 @@ pub struct AuthLinkParams {
 #[cfg(feature = "full")]
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthLoginParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
@@ -126,7 +126,7 @@ pub struct AuthLoginParams {
 #[cfg(feature = "full")]
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthAddParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// Read the API key from this file, or from stdin with `-`.
@@ -136,7 +136,7 @@ pub struct AuthAddParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct AuthLogoutParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "provider", id_only, absent_ok)]
     pub id: Ref,
     /// For `openai-signin`: also forget its registration.

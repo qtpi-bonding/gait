@@ -343,7 +343,7 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
     let feedback = feedback_from_output(child.wait_with_output().unwrap());
     assert!(
         feedback.daemon.is_some(),
-        "hand must return before its daemon"
+        "hand must return before its process"
     );
 
     for _ in 0..100 {

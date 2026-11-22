@@ -172,7 +172,7 @@ output! {
 /// The session every one of these ops acts on.
 #[derive(Debug, Clone, OpParams)]
 pub struct SessionId {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "session", id_only)]
     pub id: Ref,
 }
@@ -188,7 +188,7 @@ pub struct PsParams {}
 
 #[derive(Debug, Clone, OpParams)]
 pub struct UndoParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The turn to go back to, as numbered by `--list`. Turn 0 is the state before the first request and restores code only.
@@ -221,10 +221,10 @@ fn check_bulk(id: &Option<Ref>, all: bool, yes: bool, dry_run: bool) -> Result<(
 #[derive(Debug, Clone, OpParams)]
 #[op(validate = validate_persist)]
 pub struct PersistParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "session", id_only)]
     pub id: Option<Ref>,
-    /// Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
+    /// Widen the set: for `processes list`, also finished processes; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
     pub all: bool,
     /// Confirm acting on all sessions.
     pub yes: bool,
@@ -240,10 +240,10 @@ fn validate_persist(p: &PersistParams) -> Result<(), UsageError> {
 #[derive(Debug, Clone, OpParams)]
 #[op(validate = validate_discard)]
 pub struct DiscardParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "session", id_only)]
     pub id: Option<Ref>,
-    /// Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
+    /// Widen the set: for `processes list`, also finished processes; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
     pub all: bool,
     /// Confirm acting on all sessions.
     pub yes: bool,
@@ -272,7 +272,7 @@ pub enum AllowScope {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct AllowParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The tool pattern to approve; without it the pending requests are approved as asked.
@@ -297,7 +297,7 @@ pub enum UnlockScope {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct UnlockParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// Where the change applies. When not given: `once` for `allow` and `unlock`, `global` for `register` and `unregister`.
@@ -309,7 +309,7 @@ pub struct UnlockParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ReplyParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "session", id_only)]
     pub id: Ref,
     /// The answer to the session's single pending question.

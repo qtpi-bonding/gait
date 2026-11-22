@@ -148,7 +148,7 @@ impl<'a> Persistence<'a> {
         }
     }
 
-    /// Whether the per-step completion poll (daemon + child-agent
+    /// Whether the per-step completion poll (process + child-agent
     /// completions) is allowed this turn. `false` when `Sealed`.
     ///
     /// Mirrors the guard at the former `src/turn/mod.rs:799`.

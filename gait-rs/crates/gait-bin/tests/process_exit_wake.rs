@@ -1,7 +1,7 @@
-//! End-to-end idle-wake: a detached daemon finishes, the registry records a
+//! End-to-end idle-wake: a detached process finishes, the registry records a
 //! `Stop`, and the parent's session log gains a `daemon_update` event (the
 //! wake). It runs the `gait` binary Cargo built for this package as the
-//! `__daemon-exit` hook, so it never depends on a `gait` on the PATH.
+//! `__process-exit` hook, so it never depends on a `gait` on the PATH.
 #![cfg(feature = "full")]
 
 use gait_core::tools::{ShellTool, ToolCtx};
@@ -9,8 +9,8 @@ use gait_core::types::Tool;
 use std::time::{Duration, Instant};
 
 #[tokio::test]
-async fn detached_daemon_wakes_idle_parent_on_exit() {
-    std::env::set_var("GAIT_DAEMON_EXE", env!("CARGO_BIN_EXE_gait"));
+async fn detached_process_wakes_idle_parent_on_exit() {
+    std::env::set_var("GAIT_PROCESS_EXE", env!("CARGO_BIN_EXE_gait"));
 
     let gd = tempfile::TempDir::new().unwrap();
     let parent_id = "swake001";
@@ -37,12 +37,12 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
     .await
     .unwrap();
 
-    let daemons_jsonl = gd.path().join("daemons.jsonl");
+    let processes_jsonl = gd.path().join("processes.jsonl");
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut stop_recorded = false;
     let mut update_recorded = false;
     while Instant::now() < deadline && !(stop_recorded && update_recorded) {
-        if let Ok(raw) = std::fs::read_to_string(&daemons_jsonl) {
+        if let Ok(raw) = std::fs::read_to_string(&processes_jsonl) {
             stop_recorded = raw
                 .lines()
                 .any(|l| l.contains("\"kind\":\"stop\"") && l.contains("\"name\":\"t\""));
@@ -55,8 +55,8 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
 
     assert!(
         stop_recorded,
-        "daemons.jsonl never got a stop line for name 't' within 20s; contents: {}",
-        std::fs::read_to_string(&daemons_jsonl).unwrap_or_default()
+        "processes.jsonl never got a stop line for name 't' within 20s; contents: {}",
+        std::fs::read_to_string(&processes_jsonl).unwrap_or_default()
     );
     assert!(
         update_recorded,
@@ -78,6 +78,6 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
         .expect("a daemon_update event");
     assert!(
         update.provenance.is_empty(),
-        "the daemon-exit notice must be unsigned"
+        "the process-exit notice must be unsigned"
     );
 }

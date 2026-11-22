@@ -48,7 +48,7 @@ standalone (`cargo build -p gait-types`, `-p gait-provider`, `-p gait-sandbox`).
 This broke a live `types ↔ tools` cycle (`ToolError` moved down into `gait-types`;
 a `Rec` trait replaced the concrete `Recorder` in the `Tool`/`Hook` trait surface)
 and inverted two upward edges (`brain_scope` out of `turn` into `sandbox`;
-`proc_start_time` out of `session::daemons` into `process`).
+`proc_start_time` out of `session::processes` into `process`).
 
 ### Product composition: `gait` vs. `gait-min`
 
@@ -326,7 +326,7 @@ that motivated it, and the walls' construction are in
 > NOT an op.
 
 Ops carry no model turn; their effects are limited to filesystem, git, session-log, config,
-registry, and daemon-registry mutations/queries, plus idempotent network reads (e.g. fetching the
+registry, and process-registry mutations/queries, plus idempotent network reads (e.g. fetching the
 model list). "Runs a turn → not an op" is the one-line test for every new verb. Turn-drivers
 (`run`, `exec`, `workflow run/continue`) stay on the Turn I/O Boundary above; workflow-admin verbs
 (`workflow list/log/abort`) are deferred (coupled to `WorkflowRunLog`, not yet in `gait-core`).
@@ -355,7 +355,7 @@ Unlike `mod turn` (which tolerates tracked `#[allow]`ed debt), the ops boundary 
 
 ### The op contract
 
-Every op in `gait_ops::{workspace, session, permission, extension, auth, daemon, config}` has the
+Every op in `gait_ops::{workspace, session, permission, extension, auth, process, config}` has the
 same shape:
 
 - **Typed params in — never a clap `Args`.** clap types stay in `gait-cli`; an op takes plain

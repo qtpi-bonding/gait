@@ -49,8 +49,8 @@ pub mod telemetry;
 // path keeps resolving unchanged (the strangler shimper task 6).
 pub use gait_state::inferences;
 pub use gait_state::{
-    agent_frontmatter, auth, config_hook, daemon_exit, gait_dir, git, hook_runner, models,
-    models_meta, permissions, proto, registry, session, skills,
+    agent_frontmatter, auth, config_hook, gait_dir, git, hook_runner, models, models_meta,
+    permissions, process_exit, proto, registry, session, skills,
 };
 
 // Shared CLI/REPL input machinery (item 12). The four submodules were
@@ -141,7 +141,7 @@ pub fn is_brain_argv(argv: &[String]) -> bool {
 pub fn is_role_argv(argv: &[String]) -> bool {
     matches!(
         argv.first().map(|s| s.as_str()),
-        Some("__brain") | Some("__run-tool") | Some("__daemon-exit")
+        Some("__brain") | Some("__run-tool") | Some("__process-exit")
     )
 }
 
@@ -253,14 +253,14 @@ pub async fn __dispatch_role(argv: &[String]) {
             };
             run_hand(config).await;
         }
-        Some("__daemon-exit") => {
-            use crate::daemon_exit::{cmd_daemon_exit, DaemonExitArgs};
-            let a = DaemonExitArgs::parse_from(&argv[1..]);
-            match cmd_daemon_exit(a) {
+        Some("__process-exit") => {
+            use crate::process_exit::{cmd_process_exit, ProcessExitArgs};
+            let a = ProcessExitArgs::parse_from(&argv[1..]);
+            match cmd_process_exit(a) {
                 Ok(Some(req)) => crate::launch::spawn_wake(&req),
                 Ok(None) => {}
                 Err(e) => {
-                    eprintln!("[gait] __daemon-exit: {e:#}");
+                    eprintln!("[gait] __process-exit: {e:#}");
                     std::process::exit(1);
                 }
             }

@@ -26,7 +26,7 @@ pub trait Containment: Send + Sync {
     /// Register a pid that was spawned after `configure_enrolled`. Must be
     /// called exactly once per `configure_enrolled` call so kill_all can reap.
     fn register_pid(&self, pid: i32);
-    /// Spawn a daemon OUTSIDE the group (setsid breakaway); returns child + pgid.
+    /// Spawn a process OUTSIDE the group (setsid breakaway); returns child + pgid.
     fn spawn_detached(&self, cmd: Command) -> io::Result<(Child, i32)>;
     /// Reap the whole group; idempotent; waitpids owned children.
     fn kill_all(&self) -> io::Result<()>;
@@ -62,7 +62,7 @@ pub fn join_cascade_group(handle: &str) -> io::Result<()> {
     Ok(())
 }
 
-// ── proc_start_time (relocated from session/daemons.rs, D6) ────────────────────
+// ── proc_start_time (relocated from session/processes.rs, D6) ────────────────────
 
 /// Return the kernel-reported process start time (seconds since boot epoch on
 /// macOS, clock ticks since boot on Linux) for the given pid. Returns `None`
@@ -135,7 +135,7 @@ fn proc_start_time_linux(pid: i32) -> Option<u64> {
     starttime_str.parse::<u64>().ok()
 }
 
-/// Spawn `cmd` as a daemon fully outside the cascade group:
+/// Spawn `cmd` as a process fully outside the cascade group:
 /// - its own session (setsid in pre_exec) so SIGHUP from the hand's exit is not delivered,
 /// - stdout+stderr redirected to `log_path` (created/truncated),
 /// - stdin closed (null).
@@ -166,7 +166,7 @@ pub fn spawn_detached_to_file(mut cmd: Command, log_path: &Path) -> io::Result<(
         Some(t) if t > 0 => t,
         _ => {
             // Cannot establish process identity — kill the child and fail the spawn.
-            // This prevents recording an un-stoppable zombie daemon entry.
+            // This prevents recording an un-stoppable zombie process entry.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
             }

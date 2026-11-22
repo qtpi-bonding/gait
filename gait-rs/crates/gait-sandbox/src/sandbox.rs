@@ -1192,7 +1192,7 @@ pub(crate) mod sbpl {
 
         // Mach services required by libSystem / CoreFoundation at process startup.
         // opendirectoryd.libinfo: getpwuid/getgrgid credential lookups (bash, dyld).
-        // cfprefsd: CoreFoundation user-preference daemon; accessed even in non-GUI apps.
+        // cfprefsd: CoreFoundation user-preference process; accessed even in non-GUI apps.
         // cfprefsd.agent (local-name): per-user agent variant.
         // system.logger + logd: logging plumbing (libSystem calls these at init).
         #[cfg(target_os = "macos")]

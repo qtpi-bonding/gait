@@ -194,7 +194,7 @@ gait disable --kind <mcp|skill|plugin> --id <name>
 Use `gait register --help` and the kind-specific help for registration
 options. Scope options are `global`, `agent`, and `session`.
 
-## Workflows and daemons
+## Workflows and processes
 
 ```bash
 gait workflow list
@@ -204,9 +204,9 @@ gait workflow continue <run-id>
 gait workflow abort <run-id>
 gait workflow log <run-id>
 
-gait daemons list
-gait daemons list --all
-gait daemons stop --id <daemon-name>
+gait processes list
+gait processes list --all
+gait processes stop --id <process-name>
 ```
 
 ## Common command options

@@ -1,5 +1,5 @@
 //! gait-acp binary — delegates to the `gait_acp` library. Also answers to the
-//! same sealed role tokens (`__brain`, `__run-tool`, `__daemon-exit`) that the
+//! same sealed role tokens (`__brain`, `__run-tool`, `__process-exit`) that the
 //! `gait` binary does: `gait_turn_runner`'s brain-launch path spawns
 //! `current_exe() __brain ...`, and when a turn is driven from inside
 //! `gait-acp` (not `gait`), `current_exe()` resolves to this binary. Without

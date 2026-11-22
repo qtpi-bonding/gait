@@ -116,7 +116,7 @@ restore an earlier turn or inspect available checkpoints.
 A session's worktree lives under `<gait-dir>/.active/<id>/` until `gait persist` merges
 it onto `main` or `gait discard` tears it down without merging (unrecoverable).
 `gait ps` shows each mounted session's live state: `idle`, `awaiting-permission`,
-`awaiting-clarify`, `awaiting-inform` or `awaiting-unlock`. `gait daemons` lists the
+`awaiting-clarify`, `awaiting-inform` or `awaiting-unlock`. `gait processes` lists the
 background processes the agent started, which are separate from the turn's own
 processes.
 
@@ -306,7 +306,7 @@ It sets `GAIT_AGENT_DIR` for the process and every child it spawns, so brain
 processes read the same identity. If the directory cannot be loaded, gait exits 65 at
 startup and names the directory.
 
-Known gap: the detached-daemon exit hook runs in the sandboxed hand, which cannot read
+Known gap: the detached-process exit hook runs in the sandboxed hand, which cannot read
 the agent directory, so it cannot sign. Its completion notice is appended unsigned; it
 still wakes an idle parent, and the parent shows it as `[daemon:<name>] [unverified]`.
 The planned fix is a supervisor outside the sandbox that runs the hook and signs.
@@ -616,7 +616,7 @@ Usage: gait stats [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -657,7 +657,7 @@ Usage: gait log [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -698,7 +698,7 @@ Usage: gait undo [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -754,10 +754,10 @@ Usage: gait persist [OPTIONS]
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --all
-          Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
+          Widen the set: for `processes list`, also finished processes; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
 
       --pretty
           Indent the JSON output.
@@ -804,10 +804,10 @@ Usage: gait discard [OPTIONS]
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --all
-          Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
+          Widen the set: for `processes list`, also finished processes; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
 
       --pretty
           Indent the JSON output.
@@ -857,7 +857,7 @@ Usage: gait allow [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pattern <pattern>
           The tool pattern to approve; without it the pending requests are approved as asked.
@@ -910,7 +910,7 @@ Usage: gait deny [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -951,7 +951,7 @@ Usage: gait unlock [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1004,7 +1004,7 @@ Usage: gait reply [OPTIONS] --id <id> --message <message>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --message <message>
           The answer to the session's single pending question.
@@ -1090,7 +1090,7 @@ Usage: gait auth status [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1135,7 +1135,7 @@ Usage: gait auth add [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --key-file <key_file>
           Read the API key from this file, or from stdin with `-`. Asked for on a terminal when left out.
@@ -1183,7 +1183,7 @@ Usage: gait auth link [OPTIONS] --id <id> --source <source>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1234,7 +1234,7 @@ Usage: gait auth login [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --callback-file <callback_file>
           Finish a pending `openai-signin` login with the URL you were redirected to, or `-` to read it from stdin.
@@ -1282,7 +1282,7 @@ Usage: gait auth logout [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --forget
           For `openai-signin`: also forget its registration.
@@ -1330,7 +1330,7 @@ Usage: gait auth remove [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1375,7 +1375,7 @@ Usage: gait auth unlink [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1502,7 +1502,7 @@ Usage: gait inference show [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1547,7 +1547,7 @@ Usage: gait inference add [OPTIONS] --id <id> --model <model> --compaction-thres
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --model <model>
           The model, in `provider/id` form, for example `opencode/kimi-k2.6`.
@@ -1598,7 +1598,7 @@ Usage: gait inference select [OPTIONS] --id <id> --session <session>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1733,7 +1733,7 @@ Usage: gait mode show [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1778,7 +1778,7 @@ Usage: gait mode add [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --allow <allow>
           A tool pattern the mode allows (repeatable).
@@ -1835,7 +1835,7 @@ Usage: gait mode select [OPTIONS] --id <id> --session <session>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1928,7 +1928,7 @@ Usage: gait config get [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -1973,7 +1973,7 @@ Usage: gait config set [OPTIONS] --id <id> --value <value>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -2054,16 +2054,16 @@ Paths: cli
 | gait.cli.not_found | logical | 65 |
 | gait.cli.failed | infrastructure | 69 |
 
-### gait daemons list
+### gait processes list
 
 ```text
-List the running background daemons, or all of them with `--all`.
+List the running background processes, or all of them with `--all`.
 
-Usage: gait daemons list [OPTIONS]
+Usage: gait processes list [OPTIONS]
 
 Options:
       --all
-          Widen the set: for `daemons list`, also finished daemons; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
+          Widen the set: for `processes list`, also finished processes; for `persist` and `discard`, every idle session that is not running (needs `--yes`).
 
       --pretty
           Indent the JSON output.
@@ -2099,16 +2099,16 @@ Paths: cli
 | gait.cli.not_found | logical | 65 |
 | gait.cli.failed | infrastructure | 69 |
 
-### gait daemons stop
+### gait processes stop
 
 ```text
-Stop a running daemon by name and record the stop.
+Stop a running process by name and record the stop.
 
-Usage: gait daemons stop [OPTIONS] --id <id>
+Usage: gait processes stop [OPTIONS] --id <id>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -2153,7 +2153,7 @@ Usage: gait register [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --kind <kind>
           The kind of extension.
@@ -2248,7 +2248,7 @@ Usage: gait unregister [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --kind <kind>
           The kind of extension.
@@ -2315,7 +2315,7 @@ Usage: gait enable [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --kind <kind>
           The kind of extension.
@@ -2368,7 +2368,7 @@ Usage: gait disable [OPTIONS] --id <id> --kind <kind>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --kind <kind>
           The kind of extension.
@@ -2421,7 +2421,7 @@ Usage: gait load [OPTIONS] --id <id> --kind <kind> --session <session>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --kind <kind>
           The kind of extension.
@@ -2477,7 +2477,7 @@ Usage: gait unload [OPTIONS] --id <id> --kind <kind> --session <session>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --kind <kind>
           The kind of extension.
@@ -2620,7 +2620,7 @@ Usage: gait local setup [OPTIONS] --model-path <model_path>
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --model-path <model_path>
           The GGUF file of Qwen2.5-Coder-7B-Instruct Q4_K_M.
@@ -2683,7 +2683,7 @@ Usage: gait local status [OPTIONS]
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.
@@ -2728,7 +2728,7 @@ Usage: gait local stop [OPTIONS]
 
 Options:
       --id <id>
-          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+          The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
 
       --pretty
           Indent the JSON output.

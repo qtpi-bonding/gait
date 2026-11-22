@@ -18,7 +18,6 @@ macro_rules! output {
 pub mod auth;
 pub mod config;
 mod context;
-pub mod daemon;
 pub mod extension;
 mod hooks;
 pub mod inference;
@@ -27,6 +26,7 @@ pub mod local;
 #[cfg(feature = "full")]
 pub mod manual;
 pub mod mode;
+pub mod processes;
 pub mod session;
 pub mod turn;
 pub mod workspace;
@@ -67,7 +67,6 @@ pub mod decl {
         AuthSaved, AuthStatus, ModelItem, ModelsParams, ProviderId,
     };
     use super::config::{ConfigEntry, ConfigKey, ConfigSetParams, ConfigShowParams};
-    use super::daemon::{DaemonItem, DaemonListParams, DaemonStopParams, DaemonStopped};
     use super::extension::{
         ExtensionLoadParams, ExtensionLoaded, ExtensionRegisterParams, ExtensionRegistered,
         ExtensionToggleParams, ExtensionToggled, ExtensionUnregisterParams, ExtensionUnregistered,
@@ -81,6 +80,9 @@ pub mod decl {
     use super::mode::{
         ModeAddParams, ModeAdded, ModeClearParams, ModeItem, ModeListParams, ModeRef,
         ModeSelectParams, ModeSelected,
+    };
+    use super::processes::{
+        ProcessListParams, ProcessStopParams, ProcessStopped, TrackedProcessItem,
     };
     use super::session::{
         AllowParams, DiscardParams, PersistParams, PsParams, ReplyParams, SessionId,
@@ -105,7 +107,7 @@ pub mod decl {
             "inference" => "Named model profiles, and which one a session uses.",
             "mode" => "Named permission modes, and which one a session uses.",
             "config" => "Keys of the gait directory's gait.jsonc.",
-            "daemons" => "Background processes that sessions started.",
+            "processes" => "Background processes that sessions started.",
             "local" => "Local models run by llama.cpp: set up a profile and manage its runner.",
         };
         /// List the active sessions, most recently updated first.
@@ -242,13 +244,13 @@ pub mod decl {
         "config show" => { params: ConfigShowParams, output: serde_json::Value,
                            access: reads, audience: owner, op: super::config::show,
                            errors: [OpError, CliError], paths: [cli] },
-        /// List the running background daemons, or all of them with `--all`.
-        "daemons list" => { params: DaemonListParams, output: Vec<DaemonItem>,
-                            access: reads, audience: owner, op: super::daemon::list,
+        /// List the running background processes, or all of them with `--all`.
+        "processes list" => { params: ProcessListParams, output: Vec<TrackedProcessItem>,
+                            access: reads, audience: owner, op: super::processes::list,
                             errors: [OpError, CliError], default: true, paths: [cli] },
-        /// Stop a running daemon by name and record the stop.
-        "daemons stop" => { params: DaemonStopParams, output: DaemonStopped,
-                            access: [writes, destructive], audience: owner, op: super::daemon::stop,
+        /// Stop a running process by name and record the stop.
+        "processes stop" => { params: ProcessStopParams, output: ProcessStopped,
+                            access: [writes, destructive], audience: owner, op: super::processes::stop,
                             errors: [OpError, CliError], paths: [cli] },
         /// Register an MCP server, a skill or a plugin. An MCP server and a skill start disabled.
         "register" => { params: ExtensionRegisterParams, output: ExtensionRegistered,

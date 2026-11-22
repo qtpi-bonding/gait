@@ -131,8 +131,8 @@ fn mode_show_unknown_is_not_found() {
 }
 
 #[test]
-fn daemons_stop_unknown_is_not_found() {
-    assert_not_found(&["daemons", "stop", "--id", "nosuch"]);
+fn processes_stop_unknown_is_not_found() {
+    assert_not_found(&["processes", "stop", "--id", "nosuch"]);
 }
 
 #[test]

@@ -564,6 +564,10 @@ mod tests {
             !rendered.contains("run error"),
             "retired \"run error\" in the manual"
         );
+        assert!(
+            !rendered.contains("daemons"),
+            "retired \"daemons\" in the manual"
+        );
     }
 
     #[test]

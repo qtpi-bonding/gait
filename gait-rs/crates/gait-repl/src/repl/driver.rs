@@ -1314,7 +1314,7 @@ fn one_off_schema() -> serde_json::Value {
 /// existing convention for a bounded job — the prompt blocks until the run
 /// finishes or suspends at a gate/open node, deterministically, with no
 /// resident thread. (Backgrounding, if ever wanted, is `gait workflow run`
-/// launched through the existing tracked-detached-daemon path, not a new
+/// launched through the existing tracked-detached-process path, not a new
 /// thread/subprocess mechanism here.)
 pub(crate) async fn run_named_workflow(
     name: &str,

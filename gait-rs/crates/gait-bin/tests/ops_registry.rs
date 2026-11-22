@@ -162,7 +162,7 @@ fn resolver_gives_the_apps_not_found_for_missing_objects() {
         identity_dir: None,
     };
     let ctx = <GaitContext as op_registry::CliContext>::from_globals(&globals).unwrap();
-    for kind in ["inference", "mode", "daemon"] {
+    for kind in ["inference", "mode", "process"] {
         let err = futures_executor_block(ctx.resolve(kind, &Ref::new("nosuch"), &Scope::default()))
             .expect_err(kind);
         assert_eq!(not_found_code(&err), "gait.op.not_found", "{kind}: {err:#}");
@@ -254,7 +254,7 @@ mod session_ops {
 }
 
 /// `init` and `link` are `local:` ops: they run through the registry with no connection,
-/// no daemon and no resolvable gait-dir beforehand.
+/// no process and no resolvable gait-dir beforehand.
 #[test]
 #[serial]
 fn assert_local_ops_offline() {
@@ -337,7 +337,7 @@ mod kit {
     #[test]
     fn assert_help_complete() {
         let rules = HelpRules {
-            // `daemon` is not banned: gait's `daemons` command is real.
+            // `process` is not banned: gait's `processes` command is real.
             banned_words: &[
                 "round-", "Task ", "/Users/", "/home/", "gait_ops", "Mirrors",
             ],
@@ -380,7 +380,7 @@ mod kit {
                 args: json!({"id": "nosuch"}),
             },
             Fixture {
-                op: "daemons_stop",
+                op: "processes_stop",
                 args: json!({"id": "nosuch"}),
             },
             Fixture {

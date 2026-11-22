@@ -2,7 +2,7 @@
 //!
 //! `LlamaContext` is not `Send`; one named worker owns the model/context and
 //! accepts jobs over a standard channel. Dropping a response stream cancels a
-//! running job at its next token send, without leaving a daemon behind.
+//! running job at its next token send, without leaving a process behind.
 
 use async_trait::async_trait;
 use gait_local::{GenerationError, GenerationRequest, GenerationStream, TextGenerator};

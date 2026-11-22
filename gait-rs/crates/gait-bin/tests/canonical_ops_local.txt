@@ -10,8 +10,8 @@ auth_unlink
 config_get
 config_set
 config_show
-daemons_list
-daemons_stop
+processes_list
+processes_stop
 deny
 disable
 discard

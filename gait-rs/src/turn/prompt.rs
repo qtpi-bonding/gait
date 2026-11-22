@@ -29,7 +29,7 @@ pub(crate) fn build_turn_context(
         }
     }
     if !daemons.is_empty() {
-        ctx.push_str("Daemons:\n");
+        ctx.push_str("Processes:\n");
         for (name, pid, alive, log_path) in daemons {
             let status = if *alive { "running" } else { "stopped" };
             ctx.push_str(&format!(

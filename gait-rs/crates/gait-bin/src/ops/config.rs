@@ -14,14 +14,14 @@ output! {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ConfigKey {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "key", id_only)]
     pub id: Ref,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ConfigSetParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "key", id_only, absent_ok)]
     pub id: Ref,
     /// The value: JSON (a number, boolean, array or object) or plain text.

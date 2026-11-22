@@ -278,7 +278,7 @@ pub fn agent_update(
     }))
 }
 
-/// `DaemonUpdate` — completion event for a detached daemon. Status string →
+/// `DaemonUpdate` — completion event for a detached process. Status string →
 /// proto enum; the rendered form lives in `retrace::push_daemon_update` and
 /// its inline mirror at the raw-projection site.
 pub fn daemon_update(
@@ -298,10 +298,10 @@ pub fn daemon_update(
     }))
 }
 
-/// Copies the trace carrier of the turn that started a daemon onto its
+/// Copies the trace carrier of the turn that started a process onto its
 /// `DaemonUpdate`, so the wake on exit links back to that turn. Any other
 /// body is returned unchanged.
-pub fn with_daemon_trace(mut body: pb::event::Body, start: &pb::DaemonStart) -> pb::event::Body {
+pub fn with_process_trace(mut body: pb::event::Body, start: &pb::DaemonStart) -> pb::event::Body {
     if let pb::event::Body::Payload(payload) = &mut body {
         if let Some(pb::payload::Kind::DaemonUpdate(update)) = payload.kind.as_mut() {
             update.traceparent = start.traceparent.clone();

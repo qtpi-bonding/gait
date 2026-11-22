@@ -3,7 +3,7 @@
 //! The turn loop calls into this module at the top of each step, just before
 //! building the next LLM request. The job is narrow:
 //!
-//! * Compute which daemon completions and child-agent completions are ready to
+//! * Compute which process completions and child-agent completions are ready to
 //!   surface to the parent right now.
 //! * Filter out completions that are already represented by a `*_update`
 //!   event in the parent log (the dedup ledger).
@@ -25,16 +25,16 @@ use crate::proto::gait::log::v1::Event;
 use crate::session::completion::Completion;
 
 /// Idempotency keys (see `Completion`, `gait-state::session::completion`) for
-/// daemons that already have a `DaemonUpdate` event in this session's log.
+/// processes that already have a `DaemonUpdate` event in this session's log.
 ///
 /// Used as the dedup ledger: the per-step poll reads this set and a completion
 /// whose idempotency_key is in the set has already been surfaced in a prior
 /// step or by the producer's `notify_parent` call, so it must NOT be
-/// re-injected. Renamed from `surfaced_daemon_names` — the old name implied
-/// (and the old implementation enforced) that a daemon's NAME alone was
+/// re-injected. Renamed from `surfaced_process_names` — the old name implied
+/// (and the old implementation enforced) that a process's NAME alone was
 /// sufficient identity, which is wrong: two separate runs of a same-named
-/// daemon are two distinct completions, not duplicates of each other.
-pub fn surfaced_daemon_idempotency_keys(events: &[Event]) -> HashSet<String> {
+/// process are two distinct completions, not duplicates of each other.
+pub fn surfaced_process_idempotency_keys(events: &[Event]) -> HashSet<String> {
     let mut out = HashSet::new();
     for ev in events {
         if let Some(payload::Kind::DaemonUpdate(du)) = event_kind(ev) {
@@ -44,7 +44,7 @@ pub fn surfaced_daemon_idempotency_keys(events: &[Event]) -> HashSet<String> {
     out
 }
 
-/// Daemons owned by `session_id` that have finished AND are not yet surfaced.
+/// Processes owned by `session_id` that have finished AND are not yet surfaced.
 ///
 /// Two finish sources are merged:
 ///
@@ -52,28 +52,28 @@ pub fn surfaced_daemon_idempotency_keys(events: &[Event]) -> HashSet<String> {
 ///    the recorded exit code. This covers the normal exit path and timeouts
 ///    (exit_code = 124). The agent sees `status = "done"` or `"killed"`.
 ///
-/// 2. **Killed-without-Stop** (SIGKILL, OOM, reboot): the daemon Start is
+/// 2. **Killed-without-Stop** (SIGKILL, OOM, reboot): the process Start is
 ///    still in the registry and `!is_alive()`. The agent sees
 ///    `status = "killed"` with `exit_code = -9`. Without this branch a
-///    daemon that died ungracefully would never be surfaced.
-pub fn pending_daemon_completions(
+///    process that died ungracefully would never be surfaced.
+pub fn pending_process_completions(
     gait_dir: &Path,
     session_id: &str,
     already: &HashSet<String>,
 ) -> Vec<Completion> {
     let mut out = Vec::new();
     // 1. Explicit stops — exit code is the recorded one.
-    for (name, exit_code) in crate::session::daemons::stopped_for_session(gait_dir, session_id) {
+    for (name, exit_code) in crate::session::processes::stopped_for_session(gait_dir, session_id) {
         let start = start_for(gait_dir, &name);
         if already.contains(&format!("{name}@{}", start.started_at)) {
             continue;
         }
         // exit_code on the event still lets the agent reason precisely; the
         // status text is the shared done/killed classification (see
-        // `daemons::classify_exit`).
-        let status = crate::session::daemons::classify_exit(exit_code);
+        // `processes::classify_exit`).
+        let status = crate::session::processes::classify_exit(exit_code);
         let log_path = gait_dir
-            .join("daemons")
+            .join("processes")
             .join(session_id)
             .join(format!("{name}.log"))
             .to_string_lossy()
@@ -81,7 +81,7 @@ pub fn pending_daemon_completions(
         let started_at = start.started_at;
         let idempotency_key = format!("{name}@{started_at}");
         out.push(Completion {
-            payload: crate::proto::events::with_daemon_trace(
+            payload: crate::proto::events::with_process_trace(
                 crate::proto::events::daemon_update(
                     name,
                     exit_code,
@@ -96,7 +96,7 @@ pub fn pending_daemon_completions(
     }
     // 2. Killed-without-Stop — the Start is in `active()` but the process is
     // no longer alive. Synthetic completion carries exit_code = -9.
-    if let Ok(active) = crate::session::daemons::active(gait_dir) {
+    if let Ok(active) = crate::session::processes::active(gait_dir) {
         for rec in active {
             if rec.session != session_id {
                 continue;
@@ -104,14 +104,14 @@ pub fn pending_daemon_completions(
             if already.contains(&format!("{}@{}", rec.name, rec.started_at)) {
                 continue;
             }
-            if !crate::session::daemons::is_alive(&rec) {
+            if !crate::session::processes::is_alive(&rec) {
                 let idempotency_key = format!("{}@{}", rec.name, rec.started_at);
                 out.push(Completion {
-                    payload: crate::proto::events::with_daemon_trace(
+                    payload: crate::proto::events::with_process_trace(
                         crate::proto::events::daemon_update(
                             rec.name.clone(),
                             -9,
-                            crate::session::daemons::classify_exit(-9),
+                            crate::session::processes::classify_exit(-9),
                             rec.log_path.clone(),
                             idempotency_key.clone(),
                         ),
@@ -125,12 +125,12 @@ pub fn pending_daemon_completions(
     out
 }
 
-/// Look up a daemon's `started_at` from the on-disk registry. Falls back to
-/// 0 if the registry is unreadable or the daemon is not present (the latter
+/// Look up a process's `started_at` from the on-disk registry. Falls back to
+/// 0 if the registry is unreadable or the process is not present (the latter
 /// shouldn't happen for a `stopped_for_session` entry, but matching the
 /// previous behavior keeps tests passing).
 fn start_for(gait_dir: &Path, name: &str) -> crate::proto::gait::log::v1::DaemonStart {
-    crate::session::daemons::history(gait_dir)
+    crate::session::processes::history(gait_dir)
         .ok()
         .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == name))
         .map(|(rec, _)| rec)
@@ -140,10 +140,10 @@ fn start_for(gait_dir: &Path, name: &str) -> crate::proto::gait::log::v1::Daemon
 /// Idempotency keys (see `Completion`) for child agents that already have an
 /// `AgentUpdate` event in this session's log.
 ///
-/// Symmetric to `surfaced_daemon_idempotency_keys`: the per-step poll reads
+/// Symmetric to `surfaced_process_idempotency_keys`: the per-step poll reads
 /// this set and a completion whose idempotency_key is in the set has already
 /// been surfaced, so it must NOT be re-injected. Renamed from
-/// `surfaced_agent_ids` for the same reason as the daemon version — child
+/// `surfaced_agent_ids` for the same reason as the process version — child
 /// `session_id` alone is not stable identity.
 pub fn surfaced_agent_idempotency_keys(events: &[Event]) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -240,25 +240,25 @@ mod tests {
                 "b@1".into(),
             )),
         ];
-        let s = surfaced_daemon_idempotency_keys(&events);
+        let s = surfaced_process_idempotency_keys(&events);
         assert!(s.contains("a@1") && s.contains("b@1") && s.len() == 2);
     }
 
     #[test]
-    fn surfaced_names_ignores_non_daemon_events() {
+    fn surfaced_names_ignores_non_process_events() {
         let events = vec![
             ev(crate::proto::events::assistant_text("hi".into())),
             ev(crate::proto::events::user_text("hello".into())),
         ];
-        let s = surfaced_daemon_idempotency_keys(&events);
+        let s = surfaced_process_idempotency_keys(&events);
         assert!(s.is_empty(), "no DaemonUpdate events → empty set");
     }
 
     #[test]
-    fn surfaced_daemon_names_distinguishes_repeated_runs_by_idempotency_key() {
-        // Two distinct runs of a same-named daemon ("build") have different
+    fn surfaced_process_names_distinguishes_repeated_runs_by_idempotency_key() {
+        // Two distinct runs of a same-named process ("build") have different
         // idempotency keys (one per started_at); the surfaced set must key
-        // on the idempotency_key, NOT on the daemon name, so the second run
+        // on the idempotency_key, NOT on the process name, so the second run
         // is not silently swallowed as a duplicate of the first.
         let events = vec![ev(crate::proto::events::daemon_update(
             "build".into(),
@@ -267,7 +267,7 @@ mod tests {
             "/l".into(),
             "build@111".into(),
         ))];
-        let surfaced = surfaced_daemon_idempotency_keys(&events);
+        let surfaced = surfaced_process_idempotency_keys(&events);
         assert!(surfaced.contains("build@111"));
         assert!(
             !surfaced.contains("build@222"),
@@ -277,13 +277,13 @@ mod tests {
     #[test]
     fn pending_excludes_already_surfaced_and_live() {
         use crate::proto::gait::log::v1 as pb;
-        use crate::session::daemons;
+        use crate::session::processes;
         use std::process::Command;
 
         let dir = tempfile::TempDir::new().unwrap();
         let gait_dir = dir.path();
 
-        // Daemon "done1" explicitly stopped (owned by "S", exit code 0).
+        // Process "done1" explicitly stopped (owned by "S", exit code 0).
         // We need a real Start on disk so stopped_for_session can match the
         // owning-session field back.
         let start1 = pb::DaemonStart {
@@ -297,10 +297,10 @@ mod tests {
             session: "S".into(),
             ..Default::default()
         };
-        daemons::append_start(gait_dir, &start1).unwrap();
-        daemons::append_stop(gait_dir, "done1", 0).unwrap();
+        processes::append_start(gait_dir, &start1).unwrap();
+        processes::append_stop(gait_dir, "done1", 0).unwrap();
 
-        // Daemon "live1" alive (owned by "S"). The poll must NOT surface it.
+        // Process "live1" alive (owned by "S"). The poll must NOT surface it.
         let mut child = unsafe {
             use std::os::unix::process::CommandExt;
             Command::new("sleep")
@@ -327,9 +327,9 @@ mod tests {
             session: "S".into(),
             ..Default::default()
         };
-        daemons::append_start(gait_dir, &start2).unwrap();
+        processes::append_start(gait_dir, &start2).unwrap();
 
-        // Daemon "other" explicitly stopped (owned by a DIFFERENT session) —
+        // Process "other" explicitly stopped (owned by a DIFFERENT session) —
         // the poll must NOT surface it.
         let start3 = pb::DaemonStart {
             name: "other".into(),
@@ -342,15 +342,15 @@ mod tests {
             session: "T".into(),
             ..Default::default()
         };
-        daemons::append_start(gait_dir, &start3).unwrap();
-        daemons::append_stop(gait_dir, "other", 0).unwrap();
+        processes::append_start(gait_dir, &start3).unwrap();
+        processes::append_stop(gait_dir, "other", 0).unwrap();
 
         // `already` says "done0" was surfaced previously; must not affect the
         // current surface (different name).
         let mut already = HashSet::new();
         already.insert("done0".to_string());
 
-        let pending = pending_daemon_completions(gait_dir, "S", &already);
+        let pending = pending_process_completions(gait_dir, "S", &already);
 
         let names: HashSet<String> = pending
             .iter()
@@ -361,15 +361,15 @@ mod tests {
             .collect();
         assert!(
             names.contains("done1"),
-            "stopped+session-owned daemon must be surfaced: {names:?}"
+            "stopped+session-owned process must be surfaced: {names:?}"
         );
         assert!(
             !names.contains("live1"),
-            "still-alive daemon must not be surfaced: {names:?}"
+            "still-alive process must not be surfaced: {names:?}"
         );
         assert!(
             !names.contains("other"),
-            "other-session daemon must not be surfaced: {names:?}"
+            "other-session process must not be surfaced: {names:?}"
         );
         assert_eq!(names.len(), 1, "exactly one pending completion: {names:?}");
 
@@ -384,13 +384,13 @@ mod tests {
                 );
                 assert!(
                     du.log_path.ends_with("done1.log"),
-                    "log_path under daemons/: {}",
+                    "log_path under processes/: {}",
                     du.log_path
                 );
                 assert!(
-                    du.log_path.contains("daemons/S/"),
+                    du.log_path.contains("processes/S/"),
                     "log_path must be namespaced under the owning session's \
-                     own daemons/<session_id>/ dir, got: {}",
+                     own processes/<session_id>/ dir, got: {}",
                     du.log_path
                 );
             }
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn pending_includes_killed_without_stop() {
         use crate::proto::gait::log::v1 as pb;
-        use crate::session::daemons;
+        use crate::session::processes;
 
         let dir = tempfile::TempDir::new().unwrap();
         let gait_dir = dir.path();
@@ -423,11 +423,11 @@ mod tests {
             session: "S".into(),
             ..Default::default()
         };
-        daemons::append_start(gait_dir, &start).unwrap();
+        processes::append_start(gait_dir, &start).unwrap();
 
         // already starts empty — the new completion must be surfaced.
         let already = HashSet::new();
-        let pending = pending_daemon_completions(gait_dir, "S", &already);
+        let pending = pending_process_completions(gait_dir, "S", &already);
 
         let mut names: Vec<String> = pending
             .iter()
@@ -452,11 +452,11 @@ mod tests {
 
         // Dedup: same registry, name already surfaced → empty.
         let mut already_seen = HashSet::new();
-        // The surfaced set now keys on the daemon's idempotency_key
+        // The surfaced set now keys on the process's idempotency_key
         // (`format!("{name}@{started_at}")`), not the bare name. Mirror
         // that here so a repeat surface is suppressed.
         already_seen.insert(format!("dead-killed@{}", u64::MAX));
-        let pending2 = pending_daemon_completions(gait_dir, "S", &already_seen);
+        let pending2 = pending_process_completions(gait_dir, "S", &already_seen);
         assert!(
             pending2.is_empty(),
             "already-surfaced killed-no-stop must be deduped"
@@ -467,7 +467,7 @@ mod tests {
     fn pending_empty_for_unknown_session() {
         let dir = tempfile::TempDir::new().unwrap();
         let already = HashSet::new();
-        assert!(pending_daemon_completions(dir.path(), "NoSuchSession", &already).is_empty());
+        assert!(pending_process_completions(dir.path(), "NoSuchSession", &already).is_empty());
     }
 
     // ── Agent completion tests ────────────────────────────────────────────────

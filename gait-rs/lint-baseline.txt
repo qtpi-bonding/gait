@@ -21,7 +21,7 @@
 1	crates/gait-cli/src/cli/admin.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-cli/src/cli/admin.rs: ratchet.result_string: Result error type is String
 1	crates/gait-cli/src/cli/args.rs: ratchet.error_to_string: error formatted as string
-1	crates/gait-cli/src/cli/daemons.rs: ratchet.error_to_string: error formatted as string
+1	crates/gait-cli/src/cli/processes.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-cli/src/cli/exec.rs: ratchet.dropped_result: result is discarded
 4	crates/gait-cli/src/cli/exec.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-cli/src/cli/init.rs: ratchet.error_to_string: error formatted as string
@@ -42,7 +42,7 @@
 2	crates/gait-llama-cpp/src/lib.rs: ratchet.raw_channel: raw tokio channel
 1	crates/gait-llama-cpp/src/lib.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
 4	crates/gait-ops/src/config.rs: ratchet.error_to_string: error formatted as string
-1	crates/gait-ops/src/daemon.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-ops/src/processes.rs: ratchet.dropped_result: result is discarded
 39	crates/gait-ops/src/extension.rs: ratchet.error_to_string: error formatted as string
 2	crates/gait-ops/src/mode.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-ops/src/session.rs: ratchet.error_to_string: error converted to string
@@ -71,7 +71,7 @@
 1	crates/gait-state/src/auth_file.rs: ratchet.dropped_result: result is discarded
 2	crates/gait-state/src/auth_store.rs: ratchet.error_to_string: error converted to string
 1	crates/gait-state/src/config_hook.rs: ratchet.dropped_result: result is discarded
-1	crates/gait-state/src/daemon_exit.rs: ratchet.dropped_result: result is discarded
+1	crates/gait-state/src/process_exit.rs: ratchet.dropped_result: result is discarded
 2	crates/gait-state/src/gait_dir.rs: ratchet.error_to_string: error converted to string
 2	crates/gait-state/src/git/checkpoint/mod.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-state/src/git/codebase.rs: ratchet.error_to_string: error converted to string
@@ -80,7 +80,7 @@
 5	crates/gait-state/src/proto/emitter.rs: ratchet.dropped_result: result is discarded
 2	crates/gait-state/src/proto/emitter.rs: ratchet.raw_channel: raw tokio channel
 1	crates/gait-state/src/session/completion.rs: ratchet.dropped_result: result is discarded
-2	crates/gait-state/src/session/daemons.rs: ratchet.dropped_result: result is discarded
+2	crates/gait-state/src/session/processes.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-state/src/session/lock.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-state/src/session/retrace/incoming.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-state/src/session/retrace/mod.rs: ratchet.dropped_result: result is discarded

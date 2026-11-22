@@ -1,5 +1,5 @@
 //! gait-ops — the deterministic command verbs (link, init, session admin,
-//! permissions, extensions, auth, daemons), shared by the CLI, REPL, and ACP
+//! permissions, extensions, auth, processes), shared by the CLI, REPL, and ACP
 //! adapter. NO verb here ever runs a model turn (design §2). See
 //! docs/plans/2026-07-09-core-ops-layer-design.md.
 //!
@@ -24,12 +24,12 @@ pub fn render_json<T: serde::Serialize>(value: &T, pretty: bool) -> String {
 // Domain modules — filled in by later tasks. Declared now so the tree exists.
 pub mod auth;
 pub mod config;
-pub mod daemon;
 pub mod extension;
 pub mod inference;
 pub mod interaction;
 pub mod mode;
 pub mod permission;
+pub mod processes;
 pub mod verified_goal;
 
 pub mod session;

@@ -1,5 +1,5 @@
 //! gait-state — the persisted workspace state and deterministic operations over it
-//! (git, session log, permissions, config resolution, registry, auth, daemons, and
+//! (git, session log, permissions, config resolution, registry, auth, processes, and
 //! the proto event facade). No model turn ever runs here. See
 //! docs/plans/2026-07-09-state-engine-split-design.md.
 
@@ -21,7 +21,6 @@ pub mod auth_store;
 #[cfg(test)]
 mod auth_test_support;
 pub mod config_hook;
-pub mod daemon_exit;
 pub mod gait_dir;
 pub mod gait_home;
 pub mod git;
@@ -33,6 +32,7 @@ pub mod models_meta;
 pub mod modes;
 pub mod names;
 pub mod permissions;
+pub mod process_exit;
 pub mod proto; // the facade: events, emitter (Recorder), error
 pub mod registry;
 pub mod session;

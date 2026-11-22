@@ -2304,7 +2304,7 @@ fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
     assert_eq!(
         raw.base.len(),
         1,
-        "an unverifiable signed daemon update must be folded"
+        "an unverifiable signed process update must be folded"
     );
     let Message::User {
         content: MessageContent::Text(t),
@@ -2352,7 +2352,7 @@ fn unsigned_daemon_update_folds_labelled_unverified() {
     assert_eq!(
         raw.base.len(),
         1,
-        "an unsigned daemon update must be folded, not dropped"
+        "an unsigned process update must be folded, not dropped"
     );
     let Message::User {
         content: MessageContent::Text(t),
@@ -2380,15 +2380,15 @@ fn verdict_cache_is_keyed_by_session() {
 }
 
 #[test]
-fn daemon_authored_attested_message_renders_verified_with_its_principal_id() {
-    // A daemon-side agent update: signed for the parent session, and also
+fn process_authored_attested_message_renders_verified_with_its_principal_id() {
+    // A process-side agent update: signed for the parent session, and also
     // carrying the principal id in author_id, as ingress does.
     // Both are present, so the signature decides and the stored id is ignored.
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
     let principal = ctx.agent_id().to_string();
     let mut ev = scoped_mint(
-        agent_update_body("daemon-claimed", "build finished"),
+        agent_update_body("process-claimed", "build finished"),
         None,
         0,
         0,
@@ -2403,10 +2403,10 @@ fn daemon_authored_attested_message_renders_verified_with_its_principal_id() {
     let t = agent_update_text(&raw, 0);
     assert!(
         t.starts_with(&format!("[agent:{principal}] status: done")),
-        "a verified daemon-side update renders its principal id, got: {t}"
+        "a verified process-side update renders its principal id, got: {t}"
     );
     assert!(
-        !t.contains("daemon-claimed"),
+        !t.contains("process-claimed"),
         "the session field must not leak, got: {t}"
     );
 }

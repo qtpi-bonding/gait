@@ -159,7 +159,7 @@ fn shell_access_and_whitelist_hit(
 /// Add Gait-owned, current-session runtime paths to a hand's bounded scope.
 /// These are invariants rather than user-configured grants: using the dynamic
 /// session id here keeps sibling sessions isolated without asking users to
-/// grant the shared `.active/` or `daemons/` roots.
+/// grant the shared `.active/` or `processes/` roots.
 fn grant_session_runtime_paths(
     scope: &mut SandboxScope,
     gait_dir: &Path,
@@ -194,12 +194,12 @@ fn grant_session_runtime_paths(
     // invocation directory by `grant_output_capture_target`.
     scope.readable.push(outputs.clone());
 
-    // Daemon logs predate session outputs and remain in their existing
+    // Process logs predate session outputs and remain in their existing
     // location. Keep the same current-session-only access rule.
-    let session_daemons_dir = gait_dir.join("daemons").join(session_id);
-    scope.readable.push(session_daemons_dir.clone());
+    let session_processes_dir = gait_dir.join("processes").join(session_id);
+    scope.readable.push(session_processes_dir.clone());
     if tool == "shell" {
-        scope.writable.push(session_daemons_dir);
+        scope.writable.push(session_processes_dir);
     }
 
     Ok(outputs)
@@ -293,9 +293,9 @@ pub async fn run_tool_as_spine(
     }
     let jail = jail_raw.canonicalize().unwrap_or_else(|_| jail_raw.clone());
 
-    // For detached daemon shell calls, use the full agent ceiling (all capabilities
+    // For detached process shell calls, use the full agent ceiling (all capabilities
     // enabled, bounded only by the session sandbox config) rather than the
-    // per-call tool scope. This lets the daemon process inherit the agent's
+    // per-call tool scope. This lets the process process inherit the agent's
     // configured limits (e.g. network, codebase writes) rather than the narrower
     // default shell scope.
     let is_detached_shell = impulse.tool == "shell"
@@ -609,12 +609,12 @@ pub async fn run_tool_as_spine(
         )),
     };
 
-    // If the hand spawned a detached daemon, record it in daemons.jsonl.
+    // If the hand spawned a detached process, record it in processes.jsonl.
     // The spine is the sole gait-dir writer; best-effort (ignore errors).
     if let Some(ref rec) = feedback.daemon {
         // Build the proto-backed registry record. `session` is the owning
         // parent session id (Task 6 — Review Correction [E]); it is used by
-        // `__daemon-exit` to look up which parent to wake on completion.
+        // `__process-exit` to look up which parent to wake on completion.
         let dr = crate::proto::gait::log::v1::DaemonStart {
             name: rec.name.clone(),
             pid: rec.pid,
@@ -627,7 +627,7 @@ pub async fn run_tool_as_spine(
             ..Default::default()
         };
         let dr = crate::trace::with_start_carrier(dr);
-        let _ = crate::session::daemons::append_start(gait_dir, &dr);
+        let _ = crate::session::processes::append_start(gait_dir, &dr);
     }
 
     // Strip final_content FIRST, unconditionally, on its own line: it must never

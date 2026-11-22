@@ -206,14 +206,15 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
 
     let rec = Recorder::buffering();
 
-    // A detached shell writes its log under `<gait_dir>/daemons/<session>`. Landlock
+    // A detached shell writes its log under `<gait_dir>/processes/<session>`. Landlock
     // grants rules only to paths that exist when the seal is applied, so create the
     // directory first (a failure surfaces from the tool itself).
     if config.seal
         && config.tool == "shell"
         && args_json.get("detached").and_then(|v| v.as_bool()) == Some(true)
     {
-        if std::fs::create_dir_all(config.gait_dir.join("daemons").join(&config.session)).is_err() {
+        if std::fs::create_dir_all(config.gait_dir.join("processes").join(&config.session)).is_err()
+        {
             // The tool's own create_dir_all reports the failure.
         }
     }
@@ -274,11 +275,11 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
         }
     };
 
-    // Extract "__daemon" sideband if the shell tool spawned a detached daemon.
-    // The shell tool embeds the DaemonRecord fields under this key so it can
+    // Extract "__process" sideband if the shell tool spawned a detached process.
+    // The shell tool embeds the ProcessRecord fields under this key so it can
     // travel through the execute() return value without a separate channel.
-    let daemon_record: Option<DaemonRecordProto> = if let Some(obj) = result_json.as_object_mut() {
-        if let Some(d) = obj.remove("__daemon") {
+    let process_record: Option<DaemonRecordProto> = if let Some(obj) = result_json.as_object_mut() {
+        if let Some(d) = obj.remove("__process") {
             let name = d
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -439,7 +440,7 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
         result: Some(result_proto),
         events: rec.take_buffer(),
         denied,
-        daemon: daemon_record,
+        daemon: process_record,
         final_content,
         whitelist_match_items: vec![],
         sandbox_denied,

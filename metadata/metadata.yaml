@@ -43,7 +43,7 @@ facts:
     rebuilds turn state from the session log on disk. The exceptions are the ACP adapter, a long-running
     stdio server with an in-memory session table, and the REPL, which loops in one process; both hold
     connection handles and input, not turn state, and each REPL iteration still starts a fresh model process.
-    The shell tool can start detached background processes, which are tracked in a daemons.jsonl registry.
+    The shell tool can start detached background processes, which are tracked in a processes.jsonl registry.
     The README says a killed mid-turn process is recovered by rebuilding from the log; that recovery was
     not exercised for this entry.
   evidence:
@@ -389,7 +389,7 @@ facts:
   - gait-rs/src/profile.rs
 - id: ops-layer
   assertion: Deterministic command verbs (init, link, session list, undo, persist and discard, permission
-    allow and deny, extension and auth management, daemon stop) live in a gait-ops crate shared by the
+    allow and deny, extension and auth management, process stop) live in a gait-ops crate shared by the
     CLI, the REPL and the ACP adapter. The crate runs no model turns, never prints or exits, and returns
     results as values.
   evidence:

@@ -46,9 +46,9 @@ pub struct VerifiedIncoming {
     pub author_name: Option<String>,
 }
 
-/// The `_meta` key under which the daemon hands over its owner principal.
+/// The `_meta` key under which the process hands over its owner principal.
 /// It sits beside the Delivery, outside the signed bytes: a local fact at the
-/// same trust as everything else the daemon passes in.
+/// same trust as everything else the process passes in.
 pub const OWNER_META_KEY: &str = "structmux/owner";
 
 /// The owner principal in a prompt's `_meta`, kept only when it parses as a

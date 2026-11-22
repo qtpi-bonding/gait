@@ -1,6 +1,6 @@
 //! Shared "notify parent completion" helper.
 //!
-//! Used by the daemon exit-hook (Task 5) and — in Part 2 — the subagent path.
+//! Used by the process exit-hook (Task 5) and — in Part 2 — the subagent path.
 //! On an idle parent, records a `*_update` event into the parent's `log.jsonl`,
 //! commits, then spawns a fresh `gait run` to wake the parent. If the parent
 //! is busy (a turn holds the session lock), the call is a no-op for the wake —
@@ -33,10 +33,10 @@ pub struct WakeRequest {
 /// A completion event to surface to a parent session.
 ///
 /// `idempotency_key` is the producer-supplied stable identity of the specific
-/// completion being reported (a daemon *run*, or an agent's state *at a given
+/// completion being reported (a process *run*, or an agent's state *at a given
 /// log-tail event*) — NOT derived from payload field values. Two completions
 /// with identical `payload` content but different `idempotency_key`s are
-/// genuinely distinct events (e.g. two separate runs of a same-named daemon)
+/// genuinely distinct events (e.g. two separate runs of a same-named process)
 /// and must never be deduped against each other; see `matches()` below.
 #[derive(Debug, Clone)]
 pub struct Completion {
@@ -106,7 +106,7 @@ pub fn notify_parent(
 }
 
 /// Like [`notify_parent`] but the appended event carries no provenance, so the
-/// receiver folds it as `Unverified`. Only for the detached-daemon exit hook,
+/// receiver folds it as `Unverified`. Only for the detached-process exit hook,
 /// which runs in the sandboxed hand and cannot read the identity dir to sign.
 pub fn notify_parent_unsigned(
     gait_dir: &Path,
@@ -251,7 +251,7 @@ mod tests {
         };
         let c2 = Completion {
             idempotency_key: "build@67890".into(), // same name, different started_at — a genuinely
-            // distinct run of the same-named daemon
+            // distinct run of the same-named process
             ..c1.clone()
         };
         assert_ne!(
@@ -384,7 +384,7 @@ mod tests {
         );
     }
 
-    fn daemon_completion(name: &str, exit_code: i32, status: &str, log_path: &str) -> Completion {
+    fn process_completion(name: &str, exit_code: i32, status: &str, log_path: &str) -> Completion {
         Completion {
             payload: crate::proto::events::daemon_update(
                 name.to_string(),
@@ -416,7 +416,7 @@ mod tests {
         let (_agent, ctx) = identity_fixture();
         init_parent(gd.path(), "sparent");
         let repos = crate::git::Repos::production();
-        let c = daemon_completion("build", 0, "done", "/tmp/build.log");
+        let c = process_completion("build", 0, "done", "/tmp/build.log");
         let outcome = notify_parent(gd.path(), &repos, "sparent", &c, Some(&ctx), &wall_clock);
         assert!(
             matches!(outcome, NotifyOutcome::Woke(_)),
@@ -442,7 +442,7 @@ mod tests {
         ))
         .unwrap();
         let repos = crate::git::Repos::production();
-        let c = daemon_completion("x", 0, "done", "/tmp/x.log");
+        let c = process_completion("x", 0, "done", "/tmp/x.log");
         let outcome = notify_parent(gd.path(), &repos, "sbusy", &c, Some(&ctx), &wall_clock);
         assert!(
             matches!(outcome, NotifyOutcome::ParentBusy),
@@ -455,7 +455,7 @@ mod tests {
         let gd = TempDir::new().unwrap();
         let (_agent, ctx) = identity_fixture();
         let repos = crate::git::Repos::production();
-        let c = daemon_completion("x", 0, "done", "/tmp/x.log");
+        let c = process_completion("x", 0, "done", "/tmp/x.log");
         let outcome = notify_parent(
             gd.path(),
             &repos,
@@ -476,7 +476,7 @@ mod tests {
         let (_agent, ctx) = identity_fixture();
         init_parent(gd.path(), "sdup");
         let repos = crate::git::Repos::production();
-        let c = daemon_completion("build", 0, "done", "/tmp/build.log");
+        let c = process_completion("build", 0, "done", "/tmp/build.log");
         let first = notify_parent(gd.path(), &repos, "sdup", &c, Some(&ctx), &wall_clock);
         assert!(matches!(first, NotifyOutcome::Woke(_)), "got {first:?}");
         // Second call for the same completion must dedup, not double-write/wake.
@@ -525,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_completion_commit_has_no_subagent_session_trailer() {
+    fn process_completion_commit_has_no_subagent_session_trailer() {
         let gd = TempDir::new().unwrap();
         let (_agent, ctx) = identity_fixture();
         crate::git::Repos::production()
@@ -537,7 +537,7 @@ mod tests {
             .create_session_worktree(gd.path(), "sparent3")
             .unwrap();
         let repos = crate::git::Repos::production();
-        let c = daemon_completion("build", 0, "done", "/tmp/build.log");
+        let c = process_completion("build", 0, "done", "/tmp/build.log");
         let outcome = notify_parent(gd.path(), &repos, "sparent3", &c, Some(&ctx), &wall_clock);
         assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
 
@@ -554,7 +554,7 @@ mod tests {
         assert!(msg.contains("Phase: completion"), "got: {msg}");
         assert!(
             !msg.contains("Subagent-Session:"),
-            "daemon completion must not carry a subagent-session trailer, got: {msg}"
+            "process completion must not carry a subagent-session trailer, got: {msg}"
         );
     }
 }

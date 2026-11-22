@@ -47,7 +47,7 @@ guides:
       A session's worktree lives under `<gait-dir>/.active/<id>/` until `gait persist` merges
       it onto `main` or `gait discard` tears it down without merging (unrecoverable).
       `gait ps` shows each mounted session's live state: `idle`, `awaiting-permission`,
-      `awaiting-clarify`, `awaiting-inform` or `awaiting-unlock`. `gait daemons` lists the
+      `awaiting-clarify`, `awaiting-inform` or `awaiting-unlock`. `gait processes` lists the
       background processes the agent started, which are separate from the turn's own
       processes.
 
@@ -204,7 +204,7 @@ guides:
       processes read the same identity. If the directory cannot be loaded, gait exits 65 at
       startup and names the directory.
 
-      Known gap: the detached-daemon exit hook runs in the sandboxed hand, which cannot read
+      Known gap: the detached-process exit hook runs in the sandboxed hand, which cannot read
       the identity directory, so it cannot sign. Its completion notice is appended unsigned; it
       still wakes an idle parent, and the parent shows it as `[daemon:<name>] [unverified]`.
       The planned fix is a supervisor outside the sandbox that runs the hook and signs.

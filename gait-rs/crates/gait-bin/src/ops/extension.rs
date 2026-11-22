@@ -141,7 +141,7 @@ fn validate_register(p: &ExtensionRegisterParams) -> Result<(), UsageError> {
 #[derive(Debug, Clone, OpParams)]
 #[op(validate = validate_register)]
 pub struct ExtensionRegisterParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "extension", id_only, absent_ok)]
     pub id: Ref,
     /// The kind of extension.
@@ -181,7 +181,7 @@ pub struct ExtensionRegisterParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionUnregisterParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "extension", id_only)]
     pub id: Ref,
     /// The kind of extension.
@@ -198,7 +198,7 @@ pub struct ExtensionUnregisterParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionToggleParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "extension", id_only)]
     pub id: Ref,
     /// The kind of extension.
@@ -208,7 +208,7 @@ pub struct ExtensionToggleParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ExtensionLoadParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "extension", id_only)]
     pub id: Ref,
     /// The kind of extension.

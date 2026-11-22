@@ -697,13 +697,13 @@ async fn writes_output_to_session_file() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), "payload\n");
 }
 
-// ── Detached daemon tests ──────────────────────────────────────────────────
+// ── Detached process tests ──────────────────────────────────────────────────
 
-/// Helper: extract the `__daemon` object from a shell-tool response.
-fn daemon_proto(result: &serde_json::Value) -> &serde_json::Value {
+/// Helper: extract the `__process` object from a shell-tool response.
+fn process_proto(result: &serde_json::Value) -> &serde_json::Value {
     result
-        .get("__daemon")
-        .expect("__daemon key missing from detached response")
+        .get("__process")
+        .expect("__process key missing from detached response")
 }
 
 #[tokio::test]
@@ -717,7 +717,7 @@ async fn detached_spawn_returns_immediately() {
         .execute(
             serde_json::json!({
                 "cmd": "sleep 30",
-                "reason": "daemon test",
+                "reason": "process test",
                 "detached": true
             }),
             &crate::Recorder::detached(),
@@ -726,12 +726,12 @@ async fn detached_spawn_returns_immediately() {
         .unwrap();
     let elapsed = before.elapsed();
 
-    let pid = daemon_proto(&result)
+    let pid = process_proto(&result)
         .get("pid")
         .and_then(|v| v.as_i64())
         .expect("pid") as i32;
 
-    // Teardown: kill the spawned daemon.
+    // Teardown: kill the spawned process.
     unsafe { libc::kill(pid, libc::SIGKILL) };
 
     assert!(
@@ -751,7 +751,7 @@ async fn detached_child_is_in_own_session() {
         .execute(
             serde_json::json!({
                 "cmd": "sleep 30",
-                "reason": "daemon session test",
+                "reason": "process session test",
                 "detached": true
             }),
             &crate::Recorder::detached(),
@@ -759,7 +759,7 @@ async fn detached_child_is_in_own_session() {
         .await
         .unwrap();
 
-    let pid = daemon_proto(&result)
+    let pid = process_proto(&result)
         .get("pid")
         .and_then(|v| v.as_i64())
         .expect("pid") as i32;
@@ -780,13 +780,13 @@ async fn detached_child_is_in_own_session() {
 
 #[tokio::test]
 async fn detached_output_appears_in_log_file() {
-    // The daemon's stdout/stderr must be redirected to the log file.
+    // The process's stdout/stderr must be redirected to the log file.
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
     let result = tool
         .execute(
             serde_json::json!({
-                "cmd": "echo daemon-marker",
+                "cmd": "echo process-marker",
                 "reason": "log test",
                 "detached": true
             }),
@@ -795,7 +795,7 @@ async fn detached_output_appears_in_log_file() {
         .await
         .unwrap();
 
-    let proto = daemon_proto(&result);
+    let proto = process_proto(&result);
     let log_path = proto
         .get("log_path")
         .and_then(|v| v.as_str())
@@ -810,15 +810,15 @@ async fn detached_output_appears_in_log_file() {
     let contents = std::fs::read_to_string(log_path)
         .unwrap_or_else(|e| panic!("cannot read log {log_path}: {e}"));
     assert!(
-        contents.contains("daemon-marker"),
-        "expected 'daemon-marker' in log, got: {contents:?}"
+        contents.contains("process-marker"),
+        "expected 'process-marker' in log, got: {contents:?}"
     );
 }
 
 #[tokio::test]
-async fn detached_daemon_record_proto_fields_populated() {
-    // The __daemon proto must contain all required fields that the spine uses to
-    // write a DaemonStart record into daemons.jsonl.
+async fn detached_process_record_proto_fields_populated() {
+    // The __process proto must contain all required fields that the spine uses to
+    // write a DaemonStart record into processes.jsonl.
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
     let result = tool
@@ -827,14 +827,14 @@ async fn detached_daemon_record_proto_fields_populated() {
                 "cmd": "sleep 30",
                 "reason": "record test",
                 "detached": true,
-                "name": "test-daemon"
+                "name": "test-process"
             }),
             &crate::Recorder::detached(),
         )
         .await
         .unwrap();
 
-    let proto = daemon_proto(&result);
+    let proto = process_proto(&result);
     let pid = proto.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
 
     // Teardown.
@@ -849,18 +849,18 @@ async fn detached_daemon_record_proto_fields_populated() {
 
     // name must match what we passed.
     let name = proto.get("name").and_then(|v| v.as_str()).expect("name");
-    assert_eq!(name, "test-daemon");
+    assert_eq!(name, "test-process");
 
-    // log_path must live under daemons/<session_id>/ — namespaced per session
+    // log_path must live under processes/<session_id>/ — namespaced per session
     // so one session can never see (or accidentally read) another session's
-    // daemon logs, even when both share a gait_dir.
+    // process logs, even when both share a gait_dir.
     let log_path = proto
         .get("log_path")
         .and_then(|v| v.as_str())
         .expect("log_path");
     assert!(
-        log_path.contains("daemons/test/"),
-        "log_path should be under daemons/<session_id>/ (session is \"test\"), got: {log_path}"
+        log_path.contains("processes/test/"),
+        "log_path should be under processes/<session_id>/ (session is \"test\"), got: {log_path}"
     );
 
     // started_at must be non-zero.
@@ -871,13 +871,13 @@ async fn detached_daemon_record_proto_fields_populated() {
     assert!(started_at > 0, "started_at must be non-zero");
 }
 
-/// Two sessions sharing a gait_dir must never land daemon logs in the same
+/// Two sessions sharing a gait_dir must never land process logs in the same
 /// place — this is what makes the sandbox's per-session grant meaningful. A
-/// later session inspecting its own daemon dir must not stumble on an
-/// unrelated session's stale daemon logs (the failure mode that burned ~35
+/// later session inspecting its own process dir must not stumble on an
+/// unrelated session's stale process logs (the failure mode that burned ~35
 /// steps of an agent's step budget re-reading other sessions' task-1 logs).
 #[tokio::test]
-async fn detached_daemon_logs_are_isolated_per_session() {
+async fn detached_process_logs_are_isolated_per_session() {
     let dir = TempDir::new().unwrap();
     let tool_a = ShellTool::new(ToolCtx::new(
         dir.path().to_path_buf(),
@@ -915,8 +915,8 @@ async fn detached_daemon_logs_are_isolated_per_session() {
         .await
         .unwrap();
 
-    let proto_a = daemon_proto(&result_a);
-    let proto_b = daemon_proto(&result_b);
+    let proto_a = process_proto(&result_a);
+    let proto_b = process_proto(&result_b);
     let pid_a = proto_a.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
     let pid_b = proto_b.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
     unsafe {
@@ -934,10 +934,10 @@ async fn detached_daemon_logs_are_isolated_per_session() {
         .expect("log_path");
     assert_ne!(
         log_path_a, log_path_b,
-        "same daemon name from different sessions must not collide"
+        "same process name from different sessions must not collide"
     );
-    assert!(log_path_a.contains("daemons/session-a/"));
-    assert!(log_path_b.contains("daemons/session-b/"));
+    assert!(log_path_a.contains("processes/session-a/"));
+    assert!(log_path_b.contains("processes/session-b/"));
 }
 
 /// Every shell result must echo the effective cwd, so the model can never
@@ -995,29 +995,29 @@ async fn foreground_result_echoes_explicit_cwd_param() {
     );
 }
 
-/// The spine writes a DaemonStart record into `<gait_dir>/daemons.jsonl` using
-/// the `__daemon` proto returned by the shell tool.  This test exercises that
-/// round-trip directly: spawn a daemon, extract the proto, call
-/// `daemons::append_start`, then verify `daemons::active()` lists the daemon.
+/// The spine writes a DaemonStart record into `<gait_dir>/processes.jsonl` using
+/// the `__process` proto returned by the shell tool.  This test exercises that
+/// round-trip directly: spawn a process, extract the proto, call
+/// `processes::append_start`, then verify `processes::active()` lists the process.
 #[tokio::test]
-async fn detached_daemon_start_record_lands_in_daemons_jsonl() {
-    use crate::session::daemons;
+async fn detached_daemon_start_record_lands_in_processes_jsonl() {
+    use crate::session::processes;
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
     let result = tool
         .execute(
             serde_json::json!({
                 "cmd": "sleep 30",
-                "reason": "daemons.jsonl test",
+                "reason": "processes.jsonl test",
                 "detached": true,
-                "name": "jsonl-test-daemon"
+                "name": "jsonl-test-process"
             }),
             &crate::Recorder::detached(),
         )
         .await
         .unwrap();
 
-    let proto = daemon_proto(&result);
+    let proto = process_proto(&result);
     let pid = proto.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
 
     // Reconstruct the DaemonStart (proto) as spine would, then write it.
@@ -1056,20 +1056,20 @@ async fn detached_daemon_start_record_lands_in_daemons_jsonl() {
     unsafe { libc::kill(pid, libc::SIGKILL) };
 
     // Write the record as spine does.
-    daemons::append_start(dir.path(), &rec).expect("append_start must succeed");
+    processes::append_start(dir.path(), &rec).expect("append_start must succeed");
 
-    // Verify daemons.jsonl exists and active() returns the record.
-    let jsonl_path = dir.path().join("daemons.jsonl");
-    assert!(jsonl_path.exists(), "daemons.jsonl must be created");
+    // Verify processes.jsonl exists and active() returns the record.
+    let jsonl_path = dir.path().join("processes.jsonl");
+    assert!(jsonl_path.exists(), "processes.jsonl must be created");
 
-    let active = daemons::active(dir.path()).expect("active() must succeed");
+    let active = processes::active(dir.path()).expect("active() must succeed");
     assert_eq!(
         active.len(),
         1,
-        "expected 1 active daemon, got {}",
+        "expected 1 active process, got {}",
         active.len()
     );
-    assert_eq!(active[0].name, "jsonl-test-daemon");
+    assert_eq!(active[0].name, "jsonl-test-process");
     assert_eq!(active[0].cmd, "sleep 30", "cmd must be raw user command");
 }
 

@@ -44,14 +44,14 @@ pub struct ModeListParams {}
 /// A mode that must exist.
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeRef {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "mode")]
     pub id: Ref,
 }
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeAddParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "mode", id_only, absent_ok)]
     pub id: Ref,
     /// A tool pattern the mode allows (repeatable).
@@ -68,7 +68,7 @@ pub struct ModeAddParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct ModeSelectParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "mode")]
     pub id: Ref,
     /// The session id the change applies to.

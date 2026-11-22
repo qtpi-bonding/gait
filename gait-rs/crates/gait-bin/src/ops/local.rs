@@ -30,7 +30,7 @@ output! {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalSetupParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "inference", id_only, absent_ok)]
     pub id: Option<Ref>,
     /// The GGUF file of Qwen2.5-Coder-7B-Instruct Q4_K_M.
@@ -48,7 +48,7 @@ pub struct LocalSetupParams {
 
 #[derive(Debug, Clone, OpParams)]
 pub struct LocalRunnerParams {
-    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or daemon.
+    /// The object to act on: a session id, or the name of an inference, mode, extension, provider, config key or process.
     #[op(subject = "inference", id_only)]
     pub id: Option<Ref>,
 }

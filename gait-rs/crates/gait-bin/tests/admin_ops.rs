@@ -1,4 +1,4 @@
-//! Inference, mode, config, daemons and extension ops on the registry (Task 8),
+//! Inference, mode, config, processes and extension ops on the registry (Task 8),
 //! and `workflow` as the one clap extra.
 use serde_json::{json, Value};
 use std::path::Path;
@@ -235,17 +235,76 @@ fn config_set_get_with_id_and_value() {
 }
 
 #[test]
-fn daemons_items_lists_and_stop_needs_a_known_daemon() {
+fn processes_items_lists_and_stop_needs_a_known_process() {
     let ws = workspace();
-    let bare = run(ws.path(), &["daemons"]);
+    let bare = run(ws.path(), &["processes"]);
     assert_eq!(bare.code, Some(0), "{}", bare.stderr);
     assert_eq!(bare.json(), json!({"items": []}));
-    let all = run(ws.path(), &["daemons", "list", "--all"]);
+    let all = run(ws.path(), &["processes", "list", "--all"]);
     assert_eq!(all.json(), json!({"items": []}));
-    let stop = run(ws.path(), &["daemons", "stop", "--id", "ghost"]);
+    let stop = run(ws.path(), &["processes", "stop", "--id", "ghost"]);
     assert_eq!(stop.code, Some(65));
     assert_eq!(stop.error_code(), "gait.op.not_found");
     assert!(stop.stderr.contains("not found"), "{}", stop.stderr);
+}
+
+#[test]
+fn the_old_daemons_command_is_gone() {
+    let ws = workspace();
+    let old = run(ws.path(), &["daemons", "list"]);
+    assert_ne!(old.code, Some(0), "{}", old.stdout);
+    assert_eq!(old.code, Some(2), "{}", old.stderr);
+    let help = run(ws.path(), &["--help"]);
+    assert!(!help.stdout.contains("daemons"), "{}", help.stdout);
+    assert!(help.stdout.contains("processes"), "{}", help.stdout);
+}
+
+const LEGACY_LINES: &str = concat!(
+    r#"{"kind":"start","name":"a","pid":1,"pgid":1,"startedAt":"1","cmd":"x","cwd":"/","logPath":"/tmp/a.log","session":""}"#,
+    "\n",
+    r#"{"kind":"stop","name":"a","exitCode":0}"#,
+    "\n",
+);
+
+#[test]
+fn processes_list_migrates_the_legacy_registry_once() {
+    let ws = workspace();
+    std::fs::write(ws.path().join("daemons.jsonl"), LEGACY_LINES).unwrap();
+    let first = run(ws.path(), &["processes", "list", "--all"]);
+    assert_eq!(first.code, Some(0), "{}", first.stderr);
+    assert_eq!(first.json()["items"][0]["name"], "a", "{}", first.stdout);
+    assert!(!ws.path().join("daemons.jsonl").exists());
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("processes.jsonl")).unwrap(),
+        LEGACY_LINES
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("daemons.jsonl.bak")).unwrap(),
+        LEGACY_LINES
+    );
+    let second = run(ws.path(), &["processes", "list", "--all"]);
+    assert_eq!(second.json(), first.json());
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("processes.jsonl")).unwrap(),
+        LEGACY_LINES
+    );
+}
+
+#[test]
+fn both_registry_files_present_is_a_coded_error_naming_both() {
+    let ws = workspace();
+    std::fs::write(ws.path().join("daemons.jsonl"), LEGACY_LINES).unwrap();
+    std::fs::write(ws.path().join("processes.jsonl"), "").unwrap();
+    let out = run(ws.path(), &["processes", "list"]);
+    assert_ne!(out.code, Some(0));
+    assert_eq!(out.error_code(), "gait.state.processes.registry_conflict");
+    assert!(out.stderr.contains("daemons.jsonl"), "{}", out.stderr);
+    assert!(out.stderr.contains("processes.jsonl"), "{}", out.stderr);
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("daemons.jsonl")).unwrap(),
+        LEGACY_LINES,
+        "nothing is merged or moved"
+    );
 }
 
 #[test]
@@ -412,8 +471,8 @@ fn old_verb_enums_are_gone_and_workflow_is_the_extra() {
         "mode clear",
         "config get",
         "config set",
-        "daemons list",
-        "daemons stop",
+        "processes list",
+        "processes stop",
         "register",
         "unregister",
         "enable",

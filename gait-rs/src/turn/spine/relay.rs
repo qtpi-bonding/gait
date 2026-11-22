@@ -54,7 +54,7 @@ pub(crate) fn notify_outcome(
 /// One `AgentReported` per `notify_parent` call, emitted after it returns.
 /// Both gait-core call sites (this relay and the harness) use it; never call
 /// it from gait-state, whose `notify_parent_unsigned` also runs in the
-/// uninitialised daemon-exit process.
+/// uninitialised process-exit process.
 #[cfg(feature = "telemetry")]
 pub(crate) fn emit_agent_reported(
     idempotency_key: &str,
@@ -578,7 +578,7 @@ async fn relay_brain_turn_inner(
         let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
         let dirty_files = repos.codebase.dirty_files(codebase);
         let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "null".to_string());
-        let daemons = running_daemons(gait_dir);
+        let daemons = running_processes(gait_dir);
         let init = BrainInit {
             config_json,
             events,
@@ -986,13 +986,13 @@ fn record_terminal_failure(
     concord_telemetry::error_anyhow!(&err, source = "gait.turn", gait_session_id = %session_id);
 }
 
-/// Daemons to show the model in `<status>`. Only live ones: a daemon that has
+/// Processes to show the model in `<status>`. Only live ones: a process that has
 /// died is reported once through the completion poll, and listing every dead
 /// registry entry on each call only grows the prompt.
-fn running_daemons(
+fn running_processes(
     gait_dir: &std::path::Path,
 ) -> Vec<crate::proto::gait::sandbox::v1::DaemonStatus> {
-    use crate::session::daemons::{active, is_alive};
+    use crate::session::processes::{active, is_alive};
     active(gait_dir)
         .unwrap_or_default()
         .into_iter()
@@ -1009,7 +1009,7 @@ fn running_daemons(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn dead_daemons_are_not_listed_in_the_status() {
+    fn dead_processes_are_not_listed_in_the_status() {
         let dir = tempfile::tempdir().unwrap();
         let start = crate::proto::gait::log::v1::DaemonStart {
             name: "gone".into(),
@@ -1021,8 +1021,8 @@ mod tests {
             log_path: "/tmp/gone.log".into(),
             ..Default::default()
         };
-        crate::session::daemons::append_start(dir.path(), &start).unwrap();
-        assert!(running_daemons(dir.path()).is_empty());
+        crate::session::processes::append_start(dir.path(), &start).unwrap();
+        assert!(running_processes(dir.path()).is_empty());
     }
 
     use super::*;

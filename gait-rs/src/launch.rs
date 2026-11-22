@@ -13,9 +13,9 @@
 //! gait-core cannot depend on gait-cli — see [`crate::is_role_argv`]'s doc
 //! comment for the same DAG rule). [`RunLaunch`] is therefore verified by a
 //! round-trip test in `gait-cli` (`crates/gait-cli/src/cli/run.rs`), not
-//! here; [`BrainLaunch`] and [`DaemonExitLaunch`] round-trip against parsers
+//! here; [`BrainLaunch`] and [`ProcessExitLaunch`] round-trip against parsers
 //! that *do* live in gait-core ([`BrainArgs`] below, and
-//! [`crate::daemon_exit::DaemonExitArgs`]), so those tests live in this file.
+//! [`crate::process_exit::ProcessExitArgs`]), so those tests live in this file.
 //!
 //! Note: [`BrainLaunch`] here is distinct from [`crate::embed::BrainLaunch`],
 //! which is a higher-level "what the driver needs to spawn a turn" struct
@@ -218,8 +218,8 @@ pub fn spawn_wake(req: &crate::session::completion::WakeRequest) {
         .stderr(std::process::Stdio::null());
     if let Err(e) = cmd.spawn() {
         // Diagnostic warn: a failed wake is invisible to the parent, so we
-        // surface it via the diagnostic module + stderr. The next daemon
-        // exit will retry, and the daemons.jsonl registry is the durable
+        // surface it via the diagnostic module + stderr. The next process
+        // exit will retry, and the processes.jsonl registry is the durable
         // fallback until then.
         let rec = crate::diagnostic::DiagRecord::terminal(
             &req.parent_session,
@@ -347,26 +347,26 @@ pub struct BrainArgs {
     pub send_message: bool,
 }
 
-// ── DaemonExitLaunch (site 6 — `tools/shell/mod.rs` daemon wrapper) ─────────
+// ── ProcessExitLaunch (site 6 — `tools/shell/mod.rs` process wrapper) ─────────
 
-/// Args for the hidden `__daemon-exit` subcommand
-/// (`gait __daemon-exit --gait-dir <dir> --session <parent> --name <name>
-/// --exit <code>`), hand-parsed by [`crate::daemon_exit::DaemonExitArgs`].
+/// Args for the hidden `__process-exit` subcommand
+/// (`gait __process-exit --gait-dir <dir> --session <parent> --name <name>
+/// --exit <code>`), hand-parsed by [`crate::process_exit::ProcessExitArgs`].
 ///
-/// Site 6 (the shell tool's detached-daemon wrapper) must stay a `sh -c`
+/// Site 6 (the shell tool's detached-process wrapper) must stay a `sh -c`
 /// fragment: it runs the user's command, captures `$?`, *then* fires this
 /// hook — that composition requires a shell, not a plain argv array. `--exit`
 /// is `$?` at shell runtime, so it is not a field here: [`Self::to_argv_prefix`]
 /// stops before it, and the caller (`to_shell_fragment`) appends it as the
 /// literal shell variable reference `$__ec`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DaemonExitLaunch {
+pub struct ProcessExitLaunch {
     pub gait_dir: PathBuf,
     pub session: String,
     pub name: String,
 }
 
-impl DaemonExitLaunch {
+impl ProcessExitLaunch {
     /// argv for the hidden subcommand, stopping before `--exit` (that value
     /// is `$?` captured at shell runtime by the caller).
     pub fn to_argv_prefix(&self) -> Vec<String> {
@@ -380,8 +380,8 @@ impl DaemonExitLaunch {
         ]
     }
 
-    /// The `sh -c` fragment for the detached-daemon wrapper: runs `user_cmd`,
-    /// captures its exit code, then fires `__daemon-exit` with the quoted
+    /// The `sh -c` fragment for the detached-process wrapper: runs `user_cmd`,
+    /// captures its exit code, then fires `__process-exit` with the quoted
     /// argv from [`Self::to_argv_prefix`] plus `--exit $__ec`. Every
     /// interpolated value (not the flag names) is routed through
     /// `tools::shell::shell_quote` so a value containing spaces/quotes
@@ -399,7 +399,7 @@ impl DaemonExitLaunch {
             argv_str.push(' ');
         }
         format!(
-            "{user}\n__ec=$?\n{exe} __daemon-exit {argv}--exit $__ec\n",
+            "{user}\n__ec=$?\n{exe} __process-exit {argv}--exit $__ec\n",
             user = user_cmd,
             exe = shell_quote(exe),
             argv = argv_str,
@@ -586,28 +586,28 @@ mod tests {
     }
 
     #[test]
-    fn daemon_exit_launch_round_trips_through_daemon_exit_args() {
-        let launch = DaemonExitLaunch {
+    fn process_exit_launch_round_trips_through_process_exit_args() {
+        let launch = ProcessExitLaunch {
             gait_dir: PathBuf::from("/gd"),
             session: "parent1".to_string(),
-            name: "daemon-abcd1234".to_string(),
+            name: "process-abcd1234".to_string(),
         };
         let mut argv = launch.to_argv_prefix();
         argv.extend(["--exit".to_string(), "0".to_string()]);
 
-        let parsed = crate::daemon_exit::DaemonExitArgs::parse_from(&argv);
+        let parsed = crate::process_exit::ProcessExitArgs::parse_from(&argv);
         assert_eq!(parsed.gait_dir, PathBuf::from("/gd"));
         assert_eq!(parsed.session, "parent1");
-        assert_eq!(parsed.name, "daemon-abcd1234");
+        assert_eq!(parsed.name, "process-abcd1234");
         assert_eq!(parsed.exit, 0);
     }
 
     #[test]
     fn shell_quote_survives_spaces_and_quotes_in_the_fragment() {
-        let launch = DaemonExitLaunch {
+        let launch = ProcessExitLaunch {
             gait_dir: PathBuf::from("/tmp/my gait dir"),
             session: "session with spaces".to_string(),
-            name: "it's-a-daemon".to_string(),
+            name: "it's-a-process".to_string(),
         };
         let fragment = launch.to_shell_fragment("/usr/local/bin/gait", "echo hi");
 
@@ -615,24 +615,24 @@ mod tests {
         // are escaped via the POSIX '\'' sequence (see shell_quote).
         assert!(fragment.contains("'/tmp/my gait dir'"));
         assert!(fragment.contains("'session with spaces'"));
-        assert!(fragment.contains(r"'it'\''s-a-daemon'"));
-        assert!(fragment.contains("__daemon-exit --gait-dir"));
+        assert!(fragment.contains(r"'it'\''s-a-process'"));
+        assert!(fragment.contains("__process-exit --gait-dir"));
         assert!(fragment.contains("--exit $__ec"));
         assert!(fragment.starts_with("echo hi\n__ec=$?\n"));
 
         // Round-trip through an actual shell: the quoted values must survive
         // word-splitting when `sh -c` re-tokenizes the fragment. We can't
-        // easily intercept the real __daemon-exit dispatch here, so instead
+        // easily intercept the real __process-exit dispatch here, so instead
         // assert the shell's own re-tokenization (via `printf '%s\n' "$@"`
         // driven from the same quoted argv string) recovers the original
         // values byte-for-byte.
         let quoted_only = fragment
             .lines()
             .nth(2)
-            .expect("third line is the __daemon-exit invocation");
-        // Strip the leading `<exe> __daemon-exit ` and trailing `--exit $__ec`.
+            .expect("third line is the __process-exit invocation");
+        // Strip the leading `<exe> __process-exit ` and trailing `--exit $__ec`.
         let inner = quoted_only
-            .trim_start_matches("'/usr/local/bin/gait' __daemon-exit ")
+            .trim_start_matches("'/usr/local/bin/gait' __process-exit ")
             .trim_end_matches("--exit $__ec")
             .trim();
         let script = format!("set -- {inner}; printf '%s\\n' \"$@\"");
@@ -651,20 +651,20 @@ mod tests {
                 "--session",
                 "session with spaces",
                 "--name",
-                "it's-a-daemon",
+                "it's-a-process",
             ]
         );
     }
 
     #[test]
-    fn daemon_exit_fragment_runs_the_user_command_then_the_hook() {
-        let launch = DaemonExitLaunch {
+    fn process_exit_fragment_runs_the_user_command_then_the_hook() {
+        let launch = ProcessExitLaunch {
             gait_dir: PathBuf::from("/gd"),
             session: "parent1".to_string(),
             name: "t".to_string(),
         };
         let fragment = launch.to_shell_fragment("/usr/local/bin/gait", "echo hi");
-        let expected = "echo hi\n__ec=$?\n'/usr/local/bin/gait' __daemon-exit --gait-dir '/gd' --session 'parent1' --name 't' --exit $__ec\n";
+        let expected = "echo hi\n__ec=$?\n'/usr/local/bin/gait' __process-exit --gait-dir '/gd' --session 'parent1' --name 't' --exit $__ec\n";
         assert_eq!(fragment, expected);
     }
 }

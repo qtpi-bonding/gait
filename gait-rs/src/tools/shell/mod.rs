@@ -15,12 +15,12 @@ struct ShellParams {
     reason: String,
     /// Working directory for this call only (relative to the codebase root).
     cwd: Option<String>,
-    /// Run as a background daemon that outlives this turn; returns immediately.
+    /// Run as a background process that outlives this turn; returns immediately.
     /// Output goes to a per-session log file.
     #[serde(default)]
     detached: bool,
-    /// Name for this daemon (used in registry and log filename).
-    /// Auto-generated as "daemon-<uuid8>" if omitted.
+    /// Name for this process (used in registry and log filename).
+    /// Auto-generated as "process-<uuid8>" if omitted.
     name: Option<String>,
 }
 #[allow(dead_code)]
@@ -166,25 +166,29 @@ impl Tool for ShellTool {
         };
         let cwd = run_dir;
 
-        // ── Detached daemon branch ─────────────────────────────────────────
+        // ── Detached process branch ─────────────────────────────────────────
         if params.detached {
             let name = params.name.clone().unwrap_or_else(|| {
                 let uid = uuid::Uuid::new_v4().to_string().replace('-', "");
-                format!("daemon-{}", &uid[..8])
+                format!("process-{}", &uid[..8])
             });
 
-            let daemons_dir = self.ctx.gait_dir.join("daemons").join(&self.ctx.session_id);
-            std::fs::create_dir_all(&daemons_dir)
+            let processes_dir = self
+                .ctx
+                .gait_dir
+                .join("processes")
+                .join(&self.ctx.session_id);
+            std::fs::create_dir_all(&processes_dir)
                 .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
-            let log_path = daemons_dir.join(format!("{}.log", name));
+            let log_path = processes_dir.join(format!("{}.log", name));
 
-            // Run the user command, then fire the __daemon-exit hook with its
+            // Run the user command, then fire the __process-exit hook with its
             // status. Single-quote-safe via shell_quote for the embedded values.
             // Use current_exe() when it looks like the real gait binary (production).
             // In test runners current_exe() is the test binary; fall back to "gait" in PATH.
-            // GAIT_DAEMON_EXE overrides both: an integration test running
+            // GAIT_PROCESS_EXE overrides both: an integration test running
             // outside the gait binary points it at the binary Cargo built.
-            let exe = if let Some(path) = std::env::var_os("GAIT_DAEMON_EXE") {
+            let exe = if let Some(path) = std::env::var_os("GAIT_PROCESS_EXE") {
                 std::path::PathBuf::from(path)
             } else {
                 let cur = std::env::current_exe().unwrap_or_default();
@@ -200,7 +204,7 @@ impl Tool for ShellTool {
             // fragment (it must run the user's command, capture `$?`, *then*
             // fire the hook) — `to_shell_fragment` sources the quoted
             // fragment from the launcher instead of an inline `format!`.
-            let wrapped = crate::launch::DaemonExitLaunch {
+            let wrapped = crate::launch::ProcessExitLaunch {
                 gait_dir: self.ctx.gait_dir.clone(),
                 session: self.ctx.session_id.clone(),
                 name: name.clone(),
@@ -216,7 +220,7 @@ impl Tool for ShellTool {
             let (child, pid, started_at) =
                 crate::process::spawn_detached_to_file(cmd, &log_path)
                     .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
-            // Drop child immediately — daemon is detached; we do not wait on it.
+            // Drop child immediately — process is detached; we do not wait on it.
             drop(child);
 
             let log_path_str = log_path.to_string_lossy().into_owned();
@@ -225,16 +229,16 @@ impl Tool for ShellTool {
 
             // Architecture note: the hand runtime (hand.rs) calls execute() and wraps the
             // returned Value into HandResponse { Feedback { result, ... } }. To carry the
-            // DaemonRecordProto up to the spine we embed it as a "__daemon" key in the
+            // DaemonRecordProto up to the spine we embed it as a "__process" key in the
             // result JSON. hand.rs detects this key, extracts it into Feedback.daemon, and
             // removes it from the result before forwarding.
             return Ok(serde_json::json!({
                 "output": format!(
-                    "started daemon {} (pid {}) — log: {} [cwd: {}]",
+                    "started process {} (pid {}) — log: {} [cwd: {}]",
                     name, pid, log_path_str, cwd_str
                 ),
                 "exit_code": 0,
-                "__daemon": {
+                "__process": {
                     "name": name,
                     "pid": pid,
                     "pgid": pid,
@@ -364,7 +368,7 @@ impl Tool for ShellTool {
                 let msg = format!(
                     "[shell: killed after {timeout_secs}s — command exceeded the configured \
                      timeout. If this command is expected to run long, re-run with detached:true \
-                     to run it as a background daemon; partial output (if any) at {}] [cwd: {}]",
+                     to run it as a background process; partial output (if any) at {}] [cwd: {}]",
                     out_path.display(),
                     cwd.display()
                 );
@@ -603,7 +607,7 @@ fn strip_ansi(s: &str) -> String {
 /// Single-quote a string for safe embedding in a POSIX shell snippet.
 /// Embedded single-quotes are escaped via the standard `\'\''` sequence.
 ///
-/// `pub(crate)` so `launch::DaemonExitLaunch::to_shell_fragment` (site 6's
+/// `pub(crate)` so `launch::ProcessExitLaunch::to_shell_fragment` (site 6's
 /// typed launcher) can reuse the exact same quoting discipline instead of
 /// re-implementing it.
 pub(crate) fn shell_quote(s: &str) -> String {
