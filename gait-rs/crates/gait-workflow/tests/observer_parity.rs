@@ -49,7 +49,7 @@ async fn observer_parity_shell_workflow() {
     // commit_session falls back gracefully; however gait_core::git::Repos::production()
     // uses the actual filesystem. Let's init a real git repo for the session.
     std::process::Command::new("git")
-        .args(["init"])
+        .args(["init", "--initial-branch=main"])
         .current_dir(&gait_dir)
         .output()
         .unwrap();
@@ -165,7 +165,7 @@ fn setup_git_gait_dir(gait_dir: &std::path::Path) {
     std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
     std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
     for args in [
-        vec!["init"],
+        vec!["init", "--initial-branch=main"],
         vec!["config", "user.email", "test@test.com"],
         vec!["config", "user.name", "Test"],
     ] {

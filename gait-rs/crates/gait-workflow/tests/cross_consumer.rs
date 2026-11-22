@@ -27,7 +27,7 @@ fn setup_gait_dir(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join(".active")).unwrap();
     std::fs::create_dir_all(dir.join("workflow-runs")).unwrap();
     std::process::Command::new("git")
-        .args(["init"])
+        .args(["init", "--initial-branch=main"])
         .current_dir(dir)
         .output()
         .unwrap();
