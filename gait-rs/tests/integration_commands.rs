@@ -81,16 +81,14 @@ fn auth_write_list_remove_roundtrip() {
 
     let list = gait_core::auth::list_credentials_from(&path).unwrap();
     assert_eq!(list.len(), 2);
-    assert!(
-        list["anthropic"].starts_with("sk-test-"),
-        "got: {}",
-        list["anthropic"]
-    );
-    assert!(
-        list["anthropic"].ends_with("..."),
-        "got: {}",
-        list["anthropic"]
-    );
+    assert_eq!(list["anthropic"], "api");
+    assert_eq!(list["openai"], "api");
+    for value in list.values() {
+        assert!(!value.contains("sk-test"));
+        assert!(!value.contains("abc123"));
+        assert!(!value.contains("sk-openai"));
+        assert!(!value.contains("xyz"));
+    }
 
     gait_core::auth::remove_api_key_from(&path, "openai").unwrap();
     let list2 = gait_core::auth::list_credentials_from(&path).unwrap();
