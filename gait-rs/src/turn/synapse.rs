@@ -53,6 +53,8 @@ pub struct ScopeRequest {
 /// command under Seatbelt. The turn loop inspects this in supervised mode and
 /// calls `pause_for_unlock`; in auto mode it is ignored and the tool failure
 /// result propagates normally (Phase 2c Task 6).
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Synapse: Send + Sync {
     async fn fire(

@@ -40,6 +40,8 @@ use crate::permissions::find_matched_deny_pattern;
 
 /// Injectable boundary around the external classifier. Tests use a fake;
 /// production resolves the named inference profile here, at the turn layer.
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub(crate) trait Classifier: Send + Sync {
     async fn classify(
@@ -575,9 +577,9 @@ pub(crate) async fn run_tools(
 
                     // Route through the shared completion gate
                     return verify_completion(
-                        &env,
+                        env,
                         &mut *state,
-                        &persist,
+                        persist,
                         step_index,
                         message,
                         result,

@@ -1010,7 +1010,6 @@ fn replace_substitutes_payload_in_messages() {
     let new_payload = pb::Payload {
         kind: Some(payload::Kind::UserText(pb::UserText {
             content: "new text".into(),
-            ..Default::default()
         })),
     };
     wire::append(&path, replace_body(&user_event.id, new_payload)).unwrap();
@@ -1037,7 +1036,6 @@ fn later_redact_overrides_replace() {
     let new_payload = pb::Payload {
         kind: Some(payload::Kind::UserText(pb::UserText {
             content: "replaced".into(),
-            ..Default::default()
         })),
     };
     wire::append(&path, replace_body(&user_event.id, new_payload)).unwrap();

@@ -283,10 +283,10 @@ pub fn build_agent_with_attestation(
                         // for why recording earlier would be unsound.
                         let idempotency_key =
                             crate::idempotency::idempotency_key_from_meta(&req.meta);
-                        if let Some(key) = &idempotency_key {
-                            if map.has_seen_idempotency_key(&sid, key) {
-                                return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::AlreadySeen { key: key.clone() }), error::PROMPT));
-                            }
+                        if let Some(key) = &idempotency_key
+                            && map.has_seen_idempotency_key(&sid, key)
+                        {
+                            return responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::AlreadySeen { key: key.clone() }), error::PROMPT));
                         }
                         // Reject BEFORE touching any session_map bookkeeping. A
                         // second concurrent PromptRequest is going to fail once
@@ -560,10 +560,9 @@ pub fn build_agent_with_attestation(
                             // run, so release its idempotency key for the retry.
                             if outcome.is_err()
                                 && !durable_thread.load(std::sync::atomic::Ordering::SeqCst)
+                                && let Some(key) = &key_thread
                             {
-                                if let Some(key) = &key_thread {
-                                    map_thread.forget_idempotency_key(&sid_thread, key);
-                                }
+                                map_thread.forget_idempotency_key(&sid_thread, key);
                             }
                             let stop = if cancelled {
                                 // Cancel wins over whatever the sink captured (or didn't):

@@ -352,6 +352,8 @@ impl Default for HookContext {
 /// so every hook fire can be logged to the transcript for replay and debugging.
 /// All methods have no-op defaults; implement only the hooks you need.
 #[async_trait::async_trait]
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 pub trait Hook: Send + Sync {
     /// Once per outer turn, before the step loop. Return Some to replace the system prompt.
     fn pre_turn(&self, _ctx: &HookContext, _rec: &dyn Rec) -> Option<String> {
@@ -494,6 +496,8 @@ pub trait Rec: Send + Sync {
 /// Extensible tool interface. Implement this to define a callable tool for `run_turn`.
 /// `ToolDef` implements this for ad-hoc closure-based tools.
 #[async_trait::async_trait]
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;

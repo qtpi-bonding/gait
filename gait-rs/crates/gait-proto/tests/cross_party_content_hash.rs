@@ -15,7 +15,6 @@ fn hand_built_json_matches_gaits_own_content_hash() {
     let body = event::Body::Payload(Payload {
         kind: Some(payload::Kind::UserText(UserText {
             content: text.to_string(),
-            ..Default::default()
         })),
     });
     let gait_event = mint(body, None, EventScope::Session);

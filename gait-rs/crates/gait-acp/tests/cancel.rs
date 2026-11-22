@@ -395,10 +395,9 @@ async fn initialize_advertises_session_notices() {
     let resp = Client
         .builder()
         .connect_with(channel, async |cx| {
-            Ok(cx
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
-                .await?)
+                .await
         })
         .await
         .expect("initialize");

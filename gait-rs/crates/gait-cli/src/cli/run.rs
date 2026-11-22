@@ -260,7 +260,7 @@ pub async fn cmd_run(
     let prompt: Option<String> = args.task.clone().map(|task_text| {
         let hist = gait_dir
             .join("tmp")
-            .join(format!("shell-{}.jsonl", &session_id));
+            .join(format!("shell-{}.jsonl", session_id));
         let events = gait_core::session::ingestor::Ingestor::from_session(&gait_dir, &session_id)
             .events()
             .unwrap_or_default();

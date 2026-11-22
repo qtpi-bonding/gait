@@ -57,7 +57,7 @@ pub fn list(gait_dir: &Path, last: Option<usize>) -> anyhow::Result<ListOutcome>
         })
         .collect();
     // Most-recently-updated first; a session with no log yet (None) sorts last.
-    rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
     if let Some(n) = last {
         rows.truncate(n);
     }

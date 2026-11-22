@@ -407,9 +407,9 @@ impl Provider for FakeProvider {
 }
 
 /// Helper to create a MockProvider with message capture
-fn make_mock_provider(
-    responses: Vec<Vec<StreamChunk>>,
-) -> (Arc<MockProvider>, Arc<std::sync::Mutex<Vec<Vec<Message>>>>) {
+type MockProviderParts = (Arc<MockProvider>, Arc<std::sync::Mutex<Vec<Vec<Message>>>>);
+
+fn make_mock_provider(responses: Vec<Vec<StreamChunk>>) -> MockProviderParts {
     let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
     let provider = Arc::new(MockProvider {
         responses: Arc::new(responses),
@@ -3620,7 +3620,7 @@ async fn verified_goal_implicit_with_schema_and_verifier() {
         if let Some(pbjson_types::value::Kind::StructValue(s)) = &compl_val.kind {
             if let Some(implicit_val) = s.fields.get("implicit") {
                 if let Some(pbjson_types::value::Kind::BoolValue(b)) = &implicit_val.kind {
-                    assert_eq!(*b, true);
+                    assert!(*b);
                 }
             }
         }

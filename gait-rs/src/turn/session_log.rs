@@ -120,7 +120,11 @@ impl SessionLog {
         }
         if let Some(confirm) = on_durable {
             if let Err(e) = confirm() {
-                eprintln!("[gait] input batch is logged; its durable confirmation failed: {e}");
+                #[allow(clippy::print_stderr)]
+                // tracked debt: durable-confirmation failure is reported on stderr, bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!("[gait] input batch is logged; its durable confirmation failed: {e}");
+                }
             }
         }
         Ok(())

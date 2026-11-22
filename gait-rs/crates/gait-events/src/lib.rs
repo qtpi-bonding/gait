@@ -4,6 +4,8 @@ pub use concord_telemetry_proto::v1::{Principal, PrincipalKind, Verification};
 
 pub mod gait {
     pub mod events {
+        // pbjson-generated code (included via include!), which we cannot edit.
+        #[allow(clippy::useless_borrows_in_formatting)]
         pub mod v1 {
             include!(concat!(env!("OUT_DIR"), "/gait.events.v1.rs"));
             include!(concat!(env!("OUT_DIR"), "/gait.events.v1.serde.rs"));

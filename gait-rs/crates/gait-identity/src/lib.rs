@@ -546,6 +546,8 @@ mod tests {
         }
     }
 
+    // test helper
+    #[allow(clippy::too_many_arguments)]
     fn signed_with_body_type(
         ctx: &IdentityContext,
         ev_id: &str,

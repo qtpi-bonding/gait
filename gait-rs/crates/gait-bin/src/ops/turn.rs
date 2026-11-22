@@ -233,6 +233,8 @@ async fn run(repl: Repl, globals: &Globals, args: Vec<OsString>) -> anyhow::Resu
 /// The turn runs inside the `gait.cli` span, parented on `TRACEPARENT`/`BAGGAGE`.
 async fn traced(turn: impl std::future::Future<Output = anyhow::Result<u8>>) -> anyhow::Result<u8> {
     #[cfg(feature = "telemetry")]
+    #[allow(clippy::needless_return)]
+    // the return is only the tail when the telemetry feature is on; needed otherwise
     {
         use tracing::Instrument;
         let span = tracing::info_span!("gait.cli", op = "turn");
@@ -245,12 +247,9 @@ async fn traced(turn: impl std::future::Future<Output = anyhow::Result<u8>>) -> 
 
 async fn execute(repl: Repl, globals: Globals, cli: TurnArgs) -> anyhow::Result<u8> {
     let plan = cli.plan();
-    match plan {
-        TurnPlan::NoTask => {
-            print!("{}", root_help(repl));
-            return Ok(0);
-        }
-        _ => {}
+    if let TurnPlan::NoTask = plan {
+        print!("{}", root_help(repl));
+        return Ok(0);
     }
     let gait_dir = <GaitContext as op_registry::CliContext>::from_globals(&Globals {
         gait_dir: globals.gait_dir,

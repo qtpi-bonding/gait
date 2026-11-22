@@ -339,7 +339,6 @@ mod tests {
         let f = b.lock();
         tokio::pin!(f);
         assert!(timeout(Duration::from_millis(120), &mut f).await.is_err());
-        drop(f);
         drop(first);
         assert!(timeout(Duration::from_millis(500), b.lock())
             .await

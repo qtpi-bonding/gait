@@ -461,6 +461,8 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     drop(driver);
     // Close the brain's root span and export, before `Terminated` goes out: the
     // spine kills this process group right after it sees that signal.
+    // The span handle has no Drop of its own; dropping it ends the span's lifetime before the flush below.
+    #[allow(clippy::drop_non_drop)]
     drop(brain_span);
     crate::telemetry::flush();
     let terminated = Signal {

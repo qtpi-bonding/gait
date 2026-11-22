@@ -40,7 +40,6 @@ fn seed_session(dir: &Path, id: &str) -> PathBuf {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let body = gait_state::proto::wire::body(payload::Kind::UserText(UserText {
         content: "hi".into(),
-        ..Default::default()
     }));
     gait_state::proto::wire::append(&path, body).unwrap();
     path

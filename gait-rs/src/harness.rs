@@ -1,6 +1,8 @@
 use crate::scheduler::Action;
 use std::path::PathBuf;
 
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait HarnessBackend: Send + Sync {
     /// Execute a scheduler-produced action (mechanism only).
@@ -97,10 +99,10 @@ impl HarnessBackend for NativeHarnessBackend {
                     );
                     #[cfg(feature = "telemetry")]
                     crate::turn::spine::emit_agent_reported(
-                        &idempotency_key,
+                        idempotency_key,
                         target_session,
-                        &from_session,
-                        &status,
+                        from_session,
+                        status,
                         &notify_result,
                     );
                     match notify_result {

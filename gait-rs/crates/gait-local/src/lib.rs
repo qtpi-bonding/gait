@@ -120,6 +120,8 @@ pub fn runner_key(config: &str) -> String {
 }
 
 #[async_trait]
+// The must_use comes from the async_trait expansion (Pin<Box<dyn Future>> return).
+#[allow(clippy::double_must_use)]
 pub trait TextGenerator: Send + Sync {
     async fn generate(
         &self,

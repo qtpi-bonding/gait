@@ -422,7 +422,6 @@ mod tests {
             kind: Some(crate::gait::log::v1::payload::Kind::UserText(
                 crate::gait::log::v1::UserText {
                     content: "hi".into(),
-                    ..Default::default()
                 },
             )),
         });

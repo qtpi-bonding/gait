@@ -171,6 +171,8 @@ impl ProviderError {
 
 // The core trait every LLM provider implements
 #[async_trait::async_trait]
+// The must_use comes from the async_trait expansion (Pin<Box<dyn Future>> return).
+#[allow(clippy::double_must_use)]
 pub trait Provider: Send + Sync {
     // Stream tokens and tool call events for one LLM turn
     async fn stream(

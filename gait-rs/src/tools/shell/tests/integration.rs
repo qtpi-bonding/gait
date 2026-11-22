@@ -1133,10 +1133,7 @@ async fn verified_goal_spawn_error_returns_execution_error() {
         .await;
 
     // Should error since we can't spawn in a nonexistent directory
-    match result {
-        Ok(_) => {}  // Accept success if spawn doesn't fail immediately
-        Err(_) => {} // Accept Err as spawn failure
-    }
+    let _ = result; // Accept success if spawn doesn't fail immediately, and accept Err as spawn failure
 }
 
 #[tokio::test]

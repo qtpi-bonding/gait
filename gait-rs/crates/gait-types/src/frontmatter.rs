@@ -21,10 +21,7 @@ pub struct AgentFrontmatter {
 impl AgentFrontmatter {
     /// Parse leniently, returning default frontmatter for malformed or non-mapping YAML.
     pub fn parse(fm: &str) -> Self {
-        match serde_yaml::from_str(fm) {
-            Ok(value) => value,
-            Err(_) => Self::default(),
-        }
+        serde_yaml::from_str(fm).unwrap_or_default()
     }
 }
 

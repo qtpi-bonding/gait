@@ -46,6 +46,8 @@ pub struct LoopConfig {
 ///
 /// Defined here (the embed surface), NOT in `turn::spine`, so embedders never
 /// name the sealed mechanism (`no_spine_in_repl` boundary).
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait FsDelegate: Send + Sync {
     /// Live buffer for `path`. `Ok(None)` = no buffer/file (a new file) — benign,
@@ -140,6 +142,8 @@ impl BrainLaunch {
 /// The `?Send` here is a deliberate contract mirrored on [`TurnSource`]: the loop
 /// is awaited inline, never spawned across threads. Do not `tokio::spawn` a
 /// driver.
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait(?Send)]
 pub trait TurnDriver {
     /// All data needed to spawn `gait __brain` for one turn.

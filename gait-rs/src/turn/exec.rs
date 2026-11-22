@@ -32,7 +32,7 @@ where
                 u8::try_from(i).map_err(de::Error::custom)
             } else if let Some(f) = n.as_f64() {
                 // Handle floats like 2.0
-                if f.fract() == 0.0 && f >= 0.0 && f <= 255.0 {
+                if f.fract() == 0.0 && (0.0..=255.0).contains(&f) {
                     Ok(f as u8)
                 } else {
                     Err(de::Error::custom("number is not a valid u8"))

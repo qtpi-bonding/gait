@@ -164,6 +164,8 @@ pub struct LogoutReport {
 /// transport. Implementations may use API keys, OAuth, device codes, or a
 /// future provider-specific subscription protocol.
 #[async_trait]
+// The must_use comes from the async_trait expansion (Pin<Box<dyn Future>> return).
+#[allow(clippy::double_must_use)]
 pub trait AuthMethod: Send + Sync {
     fn method_id(&self) -> &'static str;
     fn display_name(&self) -> &'static str;

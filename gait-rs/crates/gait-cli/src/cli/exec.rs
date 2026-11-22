@@ -52,11 +52,9 @@ pub fn parse_one_off(result: &Value) -> anyhow::Result<OneOff> {
     match (cmd, out) {
         (Some(c), None) => Ok(OneOff::Cmd(c.to_string())),
         (None, Some(o)) => Ok(OneOff::Output(o.to_string())),
-        _ => {
-            return Err(CliError::failed(format!(
-                "expected exactly one of `cmd` or `output`, got: {result}"
-            )))
-        }
+        _ => Err(CliError::failed(format!(
+            "expected exactly one of `cmd` or `output`, got: {result}"
+        ))),
     }
 }
 

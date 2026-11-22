@@ -659,7 +659,11 @@ mod tests {
         let result: Result<super::super::exec::PendingVerifierAttempt, _> =
             serde_json::from_value(json.clone());
         if let Err(e) = &result {
-            eprintln!("Deserialization error: {}", e);
+            #[allow(clippy::print_stderr)]
+            // tracked debt: test-side debug output on stderr — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!("Deserialization error: {}", e);
+            }
         }
         assert!(result.is_ok(), "Direct deserialization failed");
 
@@ -877,7 +881,7 @@ mod tests {
             pending.schema_diagnostics.as_deref(),
             Some("field 'required_field' is missing")
         );
-        assert_eq!(pending.completion_implicit, false);
+        assert!(!pending.completion_implicit);
         assert_eq!(pending.pause_kind, "permission");
     }
 

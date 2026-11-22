@@ -1400,37 +1400,6 @@ pub mod ceiling {
         HomeUnavailable,
     }
 
-    #[cfg(test)]
-    mod coded_error_tests {
-        use super::ScopePathError;
-        use coded_error::{CodedError, ErrorClass};
-
-        const HOME_UNAVAILABLE_TEXT: &str =
-            "cannot expand sandbox paths: user home directory is unavailable";
-
-        #[test]
-        fn scope_path_error_codes_are_unique() {
-            coded_error::check_codes("gait.sandbox.", &[ScopePathError::ALL_CODES]).unwrap();
-        }
-
-        #[test]
-        fn scope_path_error_codes_and_classes_per_variant() {
-            let e = ScopePathError::HomeUnavailable;
-            assert_eq!(e.code(), "gait.sandbox.home_unavailable");
-            assert_eq!(e.class(), ErrorClass::Logical);
-        }
-
-        #[test]
-        fn display_texts_unchanged() {
-            // One variant only: the same text must survive both the direct
-            // Display and the anyhow boundary that callers raise it through.
-            let e = ScopePathError::HomeUnavailable;
-            assert_eq!(e.to_string(), HOME_UNAVAILABLE_TEXT);
-            let raised = coded_error::into_anyhow(ScopePathError::HomeUnavailable);
-            assert_eq!(raised.to_string(), HOME_UNAVAILABLE_TEXT);
-        }
-    }
-
     fn platform_home(platform: &dyn Platform) -> Result<PathBuf, ScopePathError> {
         platform.home_dir().ok_or(ScopePathError::HomeUnavailable)
     }
@@ -1680,6 +1649,37 @@ pub mod ceiling {
             home.to_path_buf()
         } else {
             PathBuf::from(p)
+        }
+    }
+
+    #[cfg(test)]
+    mod coded_error_tests {
+        use super::ScopePathError;
+        use coded_error::{CodedError, ErrorClass};
+
+        const HOME_UNAVAILABLE_TEXT: &str =
+            "cannot expand sandbox paths: user home directory is unavailable";
+
+        #[test]
+        fn scope_path_error_codes_are_unique() {
+            coded_error::check_codes("gait.sandbox.", &[ScopePathError::ALL_CODES]).unwrap();
+        }
+
+        #[test]
+        fn scope_path_error_codes_and_classes_per_variant() {
+            let e = ScopePathError::HomeUnavailable;
+            assert_eq!(e.code(), "gait.sandbox.home_unavailable");
+            assert_eq!(e.class(), ErrorClass::Logical);
+        }
+
+        #[test]
+        fn display_texts_unchanged() {
+            // One variant only: the same text must survive both the direct
+            // Display and the anyhow boundary that callers raise it through.
+            let e = ScopePathError::HomeUnavailable;
+            assert_eq!(e.to_string(), HOME_UNAVAILABLE_TEXT);
+            let raised = coded_error::into_anyhow(ScopePathError::HomeUnavailable);
+            assert_eq!(raised.to_string(), HOME_UNAVAILABLE_TEXT);
         }
     }
 }

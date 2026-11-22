@@ -134,7 +134,7 @@ impl Tool for GlobTool {
         }
 
         let mut files = files;
-        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
 
         let lines: Vec<String> = files.iter().map(|(p, _)| p.display().to_string()).collect();
 

@@ -212,11 +212,9 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     if config.seal
         && config.tool == "shell"
         && args_json.get("detached").and_then(|v| v.as_bool()) == Some(true)
+        && std::fs::create_dir_all(config.gait_dir.join("processes").join(&config.session)).is_err()
     {
-        if std::fs::create_dir_all(config.gait_dir.join("processes").join(&config.session)).is_err()
-        {
-            // The tool's own create_dir_all reports the failure.
-        }
+        // The tool's own create_dir_all reports the failure.
     }
 
     // Apply the seal BEFORE any tool I/O. The hand enforces the kernel sandbox

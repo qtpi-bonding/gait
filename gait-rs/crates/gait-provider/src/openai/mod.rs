@@ -474,10 +474,9 @@ fn body_stream(
 
         loop {
             let next = if finished {
-                match tokio::time::timeout_at(trailer_deadline, guarded_events.next()).await {
-                    Ok(next) => next,
-                    Err(_) => None,
-                }
+                tokio::time::timeout_at(trailer_deadline, guarded_events.next())
+                    .await
+                    .unwrap_or_default()
             } else {
                 guarded_events.next().await
             };

@@ -29,6 +29,8 @@ pub struct CapabilityInvocation {
 }
 
 #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
+// the must_use comes from the async_trait expansion
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait McpInvoker: Send + Sync {
     async fn call(

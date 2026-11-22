@@ -178,12 +178,11 @@ impl Attestor {
         if let Some(last) = replay
             .last_seen(&self.self_id.to_string(), &deliverer)
             .map_err(|error| store_failure(&self.state.replay_path(), error))?
+            && sequence <= last
         {
-            if sequence <= last {
-                bail!(
-                    "attested batch {deliverer}#{sequence} was already confirmed (last {last}); replay rejected"
-                );
-            }
+            bail!(
+                "attested batch {deliverer}#{sequence} was already confirmed (last {last}); replay rejected"
+            );
         }
         let mut seen = Vec::new();
         let mut messages = Vec::new();
