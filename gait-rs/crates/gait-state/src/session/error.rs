@@ -15,6 +15,13 @@ pub enum SessionError {
     #[error("unsupported event log version {found}; expected {expected}")]
     #[coded(code = "unsupported_log_version", class = Logical)]
     UnsupportedLogVersion { found: u32, expected: u32 },
+    #[error("{path} line {line}: this log was written by an older gait and holds the retired event name `{kind}`; this version cannot open the session")]
+    #[coded(code = "retired_event_kind", class = Logical)]
+    RetiredEventKind {
+        path: String,
+        line: usize,
+        kind: String,
+    },
     #[error("session is live; cannot append a registry event while a turn is running")]
     #[coded(code = "session_running", class = Transient)]
     SessionRunning,
@@ -35,6 +42,7 @@ mod tests {
                 "gait.session.parse",
                 "gait.session.proto",
                 "gait.session.unsupported_log_version",
+                "gait.session.retired_event_kind",
                 "gait.session.session_running",
             ]
         );
@@ -64,6 +72,15 @@ mod tests {
         assert_eq!(
             (unsupported.code(), unsupported.class()),
             ("gait.session.unsupported_log_version", ErrorClass::Logical)
+        );
+        let retired = SessionError::RetiredEventKind {
+            path: "/g/log.jsonl".into(),
+            line: 2,
+            kind: "x".into(),
+        };
+        assert_eq!(
+            (retired.code(), retired.class()),
+            ("gait.session.retired_event_kind", ErrorClass::Logical)
         );
         let running = SessionError::SessionRunning;
         assert_eq!(

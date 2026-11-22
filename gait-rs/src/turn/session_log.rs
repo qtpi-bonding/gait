@@ -41,6 +41,10 @@ impl SessionLog {
         let lock_dir = crate::session::live::worktree_dir(gait_dir, session_id);
         let lock = SessionLock::acquire(&lock_dir)?;
         let log_path = crate::session::live::log_path(gait_dir, session_id);
+        // An unreadable log (e.g. one written by an older gait with a retired
+        // event name) must stop the turn here, before anything is appended:
+        // `events()` would otherwise read it as empty.
+        crate::session::log::read_events(&log_path).map_err(coded_error::into_anyhow)?;
         // The nested `sessions/<id>/` directory may not exist yet on a brand
         // new session (create_session_worktree's orphan commit is empty) —
         // SessionLog owns log.jsonl, so it ensures its own parent exists.

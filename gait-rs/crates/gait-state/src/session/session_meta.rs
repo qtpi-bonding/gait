@@ -45,7 +45,8 @@ pub fn from_events(events: &[Event], session_id: &str) -> SessionMeta {
 /// (new session, or a session predating `codebase_path` in `SessionStart`).
 pub fn read_session_meta(gait_dir: &Path, session_id: &str) -> anyhow::Result<SessionMeta> {
     let log_path = crate::session::live::log_path(gait_dir, session_id);
-    Ok(from_events(&read_events(&log_path)?, session_id))
+    let events = read_events(&log_path).map_err(coded_error::into_anyhow)?;
+    Ok(from_events(&events, session_id))
 }
 
 #[cfg(test)]

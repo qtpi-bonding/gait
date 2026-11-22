@@ -35,7 +35,7 @@ impl Ingestor {
     /// Read all events (from the log file, or a snapshot of the shared mirror).
     pub fn events(&self) -> anyhow::Result<Vec<Event>> {
         match &self.inner {
-            IngestorInner::File(p) => Ok(log::read_events(p)?),
+            IngestorInner::File(p) => log::read_events(p).map_err(coded_error::into_anyhow),
             IngestorInner::Shared(m) => Ok(m.lock().expect("log mirror poisoned").clone()),
         }
     }
@@ -43,7 +43,9 @@ impl Ingestor {
     /// Reconstruct the LLM message history from the log.
     pub fn retrace(&self) -> anyhow::Result<Vec<Message>> {
         match &self.inner {
-            IngestorInner::File(p) => Ok(retrace::messages_from_path(p)?),
+            IngestorInner::File(p) => {
+                retrace::messages_from_path(p).map_err(coded_error::into_anyhow)
+            }
             IngestorInner::Shared(_) => Ok(retrace::messages(&self.events()?)?),
         }
     }

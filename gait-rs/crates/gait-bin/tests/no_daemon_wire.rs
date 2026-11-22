@@ -13,7 +13,9 @@ const ALLOWED: [&str; 5] = [
     "daemons.jsonl",
 ];
 const SKIP_DIRS: [&str; 4] = ["target", ".git", "node_modules", "vendor"];
-const SKIP_FILES: [&str; 2] = ["Cargo.lock", "no_daemon_wire.rs"];
+// `retired.rs` is the one place that names the retired event kinds, so that
+// logs holding them fail with a clear error.
+const SKIP_FILES: [&str; 3] = ["Cargo.lock", "no_daemon_wire.rs", "retired.rs"];
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

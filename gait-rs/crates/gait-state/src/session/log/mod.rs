@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+mod retired;
+
 use super::SessionError;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{payload, Event};
@@ -24,11 +26,16 @@ pub fn read_events(path: &Path) -> Result<Vec<Event>, SessionError> {
     }
     let text = std::fs::read_to_string(path)?;
     let mut events = Vec::new();
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let event = serde_json::from_str::<Event>(line)?;
+        let event = match serde_json::from_str::<Event>(line) {
+            Ok(event) => event,
+            Err(error) => {
+                return Err(retired::parse_failure(path, index + 1, line, error));
+            }
+        };
         if event.version != crate::proto::envelope::LOG_VERSION {
             return Err(SessionError::UnsupportedLogVersion {
                 found: event.version,
