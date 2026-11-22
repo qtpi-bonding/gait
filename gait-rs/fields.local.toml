@@ -35,5 +35,5 @@ persisted = { type = "bool", meaning = "Whether a permission decision was saved 
 disposition = { type = "str", meaning = "What became of a session when it was disposed" }
 step = { type = "int", meaning = "Model step number within a turn" }
 mode = { type = "str", meaning = "Session mode" }
-daemon = { type = "str", meaning = "Name of a detached process" }
+process = { type = "str", meaning = "Name of a detached process" }
 "answer.kind" = { type = "str", meaning = "What a received answer replies to" }

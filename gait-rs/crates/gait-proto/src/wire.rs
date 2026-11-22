@@ -487,9 +487,7 @@ mod tests {
 
         let line = std::fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        let payload = value["payload"]
-            .as_object()
-            .expect("payload object");
+        let payload = value["payload"].as_object().expect("payload object");
         assert!(payload.contains_key("processUpdate"));
 
         // The retired spellings, assembled so no source file spells them.

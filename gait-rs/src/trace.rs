@@ -245,7 +245,7 @@ pub(crate) fn with_start_carrier(
 pub(crate) fn note_process_wake(update: &crate::proto::gait::log::v1::ProcessUpdate) {
     #[cfg(feature = "telemetry")]
     {
-        let span = tracing::info_span!(parent: None, "gait.daemon_update", daemon = %update.name);
+        let span = tracing::info_span!(parent: None, "gait.process_update", process = %update.name);
         concord_telemetry::carrier::link_from(
             &span,
             &concord_telemetry::TraceCarrier {
@@ -344,5 +344,30 @@ mod tests {
             .attributes
             .iter()
             .any(|kv| kv.key.as_str() == "error.code"));
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    #[serial_test::serial]
+    fn a_process_wake_span_names_and_labels_the_process() {
+        let _capture = concord_telemetry::testing::capture_exclusive();
+        let update = crate::proto::gait::log::v1::ProcessUpdate {
+            name: "build".into(),
+            ..Default::default()
+        };
+
+        super::note_process_wake(&update);
+
+        let span = concord_telemetry::testing::spans()
+            .into_iter()
+            .rev()
+            .find(|span| span.name == "gait.process_update")
+            .expect("the process update span finished");
+        assert!(span
+            .attributes
+            .iter()
+            .any(|kv| kv.key.as_str() == "process" && kv.value.to_string() == "build"));
+        let retired = ["dae", "mon"].concat();
+        assert!(!span.attributes.iter().any(|kv| kv.key.as_str() == retired));
     }
 }
