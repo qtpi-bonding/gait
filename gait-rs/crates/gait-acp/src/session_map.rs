@@ -589,8 +589,14 @@ mod tests {
         join.join().unwrap();
         // Re-spawn a finished handle isn't possible; store a fresh already-done one.
         m.set_turn_thread("s", std::thread::spawn(|| {}));
-        // Give it a moment to actually finish (it does nothing, but avoid a race).
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while m.has_live_turn("s") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "turn thread never observed as finished"
+            );
+            std::thread::yield_now();
+        }
         assert!(!m.has_live_turn("s"));
     }
 

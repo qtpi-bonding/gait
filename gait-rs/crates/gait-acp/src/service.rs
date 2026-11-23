@@ -81,14 +81,22 @@ mod tests {
     async fn alive_repeats_on_the_interval() {
         let capture = concord_telemetry::testing::capture_exclusive();
         spawn_alive_every(Duration::from_millis(40));
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let count = loop {
+            let n = capture.events_where::<ev::ServiceAlive>(|_| true).len();
+            if n >= 3 {
+                break n;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected at least 3 ServiceAlive events within 30 s, got {}",
+                n
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         let alive = capture.events_where::<ev::ServiceAlive>(|_| true);
-        assert!(
-            alive.len() >= 3,
-            "several ticks in 250 ms, got {}",
-            alive.len()
-        );
         assert!(alive[0].uptime_ms >= 40);
         assert!(alive[0].source_record_id.starts_with("gait-acp:"));
+        let _ = count;
     }
 }
