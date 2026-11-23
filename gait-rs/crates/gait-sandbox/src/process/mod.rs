@@ -485,11 +485,19 @@ mod linux {
                 // Best-effort cleanup of this turn's cgroup dirs. rmdir fails
                 // harmlessly while processes remain inside; ignore all errors.
                 if let Some(ref dir) = self.cgroup_dir {
-                    let _ = std::fs::remove_dir(dir);
+                    // A non-empty cgroup cannot be removed; leave it, the
+                    // next owner uses a fresh name.
+                    if std::fs::remove_dir(dir).is_err() {
+                        // Best-effort: failure (e.g. EBUSY) is harmless.
+                    }
                 }
                 if let Ok(guard) = self.detached_dir.lock() {
                     if let Some(ref dir) = *guard {
-                        let _ = std::fs::remove_dir(dir);
+                        // A non-empty cgroup cannot be removed; leave it, the
+                        // next owner uses a fresh name.
+                        if std::fs::remove_dir(dir).is_err() {
+                            // Best-effort: failure (e.g. EBUSY) is harmless.
+                        }
                     }
                 }
             }
