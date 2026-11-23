@@ -14,8 +14,8 @@ repository = "https://github.com/qtpi-bonding/gait"
 # lists it.
 [workspace.dependencies]
 coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "de21d22e31baff78eae7d4ca817b87430bff1f81", default-features = false }
-concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "a8caabd151c4e398efdd1a5eb97c9d6545b72c6e" }
-concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telemetry-proto.git", rev = "4892badae333cfa7ebfdb4f17c76d65bb63612e4" }
+concord-telemetry = { git = "https://github.com/qtpi-bonding/concord-telemetry.git", rev = "5fa9743260a1ad007eb5c417c4a24a3f95d5fd1c" }
+concord-telemetry-proto = { git = "https://github.com/qtpi-bonding/concord-telemetry-proto.git", rev = "2c696ccd91396879ca8025ef9e8992126c5cfcee" }
 identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "b4b3da5d857e0311798e843f433d9177ca7f7c7a" }
 identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "b4b3da5d857e0311798e843f433d9177ca7f7c7a" }
 message-attestation = { git = "https://github.com/qtpi-bonding/message-attestation.git", rev = "b2008d828100b81525a0bc4d85a0a2d3c8c8c9d2" }

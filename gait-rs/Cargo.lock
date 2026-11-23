@@ -731,8 +731,8 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "concord-fields"
-version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a8caabd151c4e398efdd1a5eb97c9d6545b72c6e#a8caabd151c4e398efdd1a5eb97c9d6545b72c6e"
+version = "0.3.0"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=5fa9743260a1ad007eb5c417c4a24a3f95d5fd1c#5fa9743260a1ad007eb5c417c4a24a3f95d5fd1c"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -741,8 +741,8 @@ dependencies = [
 
 [[package]]
 name = "concord-telemetry"
-version = "0.6.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a8caabd151c4e398efdd1a5eb97c9d6545b72c6e#a8caabd151c4e398efdd1a5eb97c9d6545b72c6e"
+version = "0.7.0"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=5fa9743260a1ad007eb5c417c4a24a3f95d5fd1c#5fa9743260a1ad007eb5c417c4a24a3f95d5fd1c"
 dependencies = [
  "anyhow",
  "coded-error",
@@ -754,11 +754,13 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "pin-project-lite",
  "prost 0.13.5",
  "prost-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -767,7 +769,7 @@ dependencies = [
 [[package]]
 name = "concord-telemetry-derive"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=a8caabd151c4e398efdd1a5eb97c9d6545b72c6e#a8caabd151c4e398efdd1a5eb97c9d6545b72c6e"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry.git?rev=5fa9743260a1ad007eb5c417c4a24a3f95d5fd1c#5fa9743260a1ad007eb5c417c4a24a3f95d5fd1c"
 dependencies = [
  "concord-fields",
  "proc-macro2",
@@ -777,8 +779,8 @@ dependencies = [
 
 [[package]]
 name = "concord-telemetry-proto"
-version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/concord-telemetry-proto.git?rev=4892badae333cfa7ebfdb4f17c76d65bb63612e4#4892badae333cfa7ebfdb4f17c76d65bb63612e4"
+version = "0.3.0"
+source = "git+https://github.com/qtpi-bonding/concord-telemetry-proto.git?rev=2c696ccd91396879ca8025ef9e8992126c5cfcee#2c696ccd91396879ca8025ef9e8992126c5cfcee"
 dependencies = [
  "prost 0.13.5",
  "serde",
