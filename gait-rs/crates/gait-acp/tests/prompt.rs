@@ -473,9 +473,15 @@ async fn drain_reaps_in_flight_turn_on_teardown() {
 /// `cascade` was already taken/overwritten by the rejected second request,
 /// `kill()` is a no-op and the response only arrives once `HANG_MS` elapses
 /// on its own — which is exactly the "no-op cancel" bug this test catches.
+///
+/// The hang is deliberately long (`120 s`): long enough that a response can
+/// only come from a real kill of the brain process, and the timing bound
+/// (`HANG_MS / 2 = 60 s`) is deliberately far above any load-induced teardown
+/// time (git checkpoint/commit, sink result, ACP response) so the assertion
+/// stays robust under heavy host load.
 #[tokio::test]
 async fn cancel_after_rejected_concurrent_prompt_reaches_the_first_turns_real_state() {
-    const HANG_MS: u64 = 5_000;
+    const HANG_MS: u64 = 120_000;
     set_brain_exe();
     let t = tempfile::TempDir::new().unwrap();
     let (gait_dir, repo) = make_workspace(t.path(), "clobber");
@@ -534,16 +540,18 @@ async fn cancel_after_rejected_concurrent_prompt_reaches_the_first_turns_real_st
             // Real happened-before: the update only arrives once the brain
             // has actually spawned, run, and streamed the event -- i.e. it is
             // genuinely registered in the cascade group by now.
-            for _ in 0..500 {
-                if !updates.lock().unwrap().is_empty() {
-                    break;
-                }
+            // Wait for the real event (the first streamed update) with a
+            // generous deadline that only matters on failure: under heavy host
+            // load the brain spawn can be slow, so poll every 10 ms until the
+            // deadline and break as soon as the update arrives.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+            while updates.lock().unwrap().is_empty() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for the first turn's streamed update"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            assert!(
-                !updates.lock().unwrap().is_empty(),
-                "timed out waiting for the first turn's streamed update"
-            );
             let second = cx
                 .send_request(PromptRequest::new(
                     sid.clone(),
