@@ -101,7 +101,8 @@ fn bake_hanging(gait_dir: &Path, delay_ms: u64) {
 /// name.
 async fn wait_until_locked(gait_dir: &Path, session_id: &str) {
     let lock = gait_dir.join(".active").join(session_id).join("lock");
-    for _ in 0..500 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    while tokio::time::Instant::now() < deadline {
         if lock.exists() {
             return;
         }
