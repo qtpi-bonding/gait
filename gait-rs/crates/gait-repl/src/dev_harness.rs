@@ -84,6 +84,7 @@ pub async fn run_script(
             profile: None,
             fs_delegate: None,
             allow_intree: false,
+            workflow_requests: None,
         },
         Box::new(source),
         &mut sink,

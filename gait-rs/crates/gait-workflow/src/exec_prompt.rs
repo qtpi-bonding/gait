@@ -216,6 +216,7 @@ pub async fn exec_prompt_node(
         profile: Some(turn_profile),
         fs_delegate: ctx.fs_delegate.clone(),
         allow_intree: ctx.allow_intree,
+        workflow_requests: None,
     };
 
     if !p.prompt.is_empty() || input.is_some() {

@@ -105,6 +105,29 @@ impl ResolvedProfile {
             self.permissioned.allow.push(name);
         }
     }
+
+    /// Register a tool without touching the allow list: it is available to
+    /// the registry but never pre-allowed, so the normal permission gate
+    /// (allow/deny check) still decides whether each call is permitted.
+    pub fn add_gated_tool(&mut self, tool: Arc<dyn crate::types::Tool>) {
+        self.permissioned.push_tool(tool);
+    }
+
+    /// The full set of registered tools (allowed, denied, and gated alike),
+    /// in registration order.
+    pub fn registered_tools(&self) -> &[Arc<dyn crate::types::Tool>] {
+        self.permissioned.tools()
+    }
+
+    /// The current allow list of the permission gate.
+    pub fn allow_list(&self) -> &[String] {
+        &self.permissioned.allow
+    }
+
+    /// The current deny list of the permission gate.
+    pub fn deny_list(&self) -> &[String] {
+        &self.permissioned.deny
+    }
 }
 
 /// Resolve the config/agent named inference reference into a checked snapshot.
