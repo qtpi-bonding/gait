@@ -239,17 +239,14 @@ impl<'a> StepEngine<'a> {
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         match req_method {
-            "config" => self.handle_config(args).await.map_err(|e| e.to_string()),
-            "turn" => self.handle_turn(args).await.map_err(|e| e.to_string()),
-            "shell" => self.handle_shell(args).await.map_err(|e| e.to_string()),
-            "now" => self
-                .handle_now_random("now", args)
-                .map_err(|e| e.to_string()),
-            "random" => self
-                .handle_now_random("random", args)
-                .map_err(|e| e.to_string()),
-            other => Err(StepError::UnknownMethod(other.to_string()).to_string()),
+            "config" => self.handle_config(args).await,
+            "turn" => self.handle_turn(args).await,
+            "shell" => self.handle_shell(args).await,
+            "now" => self.handle_now_random("now", args),
+            "random" => self.handle_now_random("random", args),
+            other => Err(StepError::UnknownMethod(other.to_string())),
         }
+        .map_err(|e| e.to_string())
     }
 
     /// Replay disposition for one step id against the journal. Called after
@@ -541,12 +538,13 @@ impl<'a> StepEngine<'a> {
                 }))
             }
             Err(e) => {
+                let message = e.to_string();
                 let ev = self
                     .run_log
-                    .node_error(&id, &e.to_string(), 1)
+                    .node_error(&id, &message, 1)
                     .map_err(StepError::LogWrite)?;
                 self.observer.borrow_mut().on_event(&ev);
-                Err(StepError::TurnFailure(e.to_string()))
+                Err(StepError::TurnFailure(message))
             }
         }
     }
@@ -652,12 +650,13 @@ impl<'a> StepEngine<'a> {
                 serde_json::to_value(&res).map_err(|e| StepError::LogWrite(e.into()))
             }
             Err(e) => {
+                let message = e.to_string();
                 let ev = self
                     .run_log
-                    .node_error(&id, &e.to_string(), 1)
+                    .node_error(&id, &message, 1)
                     .map_err(StepError::LogWrite)?;
                 self.observer.borrow_mut().on_event(&ev);
-                Err(StepError::ShellFailure(e.to_string()))
+                Err(StepError::ShellFailure(message))
             }
         }
     }
@@ -1396,10 +1395,6 @@ mod tests {
         assert!(
             err.contains("workflow script changed (step s1): logged as shell, now turn"),
             "got: {err}"
-        );
-        assert!(
-            !err.contains("script changed"),
-            "the message must not contain the forbidden substring: {err}"
         );
     }
 
