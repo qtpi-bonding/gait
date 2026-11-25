@@ -298,3 +298,69 @@ async fn session_delete_emits_session_disposed() {
     );
     assert_eq!(event.source_record_id, before);
 }
+
+/// A delete on a *running* session must be refused: the session holds a live
+/// SessionLock, so `classify_bulk(.., Discard)` lists it under `skipped` with
+/// reason "running", and delete must not discard the worktree. Guards delete
+/// going through classify_bulk like close.
+#[tokio::test]
+async fn session_delete_refuses_a_running_session_as_classify_bulk_says() {
+    let (_t, gait_dir, codebase) = workspace();
+
+    let mint_map = SessionMap::new();
+    let session_id = drive(mint_map, async |cx| {
+        Ok(cx
+            .send_request(NewSessionRequest::new(codebase.clone()))
+            .block_task()
+            .await?
+            .session_id
+            .to_string())
+    })
+    .await
+    .expect("session/new should succeed");
+
+    persist_session_fixture(&gait_dir, &session_id, &codebase);
+
+    // Hold the session lock from this process: classify_bulk must now
+    // classify the session as running and skip it.
+    let _lock = gait_state::session::SessionLock::acquire(
+        &gait_state::session::live::worktree_dir(&gait_dir, &session_id),
+    )
+    .unwrap();
+
+    let plan =
+        gait_ops::session::classify_bulk(&gait_dir, gait_ops::session::BulkVerb::Discard).unwrap();
+    assert!(
+        plan.skipped
+            .iter()
+            .any(|(id, reason)| id == &session_id && reason == "running"),
+        "classify_bulk(Discard) must list the session as skipped/running; got {:?}",
+        plan
+    );
+
+    let map = SessionMap::new();
+    map.insert(gait_dir.clone(), session_id.clone(), codebase.clone());
+
+    let delete_err = drive(map, async |cx| {
+        match cx
+            .send_request(DeleteSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+        {
+            Ok(_) => Ok(None),
+            Err(e) => Ok(Some(e.to_string())),
+        }
+    })
+    .await
+    .expect("connection stays alive");
+
+    let msg = delete_err.expect("delete on a running session must be refused");
+    assert!(
+        msg.contains("running"),
+        "delete error must mention \"running\"; got: {msg}"
+    );
+    assert!(
+        gait_state::session::live::worktree_dir(&gait_dir, &session_id).exists(),
+        "worktree must survive a refused delete"
+    );
+}
