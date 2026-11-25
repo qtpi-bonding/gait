@@ -11,8 +11,7 @@
 //!    Some(_)` stamped on the replacement — proving the enrichment re-derives
 //!    the SHA independently of whatever the brain-side rewrite already set.
 
-mod common;
-use common::*;
+use crate::common::*;
 
 use gait_core::proto::events;
 use gait_proto::envelope;

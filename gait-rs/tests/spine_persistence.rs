@@ -12,8 +12,7 @@
 //! These assertions ride on Task 2's harness (no real git), so they're
 //! deterministic and fast.
 
-mod common;
-use common::*;
+use crate::common::*;
 
 use gait_proto::envelope;
 use gait_proto::gait::sandbox::v1::{signal, Append, Signal};

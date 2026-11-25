@@ -37,6 +37,7 @@ debug = 0
 [package]
 name = "gait-core"
 description = "Core turn engine, tools, and providers for gait — a turn-based, git-native AI coding agent."
+autotests = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -129,3 +130,49 @@ concord-telemetry = { workspace = true, features = ["testing"] }
 [[bin]]
 name = "mock_brain"
 path = "src/bin/mock_brain.rs"
+
+# All integration tests that share no process-global state are modules of this
+# one program (tests/main.rs).
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+# Separate: sets the process-global env GAIT_BRAIN_EXE (set_var).
+[[test]]
+name = "repl_live_render"
+path = "tests/repl_live_render.rs"
+
+# Separate: sets the process-global env MINIMAX_API_KEY (set_var).
+[[test]]
+name = "integration_workflow"
+path = "tests/integration_workflow.rs"
+
+# Separate: sets the process-global env GAIT_TEST_WATCHDOG_MS (set_var).
+[[test]]
+name = "spine_watchdog"
+path = "tests/spine_watchdog.rs"
+
+# Separate: installs the process-global telemetry subscriber (one init per process).
+[[test]]
+name = "telemetry_flush"
+path = "tests/telemetry_flush.rs"
+
+# Separate: installs the process-global telemetry subscriber (one init per process).
+[[test]]
+name = "telemetry_flush_down"
+path = "tests/telemetry_flush_down.rs"
+
+# Separate: the global telemetry subscriber; its init-failure case needs a fresh process.
+[[test]]
+name = "telemetry_init_failed"
+path = "tests/telemetry_init_failed.rs"
+
+# Separate: seals the whole process (ignored tests, run alone with --test-threads=1).
+[[test]]
+name = "landlock_seal"
+path = "tests/landlock_seal.rs"
+
+# Separate: seals the whole process (ignored tests, run alone with --test-threads=1).
+[[test]]
+name = "seatbelt_seal"
+path = "tests/seatbelt_seal.rs"

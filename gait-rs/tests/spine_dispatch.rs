@@ -7,8 +7,7 @@
 //! `SpyDriver` wraps `MockDriver` and records which hook fired. Hooks share
 //! `Rc<RefCell<bool>>` flags; the driver itself does not need `Sync`.
 
-mod common;
-use common::*;
+use crate::common::*;
 
 use gait_core::embed::{
     BrainLaunch, CascadeKillHandle, LoopConfig, RecordingSink, TurnDriver, TurnSink,

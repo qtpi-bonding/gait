@@ -10,8 +10,7 @@
 //! - `concurrent_turn_blocked_while_held` — `#[ignore]`d TOCTOU-sensitive
 //!   variant; see comment inside.
 
-mod common;
-use common::*;
+use crate::common::*;
 
 #[tokio::test]
 async fn lock_released_after_turn() {

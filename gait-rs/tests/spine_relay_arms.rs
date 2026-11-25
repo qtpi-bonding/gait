@@ -30,8 +30,7 @@
 //!   architecture review — today, a missing parent silently no-ops. Pin it
 //!   deliberately so a future refactor that promotes it to a hard error
 //!   updates this test on purpose.
-mod common;
-use common::*;
+use crate::common::*;
 
 use gait_proto::gait::log::v1::{stream_item, StreamItem, TextDelta};
 use gait_proto::gait::sandbox::v1::{signal, Diagnostic, Notify, Signal, StreamForward};
@@ -126,7 +125,7 @@ async fn notify_writes_agent_update_to_parent_session() {
     // That gives us a real session dir + log.jsonl (sole writer = spine) for
     // the Notify target to append into.
     let tmp = tempfile::tempdir().unwrap();
-    common::publish_agent_identity();
+    crate::common::publish_agent_identity();
     let _ = run_one(
         tmp.path(),
         "parent",
@@ -180,7 +179,7 @@ async fn notify_commits_target_session_through_injected_repos() {
     // show only the child's own `commit_session:child:...`. After it, the same
     // mock observes a SECOND commit, this time against the *parent* target.
     let tmp = tempfile::tempdir().unwrap();
-    common::publish_agent_identity();
+    crate::common::publish_agent_identity();
     let _ = run_one(
         tmp.path(),
         "parent3",

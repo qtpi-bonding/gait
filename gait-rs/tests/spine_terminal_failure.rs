@@ -1,5 +1,4 @@
-mod common;
-use common::*;
+use crate::common::*;
 
 /// Pins the 6899efd terminal-failure behavior:
 ///

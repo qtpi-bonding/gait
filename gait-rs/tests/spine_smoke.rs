@@ -1,5 +1,4 @@
-mod common;
-use common::*;
+use crate::common::*;
 use gait_proto::gait::sandbox::v1::{signal, Diagnostic, Signal};
 
 struct UpdateOnlySource {
