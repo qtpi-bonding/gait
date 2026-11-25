@@ -40,11 +40,21 @@ pub(crate) fn with_trace_env_from(
     traceparent: Option<String>,
     baggage: Option<String>,
 ) {
+    // TRACEPARENT is only forwarded when present. BAGGAGE is forwarded when
+    // present *and removed* when absent: a child inherits this process's
+    // environment, so without the removal a child started while the carrier
+    // carries no baggage would keep whatever stale BAGGAGE the gait process
+    // itself was started with.
     if let Some(tp) = traceparent {
         cmd.env(TRACEPARENT_ENV, tp);
     }
-    if let Some(bag) = baggage {
-        cmd.env(BAGGAGE_ENV, bag);
+    match baggage {
+        Some(bag) => {
+            cmd.env(BAGGAGE_ENV, bag);
+        }
+        None => {
+            cmd.env_remove(BAGGAGE_ENV);
+        }
     }
 }
 
@@ -425,9 +435,41 @@ mod tests {
     fn with_trace_env_adds_nothing_without_a_trace() {
         let mut cmd = std::process::Command::new("gait");
         with_trace_env_from(&mut cmd, None, None);
-        assert!(cmd
+        assert!(cmd.get_envs().all(|(key, _)| key != "TRACEPARENT"));
+        let baggage = cmd
             .get_envs()
-            .all(|(key, _)| key != "TRACEPARENT" && key != "BAGGAGE"));
+            .find(|(key, _)| *key == "BAGGAGE")
+            .and_then(|(_, value)| value);
+        assert_eq!(
+            baggage, None,
+            "an inherited BAGGAGE must be removed when the carrier has none"
+        );
+    }
+
+    #[test]
+    fn with_trace_env_removes_inherited_baggage_when_the_carrier_has_none() {
+        let mut cmd = std::process::Command::new("gait");
+        cmd.env("BAGGAGE", "action_id=OLD");
+        with_trace_env_from(&mut cmd, None, None);
+        let baggage = cmd
+            .get_envs()
+            .find(|(key, _)| *key == "BAGGAGE")
+            .and_then(|(_, value)| value);
+        assert_eq!(baggage, None, "stale inherited BAGGAGE must be removed");
+
+        let mut cmd = std::process::Command::new("gait");
+        cmd.env("BAGGAGE", "action_id=OLD");
+        with_trace_env_from(&mut cmd, None, Some("action_id=NEW".to_string()));
+        let baggage = cmd
+            .get_envs()
+            .find(|(key, _)| *key == "BAGGAGE")
+            .and_then(|(_, value)| value)
+            .and_then(|value| value.to_str());
+        assert_eq!(
+            baggage,
+            Some("action_id=NEW"),
+            "a carrier baggage must replace the inherited one"
+        );
     }
 
     #[test]

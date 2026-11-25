@@ -534,3 +534,62 @@ async fn per_turn_causes_reach_each_turns_brain_env_and_never_go_stale() {
         "prompt 1's labels went stale into turn 2's brain env: {baggage2}"
     );
 }
+
+/// A prompt whose carrier carries no baggage must not let the gait process's
+/// own inherited BAGGAGE leak into the brain's environment as a stale cause
+/// list: the brain env must hold an emptied BAGGAGE line instead.
+#[tokio::test]
+async fn a_prompt_without_causes_leaves_no_inherited_baggage_in_the_brain_env() {
+    let _captured = testing::capture_exclusive();
+    let origin = tracing::info_span!("test-env-origin-empty");
+    let _carrier = origin.in_scope(carrier::capture);
+    let (_t, gait_dir, repo) = workspace();
+    write_frames(
+        &gait_dir,
+        0,
+        &[
+            append_event(gait_core::proto::events::assistant_text(
+                "working".into(),
+            )),
+            forward_event(gait_core::proto::events::assistant_text(
+                "working".into(),
+            )),
+            terminated(r#"{"text":"ok"}"#),
+        ],
+    );
+    let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
+    tokio::spawn(server);
+    unsafe {
+        std::env::set_var("BAGGAGE", "action_id=STALE");
+    }
+    Client
+        .builder()
+        .connect_with(channel, async |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            let req = PromptRequest::new(sid, vec!["go".to_string().into()]);
+            let resp = cx.send_request(req).block_task().await?;
+            assert_eq!(resp.stop_reason, StopReason::EndTurn);
+            Ok(())
+        })
+        .await
+        .expect("connection stays alive");
+    drop(origin);
+    unsafe {
+        std::env::remove_var("BAGGAGE");
+    }
+
+    let env = std::fs::read_to_string(gait_dir.join("mock_env.0.txt"))
+        .expect("turn 1 brain env file");
+    let baggage = env
+        .lines()
+        .find(|l| l.starts_with("BAGGAGE="))
+        .expect("turn 1 baggage line");
+    assert_eq!(
+        baggage, "BAGGAGE=",
+        "the stale inherited BAGGAGE must not reach the brain env"
+    );
+}
