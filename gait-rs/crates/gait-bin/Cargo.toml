@@ -1,6 +1,8 @@
 [package]
 name = "gait-bin"
 description = "The gait command-line binary — a turn-based, git-native AI coding agent."
+# Only the tests listed in the [[test]] targets below are built.
+autotests = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -102,3 +104,33 @@ zeroize = "1"
 prost        = "0.13"
 pbjson-types = "0.7"
 concord-telemetry = { workspace = true, features = ["testing"] }
+
+# All gait-bin integration tests that share no process-global state are
+# modules of this one program (tests/main.rs): one binary instead of many
+# means one dependency compile and one link.
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+# Separate: sets process-global env (GAIT_BRAIN_EXE, GAIT_HOME,
+# LMSTUDIO_BASE_URL) via set_var, and is `#![cfg(feature = "telemetry")]`.
+[[test]]
+name = "error_record"
+path = "tests/error_record.rs"
+
+# Separate: sets the process-global env GAIT_PROCESS_EXE via set_var.
+[[test]]
+name = "process_exit_wake"
+path = "tests/process_exit_wake.rs"
+
+# Separate: sets process-global env (GAIT_HOME, GAIT_DIR) and changes the
+# process cwd.
+[[test]]
+name = "ops_registry"
+path = "tests/ops_registry.rs"
+
+# Separate: installs the process-global telemetry capture, and is
+# `#![cfg(feature = "telemetry")]`.
+[[test]]
+name = "trace_join"
+path = "tests/trace_join.rs"

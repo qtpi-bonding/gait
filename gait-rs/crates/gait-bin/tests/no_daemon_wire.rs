@@ -28,6 +28,9 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             if !SKIP_DIRS.contains(&name.as_str()) {
                 collect(&path, out);
             }
+        } else if path.ends_with("gait-bin/tests/main.rs") {
+            // Skip tests/main.rs: it only declares this test crate's modules,
+            // so it merely names the module `no_daemon_wire`.
         } else if !SKIP_FILES.contains(&name.as_str()) {
             out.push(path);
         }
