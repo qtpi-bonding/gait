@@ -148,14 +148,14 @@ async fn completed_step_replays_without_running() {
     let source = marker_script(&marker, "s1");
     let run_id = "replay-once-001";
 
-    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(
         matches!(first, Ok(WorkflowOutcome::Completed)),
         "first run must complete"
     );
     assert_eq!(marker_lines(&marker), 1, "first run writes once");
 
-    let second = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(
         matches!(second, Ok(WorkflowOutcome::Completed)),
         "second run must complete, not error with 'resuming script runs is not implemented yet'"
@@ -299,7 +299,7 @@ async fn crashed_step_trips_guard_and_force_rerun_clears_it() {
     );
     let run_id = "replay-crash-001";
 
-    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(matches!(first, Ok(WorkflowOutcome::Completed)));
 
     // Truncate the log right after NodeStart(crashed): drop its
@@ -317,7 +317,7 @@ async fn crashed_step_trips_guard_and_force_rerun_clears_it() {
     );
 
     // Plain continue refuses: the open node has no terminal event.
-    let guarded = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let guarded = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
     let text = err_text(guarded);
     assert!(
         text.contains("crashed"),
