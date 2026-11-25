@@ -22,6 +22,7 @@ mod resume_exit;
 mod resume_guard;
 mod run_lock;
 mod script_basic;
+mod script_gate;
 mod script_replay;
 mod session_log_purity;
 mod shell_env;
