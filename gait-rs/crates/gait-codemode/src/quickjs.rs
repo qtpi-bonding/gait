@@ -23,7 +23,10 @@
 //! `Promise.all([...])` performs real concurrent host work) and settles each
 //! promise by calling its resolve/reject function once its future completes.
 
-use crate::{ApiSurface, CapabilityHost, CodeModeError, HostError, Limits};
+use crate::{
+    ApiSurface, CapabilityHost, CodeModeError, HostError, Limits, LimitsMode, RunOptions,
+    RunReport, WorkflowLimits,
+};
 use futures::future::{BoxFuture, FutureExt};
 use serde_json::Value;
 use std::sync::OnceLock;
@@ -89,17 +92,41 @@ struct QjsExports {
     qjs_new_error: TypedFunc<(), i32>,
     qjs_get_undefined: TypedFunc<(), i32>,
     qjs_set_interrupt_handler: TypedFunc<i32, ()>,
+    qjs_set_promise_rejection_handler: TypedFunc<i32, ()>,
 }
 
 struct HostState<'a> {
     host: &'a dyn CapabilityHost,
-    limits: Limits,
-    deadline: Instant,
+    /// Wall-clock deadline (Code Mode only); `None` in Workflow mode.
+    deadline: Option<Instant>,
+    /// Host-call cap (Code Mode only); `None` in Workflow mode.
+    max_host_calls: Option<u32>,
+    /// Guest-CPU budget (Workflow mode only); `None` in Code Mode.
+    cpu_budget: Option<Duration>,
+    /// Accumulated guest CPU time across all executed segments.
+    cpu_spent: Duration,
+    /// Start of the currently-executing guest segment, if inside one.
+    segment_start: Option<Instant>,
     host_call_count: u32,
     pending: Vec<Pending<'a>>,
+    /// Promise rejections seen unhandled so far: the promise's identity key
+    /// (the object pointer carried inside the boxed JSValue), the retained
+    /// promise JSValue, the retained reason JSValue (kept alive so its heap
+    /// address cannot be reused by a later rejection while the entry is
+    /// stored), and the reason's description captured at notification time.
+    unhandled: Vec<(i32, i32, i32, String)>,
+    /// First unrecoverable guest trap observed (e.g. a failed JSValue
+    /// free), if any; surfaced as an error at the end of the run.
+    first_trap: Option<String>,
     memory: Option<Memory>,
     exports: Option<QjsExports>,
     limiter: StoreLimits,
+}
+
+/// Which limit regime a single `run_inner` invocation enforces.
+enum Mode {
+    Code { limits: Limits, deadline: Instant },
+    Workflow { limits: WorkflowLimits },
 }
 
 impl wasmtime::ResourceLimiter for HostState<'_> {
@@ -125,6 +152,11 @@ fn rt(msg: impl Into<String>) -> CodeModeError {
     CodeModeError::Runtime(msg.into())
 }
 
+/// Convert a wasmtime trap/error into a runtime `CodeModeError`.
+fn wasm_err(e: wasmtime::Error) -> CodeModeError {
+    rt(e.to_string())
+}
+
 impl<'a> HostState<'a> {
     fn clone_handles(&self) -> (QjsExports, Memory) {
         (
@@ -133,6 +165,52 @@ impl<'a> HostState<'a> {
                 .expect("exports initialized before use"),
             self.memory.expect("memory initialized before use"),
         )
+    }
+}
+
+impl HostState<'_> {
+    /// Is this run enforcing the Workflow limit regime (as opposed to the
+    /// wall-clock-deadline Code Mode regime)?
+    fn is_workflow(&self) -> bool {
+        self.deadline.is_none()
+    }
+
+    /// Record the first unrecoverable guest trap seen during the run (later
+    /// ones are ignored); the end of the run turns it into an error.
+    fn record_trap(&mut self, message: String) {
+        if self.first_trap.is_none() {
+            self.first_trap = Some(message);
+        }
+    }
+
+    /// Mark the start of a guest-CPU accounting segment.
+    fn cpu_begin(&mut self) {
+        self.segment_start = Some(Instant::now());
+    }
+
+    /// Close the current guest-CPU accounting segment, adding its elapsed
+    /// time to the accumulated total (also on error paths, by callers).
+    fn cpu_end(&mut self) {
+        if let Some(start) = self.segment_start.take() {
+            self.cpu_spent += start.elapsed();
+        }
+    }
+
+    /// Should the guest be interrupted right now? Code Mode uses the
+    /// wall-clock deadline; Workflow mode uses the guest-CPU budget,
+    /// which includes the currently-running segment.
+    fn should_interrupt(&self) -> bool {
+        match self.deadline {
+            Some(deadline) => Instant::now() >= deadline,
+            None => {
+                let budget = self.cpu_budget.expect("workflow mode has a cpu budget");
+                let running = self
+                    .segment_start
+                    .map(|start| start.elapsed())
+                    .unwrap_or(Duration::ZERO);
+                self.cpu_spent + running >= budget
+            }
+        }
     }
 }
 
@@ -449,7 +527,7 @@ fn make_linker<'a>(engine: &Engine) -> Result<Linker<HostState<'a>>, CodeModeErr
             "env",
             "host_interrupt",
             |caller: Caller<'_, HostState<'_>>| -> i32 {
-                if Instant::now() >= caller.data().deadline {
+                if caller.data().should_interrupt() {
                     1
                 } else {
                     0
@@ -464,11 +542,8 @@ fn make_linker<'a>(engine: &Engine) -> Result<Linker<HostState<'a>>, CodeModeErr
             |mut caller: Caller<'_, HostState<'_>>,
              promise_ptr: i32,
              reason_ptr: i32,
-             _is_handled: i32| {
-                let (exports, _memory) = caller.data().clone_handles();
-                let exports = &exports;
-                let _ = exports.qjs_free_value.call(&mut caller, promise_ptr);
-                let _ = exports.qjs_free_value.call(&mut caller, reason_ptr);
+             is_handled: i32| {
+                host_promise_rejection(&mut caller, promise_ptr, reason_ptr, is_handled);
             },
         )
         .map_err(|e| rt(e.to_string()))?;
@@ -609,6 +684,96 @@ fn host_call_trampoline(
     }
 }
 
+/// Handle a QuickJS promise-rejection notification. When `is_handled == 0`
+/// the rejection is (so far) unhandled: keep the promise and reason values
+/// on `HostState` so they can be reported at the end of the run. When
+/// `is_handled != 0` for a promise we are still tracking, the rejection was
+/// handled after the fact: free both the stored values and the incoming
+/// values. Every path frees each owned JSValue exactly once.
+///
+/// All of this only applies in Workflow mode; in Code Mode the old
+/// behaviour is kept exactly: free both incoming values immediately, with
+/// no description capture and no tracking.
+fn host_promise_rejection(
+    caller: &mut Caller<'_, HostState<'_>>,
+    promise_ptr: i32,
+    reason_ptr: i32,
+    is_handled: i32,
+) {
+    let (exports, memory) = caller.data().clone_handles();
+    let exports = &exports;
+    if !caller.data().is_workflow() {
+        free_js_value(caller, exports, promise_ptr);
+        free_js_value(caller, exports, reason_ptr);
+        return;
+    }
+    // `promise_ptr` points to a boxed JSValue in guest memory, so its
+    // address is not a stable identity for the promise itself (two events
+    // for the same promise can arrive through different boxes). Read the
+    // object pointer carried inside the boxed JSValue and use that as the
+    // identity key instead. A failed read is treated as a trap: without a
+    // reliable identity we cannot deduplicate or match handled events, so
+    // guessing (e.g. falling back to the box pointer) could free a value
+    // twice later on.
+    let promise_key = match read_i32(caller, memory, promise_ptr) {
+        Ok(key) => key,
+        Err(e) => {
+            caller.data_mut().record_trap(e.to_string());
+            free_js_value(caller, exports, promise_ptr);
+            free_js_value(caller, exports, reason_ptr);
+            return;
+        }
+    };
+    if is_handled == 0 {
+        let already_stored = caller
+            .data()
+            .unhandled
+            .iter()
+            .any(|(key, _, _, _)| *key == promise_key);
+        if already_stored {
+            // Do not store a duplicate entry for the same promise: free the
+            // incoming pair instead (the first entry keeps its own retained
+            // values alive for reporting).
+            free_js_value(caller, exports, promise_ptr);
+            free_js_value(caller, exports, reason_ptr);
+            return;
+        }
+        let message = describe_exception(caller, exports, memory, reason_ptr)
+            .unwrap_or_else(|_| "<unrepresentable rejection>".to_string());
+        caller
+            .data_mut()
+            .unhandled
+            .push((promise_key, promise_ptr, reason_ptr, message));
+        return;
+    }
+    let stored = caller
+        .data_mut()
+        .unhandled
+        .iter()
+        .position(|(key, _, _, _)| *key == promise_key);
+    if let Some(index) = stored {
+        let (_, stored_promise, stored_reason, _) = caller.data_mut().unhandled.remove(index);
+        free_js_value(caller, exports, stored_promise);
+        free_js_value(caller, exports, stored_reason);
+        free_js_value(caller, exports, promise_ptr);
+        free_js_value(caller, exports, reason_ptr);
+    } else {
+        free_js_value(caller, exports, promise_ptr);
+        free_js_value(caller, exports, reason_ptr);
+    }
+}
+
+/// Free a guest JSValue. In Workflow mode a failed free is an unrecoverable
+/// trap recorded on `HostState` and surfaced at the end of the run; in Code
+/// Mode it is ignored, exactly as before.
+fn free_js_value(caller: &mut Caller<'_, HostState<'_>>, exports: &QjsExports, value_ptr: i32) {
+    if let Err(e) = exports.qjs_free_value.call(&mut *caller, value_ptr) {
+        if caller.data().is_workflow() {
+            caller.data_mut().record_trap(e.to_string());
+        }
+    }
+}
+
 fn host_call_impl(
     caller: &mut Caller<'_, HostState<'_>>,
     argc: i32,
@@ -630,10 +795,12 @@ fn host_call_impl(
     let args_json = read_js_string(caller, exports, memory, arg_ptrs[2])?;
     let args: Value = serde_json::from_str(&args_json).unwrap_or(Value::Null);
 
-    if caller.data().host_call_count >= caller.data().limits.max_host_calls {
-        return Err(CodeModeError::HostCallLimit);
+    if let Some(max_host_calls) = caller.data().max_host_calls {
+        if caller.data().host_call_count >= max_host_calls {
+            return Err(CodeModeError::HostCallLimit);
+        }
+        caller.data_mut().host_call_count += 1;
     }
-    caller.data_mut().host_call_count += 1;
 
     let resolve_out = exports
         .wasm_malloc
@@ -677,43 +844,73 @@ fn host_call_impl(
 
 /// Evaluate `source` inside the vendored QuickJS-WASI guest, bridging
 /// `gait.<namespace>.<method>(args)` calls to `host` and enforcing `limits`.
-pub async fn eval(
+pub async fn eval_with(
     source: &str,
     api: ApiSurface,
     host: &dyn CapabilityHost,
-    limits: Limits,
+    opts: RunOptions,
     artifact: &[u8],
-) -> Result<Value, CodeModeError> {
-    let deadline = Instant::now() + Duration::from_millis(limits.timeout_ms);
-    let remaining = || deadline.saturating_duration_since(Instant::now());
-
-    tokio::time::timeout(remaining(), async move {
-        run_inner(source, api, host, limits, artifact, deadline).await
-    })
-    .await
-    .unwrap_or(Err(CodeModeError::Timeout))
+) -> Result<RunReport, CodeModeError> {
+    match opts.limits {
+        LimitsMode::CodeMode(limits) => {
+            let deadline = Instant::now() + Duration::from_millis(limits.timeout_ms);
+            let remaining = || deadline.saturating_duration_since(Instant::now());
+            let mode = Mode::Code { limits, deadline };
+            let fut = run_inner(source, api, host, mode, opts.prelude, artifact);
+            tokio::time::timeout(remaining(), fut)
+                .await
+                .unwrap_or(Err(CodeModeError::Timeout))
+        }
+        LimitsMode::Workflow(limits) => {
+            // No outer wall-clock timeout: only the guest-CPU budget
+            // interrupts the guest.
+            let mode = Mode::Workflow { limits };
+            run_inner(source, api, host, mode, opts.prelude, artifact).await
+        }
+    }
 }
 
 async fn run_inner<'a>(
     source: &str,
     api: ApiSurface,
     host: &'a dyn CapabilityHost,
-    limits: Limits,
+    mode: Mode,
+    prelude: Option<String>,
     artifact: &[u8],
-    deadline: Instant,
-) -> Result<Value, CodeModeError> {
+) -> Result<RunReport, CodeModeError> {
+    let (max_memory_bytes, max_output_bytes, deadline, max_host_calls, cpu_budget) = match mode {
+        Mode::Code { limits, deadline } => (
+            limits.max_memory_bytes,
+            limits.max_output_bytes,
+            Some(deadline),
+            Some(limits.max_host_calls),
+            None,
+        ),
+        Mode::Workflow { limits } => (
+            limits.max_memory_bytes,
+            limits.max_output_bytes,
+            None,
+            None,
+            Some(Duration::from_millis(limits.cpu_budget_ms)),
+        ),
+    };
     let (engine, module) = compiled_guest(artifact)?;
     let linker: Linker<HostState<'a>> = make_linker(engine)?;
 
     let limiter = StoreLimitsBuilder::new()
-        .memory_size(limits.max_memory_bytes)
+        .memory_size(max_memory_bytes)
         .build();
     let state = HostState {
         host,
-        limits,
         deadline,
+        max_host_calls,
+        cpu_budget,
+        cpu_spent: Duration::ZERO,
+        segment_start: None,
         host_call_count: 0,
         pending: Vec::new(),
+        unhandled: Vec::new(),
+        first_trap: None,
         memory: None,
         exports: None,
         limiter,
@@ -732,6 +929,46 @@ async fn run_inner<'a>(
     store.data_mut().memory = Some(memory);
     let exports = &exports;
 
+    // Workflow mode: the guest-CPU clock runs for the whole remainder of the
+    // run and is paused only while the host awaits capability futures inside
+    // `drive()` -- every guest entry (eval, job queue, promise settlement,
+    // stringify, exception description) is therefore covered by the budget.
+    if cpu_budget.is_some() {
+        store.data_mut().cpu_begin();
+    }
+
+    let result = run_body(
+        &mut store,
+        exports,
+        memory,
+        source,
+        api,
+        prelude,
+        deadline,
+        max_output_bytes,
+    )
+    .await;
+    if cpu_budget.is_some() {
+        store.data_mut().cpu_end();
+    }
+    result
+}
+
+/// Everything a run does after the guest instance and its captured globals
+/// are set up: initialization, bootstrap, prelude, user script, driving the
+/// result promise, and encoding the final value. Kept separate so `run_inner`
+/// can stop the guest-CPU clock on every exit path (success and error).
+#[allow(clippy::too_many_arguments)]
+async fn run_body<'a>(
+    mut store: &mut Store<HostState<'a>>,
+    exports: &QjsExports,
+    memory: Memory,
+    source: &str,
+    api: ApiSurface,
+    prelude: Option<String>,
+    deadline: Option<Instant>,
+    max_output_bytes: usize,
+) -> Result<RunReport, CodeModeError> {
     exports
         .initialize
         .call(&mut store, ())
@@ -749,6 +986,10 @@ async fn run_inner<'a>(
     // since every Code Mode run has a deadline).
     exports
         .qjs_set_interrupt_handler
+        .call(&mut store, 1)
+        .map_err(|e| rt(e.to_string()))?;
+    exports
+        .qjs_set_promise_rejection_handler
         .call(&mut store, 1)
         .map_err(|e| rt(e.to_string()))?;
 
@@ -808,12 +1049,18 @@ async fn run_inner<'a>(
             }
         });
     "#;
-    eval_js(&mut store, exports, memory, bootstrap, "<bootstrap>")?;
+    eval_js(store, exports, memory, bootstrap, "<bootstrap>")?;
+
+    // The workflow prelude runs after the bootstrap (so it sees the real
+    // `globalThis.gait`) and before the user script.
+    if let Some(prelude) = &prelude {
+        eval_js(store, exports, memory, prelude, "<prelude>")?;
+    }
 
     let wrapped = format!("(async () => {{\n{source}\n}})()");
-    let result_promise = eval_js(&mut store, exports, memory, &wrapped, "<code>")?;
+    let result_promise = eval_js(store, exports, memory, &wrapped, "<code>")?;
 
-    let final_value = drive(&mut store, exports, memory, result_promise, deadline).await?;
+    let final_value = drive(store, exports, memory, result_promise, deadline).await?;
 
     let json = json_stringify(
         &mut store,
@@ -829,14 +1076,29 @@ async fn run_inner<'a>(
         .map_err(|e| rt(e.to_string()))?;
     let _ = json_parse_fn; // reserved for future guest-side JSON.parse use
 
+    if let Some(trap) = store.data().first_trap.clone() {
+        return Err(rt(trap));
+    }
+
     match json {
-        None => Ok(Value::Null),
+        None => {
+            let unhandled = collect_unhandled_rejections(store)?;
+            Ok(RunReport {
+                value: Value::Null,
+                unhandled_rejections: unhandled,
+            })
+        }
         Some(text) => {
-            if text.len() > limits.max_output_bytes {
+            if text.len() > max_output_bytes {
                 return Err(CodeModeError::OutputLimit);
             }
-            serde_json::from_str(&text)
-                .map_err(|e| rt(format!("Code Mode result was not valid JSON: {e}")))
+            let value = serde_json::from_str(&text)
+                .map_err(|e| rt(format!("Code Mode result was not valid JSON: {e}")))?;
+            let unhandled = collect_unhandled_rejections(store)?;
+            Ok(RunReport {
+                value,
+                unhandled_rejections: unhandled,
+            })
         }
     }
 }
@@ -853,10 +1115,12 @@ fn eval_js(
     // find the end via NUL, matching the reference driver's `writeString`
     // (always NUL-terminated) used for the filename argument.
     let fn_ptr = write_bytes(store, exports, memory, filename.as_bytes())?;
-    let result = exports
+    let eval_result = exports
         .qjs_eval
-        .call(&mut *store, (code_ptr, source.len() as i32, fn_ptr, 0))
-        .map_err(|e| rt(e.to_string()))?;
+        .call(&mut *store, (code_ptr, source.len() as i32, fn_ptr, 0));
+    let result = eval_result.map_err(wasm_err)?;
+    let exception_result = exports.qjs_is_exception.call(&mut *store, result);
+    let is_exception = exception_result.map_err(wasm_err)?;
     exports
         .wasm_free
         .call(&mut *store, code_ptr)
@@ -865,15 +1129,23 @@ fn eval_js(
         .wasm_free
         .call(&mut *store, fn_ptr)
         .map_err(|e| rt(e.to_string()))?;
-    if exports
-        .qjs_is_exception
-        .call(&mut *store, result)
-        .map_err(|e| rt(e.to_string()))?
-        != 0
-    {
+    if is_exception != 0 {
         return Err(exception_error(store, exports, memory)?);
     }
     Ok(result)
+}
+
+/// Return the description of every still-stored unhandled rejection at the
+/// end of a successful run, in the order the rejections were observed. The
+/// messages were captured (and the raw JSValues freed) at notification time.
+fn collect_unhandled_rejections(
+    store: &mut Store<HostState<'_>>,
+) -> Result<Vec<String>, CodeModeError> {
+    let unhandled = &store.data().unhandled;
+    Ok(unhandled
+        .iter()
+        .map(|(_, _, _, message)| message.clone())
+        .collect())
 }
 
 /// Drain the job queue and await in-flight capability calls (concurrently)
@@ -883,7 +1155,7 @@ async fn drive(
     exports: &QjsExports,
     memory: Memory,
     promise: i32,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<i32, CodeModeError> {
     loop {
         loop {
@@ -933,7 +1205,14 @@ async fn drive(
         }
 
         let pending = std::mem::take(&mut store.data_mut().pending);
-        let ((resolve_ptr, reject_ptr, outcome), remaining) = await_one(pending, deadline).await?;
+        // The host is about to await real capability work: pause the
+        // guest-CPU clock so host wait time does not consume the budget.
+        store.data_mut().cpu_end();
+        let awaited = await_one(pending, deadline).await;
+        // Resume the clock before touching the guest again -- including on
+        // the error path, so the shutdown/teardown accounting stays balanced.
+        store.data_mut().cpu_begin();
+        let ((resolve_ptr, reject_ptr, outcome), remaining) = awaited?;
         store.data_mut().pending = remaining;
 
         let (target, arg) = match outcome {
@@ -973,7 +1252,7 @@ type Settled = (i32, i32, Result<Value, HostError>);
 /// how many settle per call to this function.
 async fn await_one<'a>(
     pending: Vec<Pending<'a>>,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<(Settled, Vec<Pending<'a>>), CodeModeError> {
     use futures::future::select_all;
 
@@ -984,12 +1263,16 @@ async fn await_one<'a>(
     let futs: Vec<BoxFuture<'a, Result<Value, HostError>>> =
         pending.into_iter().map(|p| p.future).collect();
 
-    let timeout = tokio::time::sleep(deadline.saturating_duration_since(Instant::now()));
-    tokio::pin!(timeout);
-
-    let (result, index, remaining_futs) = tokio::select! {
-        out = select_all(futs) => out,
-        _ = &mut timeout => return Err(CodeModeError::Timeout),
+    let (result, index, remaining_futs) = match deadline {
+        Some(deadline) => {
+            let timeout = tokio::time::sleep(deadline.saturating_duration_since(Instant::now()));
+            tokio::pin!(timeout);
+            tokio::select! {
+                out = select_all(futs) => out,
+                _ = &mut timeout => return Err(CodeModeError::Timeout),
+            }
+        }
+        None => select_all(futs).await,
     };
     // `select_all`'s "rest" is built with `swap_remove` (the completed
     // future's slot is filled by the last element), not a stable remove --
@@ -1045,5 +1328,6 @@ fn resolve_exports(
         qjs_new_error: typed!("qjs_new_error"),
         qjs_get_undefined: typed!("qjs_get_undefined"),
         qjs_set_interrupt_handler: typed!("qjs_set_interrupt_handler"),
+        qjs_set_promise_rejection_handler: typed!("qjs_set_promise_rejection_handler"),
     })
 }
