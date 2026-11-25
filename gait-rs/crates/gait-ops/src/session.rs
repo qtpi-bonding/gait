@@ -998,10 +998,18 @@ fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
         let Some(id) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
         };
-        // A dir whose verdict is Err is unparseable/non-session: skip it.
+        // A dir whose verdict is Err has an unparseable/non-session log:
+        // surface it as skipped with the error code so bulk `--all` runs
+        // do not silently ignore a broken session.
         let verdict = match classify_one(gait_dir, &id) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                skipped.push((
+                    id,
+                    format!("unreadable: {}", coded_error::facts_anyhow(&e).code),
+                ));
+                continue;
+            }
         };
         match verdict {
             Verdict::Eligible => eligible.push(id),
@@ -1239,6 +1247,31 @@ mod tests {
         // No side effects: log + dir untouched, eligible list matches.
         assert!(before_log_exists);
         assert!(before_dir_exists);
+    }
+
+    /// An unparseable log must not be silently dropped from a bulk plan:
+    /// the session shows up in `skipped` with an "unreadable" reason.
+    #[test]
+    fn classify_bulk_reports_unparseable_log_as_skipped() {
+        let ws = ws_with_session("sbulk05");
+        let log_path = gait_state::session::live::log_path(ws.path(), "sbulk05");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        std::fs::write(&log_path, "this is not jsonl\x00garbage").unwrap();
+        let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
+        assert!(
+            plan.eligible.iter().all(|id| id != "sbulk05"),
+            "unreadable session must not be eligible"
+        );
+        let skipped = plan
+            .skipped
+            .iter()
+            .find(|(id, _)| id == "sbulk05")
+            .expect("unreadable session must be listed in skipped");
+        assert!(
+            skipped.1.starts_with("unreadable"),
+            "unexpected skip reason: {}",
+            skipped.1
+        );
     }
 
     /// Test 2: bulk_act with confirmed=false returns OpError::ConfirmationRequired.
