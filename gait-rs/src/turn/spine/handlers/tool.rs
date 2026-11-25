@@ -156,6 +156,31 @@ fn shell_access_and_whitelist_hit(
     (access, Some(items), sandbox_free)
 }
 
+fn detached_shell_scope(
+    sandbox_cfg: &SandboxConfig,
+    codebase: &Path,
+    jail: &Path,
+) -> Result<crate::sandbox::SandboxScope, crate::sandbox::ceiling::ScopePathError> {
+    use crate::types::ToolAccess;
+    // For detached process shell calls, use the full agent ceiling (all capabilities
+    // enabled, bounded only by the session sandbox config) rather than the
+    // per-call tool scope. This lets the process inherit the agent's
+    // configured limits (e.g. network, codebase writes) rather than the narrower
+    // default shell scope.
+    crate::sandbox::ceiling::compute_scope(
+        ToolAccess {
+            reads: true,
+            writes: true,
+            network: true,
+            spawns: true,
+            local_bind: true,
+        },
+        sandbox_cfg,
+        codebase,
+        jail,
+    )
+}
+
 /// Add Gait-owned, current-session runtime paths to a hand's bounded scope.
 /// These are invariants rather than user-configured grants: using the dynamic
 /// session id here keeps sibling sessions isolated without asking users to
@@ -310,19 +335,7 @@ pub async fn run_tool_as_spine(
             .unwrap_or(false);
     let mut whitelist_hit = None;
     let scope_result = if is_detached_shell {
-        use crate::types::ToolAccess;
-        crate::sandbox::ceiling::compute_scope(
-            ToolAccess {
-                reads: true,
-                writes: true,
-                network: true,
-                spawns: true,
-                local_bind: true,
-            },
-            sandbox_cfg,
-            codebase,
-            &jail,
-        )
+        detached_shell_scope(sandbox_cfg, codebase, &jail)
     } else if impulse.tool == "shell" {
         let cmd = impulse
             .args
@@ -773,6 +786,110 @@ mod tests {
         assert!(
             !read_scope.writable.contains(&own_for_read),
             "returned-value tools must not receive automatic output write access"
+        );
+    }
+
+    #[test]
+    fn detached_shell_scope_guard_network_override_is_currently_ignored() {
+        use gait_types::config::{NetworkConfig, ToolAccessOverride};
+
+        let codebase = tempfile::TempDir::new().unwrap();
+        let jail = tempfile::TempDir::new().unwrap();
+        let mut cfg = gait_types::config::SandboxConfig {
+            network: NetworkConfig::All,
+            ..Default::default()
+        };
+        cfg.tools.insert(
+            "shell".into(),
+            ToolAccessOverride {
+                network: Some(false),
+                ..Default::default()
+            },
+        );
+
+        let detached = detached_shell_scope(&cfg, codebase.path(), jail.path()).unwrap();
+        assert!(
+            !matches!(detached.network, NetworkPolicy::All),
+            "detached shell must not ignore the per-tool network override"
+        );
+    }
+
+    #[test]
+    fn detached_shell_scope_guard_writes_override_is_currently_ignored() {
+        use gait_types::config::{NetworkConfig, ToolAccessOverride};
+
+        let codebase = tempfile::TempDir::new().unwrap();
+        let jail = tempfile::TempDir::new().unwrap();
+        let mut cfg = gait_types::config::SandboxConfig {
+            network: NetworkConfig::All,
+            ..Default::default()
+        };
+        cfg.tools.insert(
+            "shell".into(),
+            ToolAccessOverride {
+                writes: Some(false),
+                ..Default::default()
+            },
+        );
+
+        let detached = detached_shell_scope(&cfg, codebase.path(), jail.path()).unwrap();
+        assert!(
+            !detached
+                .writable
+                .contains(&codebase.path().canonicalize().unwrap()),
+            "detached shell must not ignore the per-tool writes override"
+        );
+    }
+
+    #[test]
+    fn detached_shell_scope_control_without_overrides_keeps_full_ceiling() {
+        use gait_types::config::NetworkConfig;
+
+        let codebase = tempfile::TempDir::new().unwrap();
+        let jail = tempfile::TempDir::new().unwrap();
+        let cfg = gait_types::config::SandboxConfig {
+            network: NetworkConfig::All,
+            ..Default::default()
+        };
+
+        let detached = detached_shell_scope(&cfg, codebase.path(), jail.path()).unwrap();
+        assert!(
+            matches!(detached.network, NetworkPolicy::All),
+            "with no override, detached shell keeps network All"
+        );
+        assert!(
+            detached
+                .writable
+                .contains(&codebase.path().canonicalize().unwrap()),
+            "with no override, detached shell keeps the codebase writable"
+        );
+    }
+
+    #[test]
+    fn foreground_shell_scope_reflects_the_network_override() {
+        use gait_types::config::{NetworkConfig, ToolAccessOverride};
+
+        let codebase = tempfile::TempDir::new().unwrap();
+        let jail = tempfile::TempDir::new().unwrap();
+        let mut cfg = gait_types::config::SandboxConfig {
+            network: NetworkConfig::All,
+            ..Default::default()
+        };
+        cfg.tools.insert(
+            "shell".into(),
+            ToolAccessOverride {
+                network: Some(false),
+                ..Default::default()
+            },
+        );
+
+        let access = crate::sandbox::ceiling::access_for_tool("shell", &cfg);
+        let foreground =
+            crate::sandbox::ceiling::compute_scope(access, &cfg, codebase.path(), jail.path())
+                .unwrap();
+        assert!(
+            !matches!(foreground.network, NetworkPolicy::All),
+            "the foreground shell scope must honor the network override"
         );
     }
 
