@@ -124,7 +124,7 @@ fn count_starts(events: &[workflow_event::Kind], node: &str) -> usize {
 fn node_errors<'a>(
     events: &'a [workflow_event::Kind],
     node: &str,
-) -> Vec<&'a gait_core::proto::gait::workflow::v1::node_error::NodeError> {
+) -> Vec<&'a gait_core::proto::gait::workflow::v1::NodeError> {
     events
         .iter()
         .filter_map(|k| match k {
