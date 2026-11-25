@@ -452,12 +452,8 @@ async fn per_turn_causes_reach_each_turns_brain_env_and_never_go_stale() {
         &gait_dir,
         0,
         &[
-            append_event(gait_core::proto::events::assistant_text(
-                "working".into(),
-            )),
-            forward_event(gait_core::proto::events::assistant_text(
-                "working".into(),
-            )),
+            append_event(gait_core::proto::events::assistant_text("working".into())),
+            forward_event(gait_core::proto::events::assistant_text("working".into())),
             terminated(r#"{"text":"ok"}"#),
         ],
     );
@@ -499,10 +495,10 @@ async fn per_turn_causes_reach_each_turns_brain_env_and_never_go_stale() {
         .expect("connection stays alive");
     drop(origin);
 
-    let env1 = std::fs::read_to_string(gait_dir.join("mock_env.0.txt"))
-        .expect("turn 1 brain env file");
-    let env2 = std::fs::read_to_string(gait_dir.join("mock_env.1.txt"))
-        .expect("turn 2 brain env file");
+    let env1 =
+        std::fs::read_to_string(gait_dir.join("mock_env.0.txt")).expect("turn 1 brain env file");
+    let env2 =
+        std::fs::read_to_string(gait_dir.join("mock_env.1.txt")).expect("turn 2 brain env file");
     for (env, name) in [(&env1, "turn 1"), (&env2, "turn 2")] {
         let traceparent = env
             .lines()
@@ -548,12 +544,8 @@ async fn a_prompt_without_causes_leaves_no_inherited_baggage_in_the_brain_env() 
         &gait_dir,
         0,
         &[
-            append_event(gait_core::proto::events::assistant_text(
-                "working".into(),
-            )),
-            forward_event(gait_core::proto::events::assistant_text(
-                "working".into(),
-            )),
+            append_event(gait_core::proto::events::assistant_text("working".into())),
+            forward_event(gait_core::proto::events::assistant_text("working".into())),
             terminated(r#"{"text":"ok"}"#),
         ],
     );
@@ -582,8 +574,8 @@ async fn a_prompt_without_causes_leaves_no_inherited_baggage_in_the_brain_env() 
         std::env::remove_var("BAGGAGE");
     }
 
-    let env = std::fs::read_to_string(gait_dir.join("mock_env.0.txt"))
-        .expect("turn 1 brain env file");
+    let env =
+        std::fs::read_to_string(gait_dir.join("mock_env.0.txt")).expect("turn 1 brain env file");
     let baggage = env
         .lines()
         .find(|l| l.starts_with("BAGGAGE="))
