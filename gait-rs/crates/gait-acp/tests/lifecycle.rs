@@ -364,3 +364,106 @@ async fn session_delete_refuses_a_running_session_as_classify_bulk_says() {
         "worktree must survive a refused delete"
     );
 }
+
+/// A close on a *never-prompted* session (no log.jsonl on disk, only in-memory
+/// bookkeeping from `session/new`) succeeds: the session dir is removed.
+#[tokio::test]
+async fn session_close_succeeds_on_a_never_prompted_session() {
+    let (_t, gait_dir, codebase) = workspace();
+
+    let mint_map = SessionMap::new();
+    let session_id = drive(mint_map, async |cx| {
+        Ok(cx
+            .send_request(NewSessionRequest::new(codebase.clone()))
+            .block_task()
+            .await?
+            .session_id
+            .to_string())
+    })
+    .await
+    .expect("session/new should succeed");
+
+    // A session dir with no log.jsonl (never prompted), as left by an earlier mint + first-turn start.
+    std::fs::create_dir_all(gait_state::session::live::worktree_dir(
+        &gait_dir,
+        &session_id,
+    ))
+    .unwrap();
+
+    let map = SessionMap::new();
+    map.insert(gait_dir.clone(), session_id.clone(), codebase.clone());
+
+    let close_ok = drive(map, async |cx| {
+        Ok(cx
+            .send_request(CloseSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+            .is_ok())
+    })
+    .await
+    .expect("connection stays alive");
+
+    assert!(close_ok, "close on a never-prompted session should succeed");
+    let active = gait_ops::session::list(&gait_dir, None).unwrap().active;
+    assert!(
+        !active.iter().any(|r| r.session_id == session_id),
+        "session/<id> branch is gone after close"
+    );
+    assert!(
+        !gait_state::session::live::worktree_dir(&gait_dir, &session_id).exists(),
+        "worktree removed"
+    );
+}
+
+/// A delete on a *never-prompted* session (no log.jsonl on disk) succeeds: the
+/// session dir is removed.
+#[tokio::test]
+async fn session_delete_succeeds_on_a_never_prompted_session() {
+    let (_t, gait_dir, codebase) = workspace();
+
+    let mint_map = SessionMap::new();
+    let session_id = drive(mint_map, async |cx| {
+        Ok(cx
+            .send_request(NewSessionRequest::new(codebase.clone()))
+            .block_task()
+            .await?
+            .session_id
+            .to_string())
+    })
+    .await
+    .expect("session/new should succeed");
+
+    // A session dir with no log.jsonl (never prompted), as left by an earlier mint + first-turn start.
+    std::fs::create_dir_all(gait_state::session::live::worktree_dir(
+        &gait_dir,
+        &session_id,
+    ))
+    .unwrap();
+
+    let map = SessionMap::new();
+    map.insert(gait_dir.clone(), session_id.clone(), codebase.clone());
+
+    let delete_ok = drive(map, async |cx| {
+        Ok(cx
+            .send_request(DeleteSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+            .is_ok())
+    })
+    .await
+    .expect("connection stays alive");
+
+    assert!(
+        delete_ok,
+        "delete on a never-prompted session should succeed"
+    );
+    assert!(
+        !gait_state::session::live::worktree_dir(&gait_dir, &session_id).exists(),
+        "worktree removed"
+    );
+    let active = gait_ops::session::list(&gait_dir, None).unwrap().active;
+    assert!(
+        !active.iter().any(|r| r.session_id == session_id),
+        "session/<id> branch is gone after discard"
+    );
+}

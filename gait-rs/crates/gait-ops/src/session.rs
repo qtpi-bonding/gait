@@ -828,11 +828,20 @@ pub fn bulk_act(
 /// render, not a print here (Wall 1).
 fn persist_one(gait_dir: &Path, id: &str) -> anyhow::Result<Option<String>> {
     let repos = gait_state::git::Repos::production();
+    // Must be computed before finish_session: it removes the whole session dir,
+    // which would make the log-path check below true for every session.
+    let never_prompted = !gait_state::session::live::log_path(gait_dir, id).exists();
     #[cfg(feature = "telemetry")]
     let existed = session_branch_exists(gait_dir, id);
     #[cfg(feature = "telemetry")]
     let last_record_id = last_record_id(gait_dir, id);
-    repos.traces.finish_session(gait_dir, id)?;
+    if never_prompted {
+        // No log and no mergeable history: remove the empty session dir and
+        // branch instead of merging an unrelated empty commit into main.
+        repos.traces.discard_session(gait_dir, id)?;
+    } else {
+        repos.traces.finish_session(gait_dir, id)?;
+    }
     #[cfg(feature = "telemetry")]
     {
         if existed {
@@ -932,25 +941,29 @@ fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
             continue;
         };
         let tx_path = gait_state::session::live::log_path(gait_dir, &id);
-        // A session with no log.jsonl is not a started session. `read_events` treats a
-        // MISSING file as empty => `session_state` returns Idle, which would wrongly
-        // mark such a dir eligible — so skip it explicitly here.
-        if !tx_path.exists() {
-            continue;
-        }
-        let reason: Option<String> = match session_state(&tx_path) {
-            Ok(SessionState::Idle) => {
+        // A minted-but-never-prompted session (no log.jsonl) counts as Idle:
+        // eligible unless its lock is held, in which case it is skipped as
+        // "running" — same as any idle session.
+        let state = if tx_path.exists() {
+            match session_state(&tx_path) {
+                Ok(state) => state,
+                Err(_) => continue,
+            }
+        } else {
+            SessionState::Idle
+        };
+        let reason: Option<String> = match state {
+            SessionState::Idle => {
                 if gait_state::session::SessionLock::is_running(&path) {
                     Some("running".to_string())
                 } else {
                     None
                 }
             }
-            Ok(SessionState::AwaitingPermission { .. }) => Some("awaiting-permission".to_string()),
-            Ok(SessionState::AwaitingClarify { .. }) => Some("awaiting-clarify".to_string()),
-            Ok(SessionState::AwaitingInform { .. }) => Some("awaiting-inform".to_string()),
-            Ok(SessionState::AwaitingSandboxUnlock { .. }) => Some("awaiting-unlock".to_string()),
-            Err(_) => continue,
+            SessionState::AwaitingPermission { .. } => Some("awaiting-permission".to_string()),
+            SessionState::AwaitingClarify { .. } => Some("awaiting-clarify".to_string()),
+            SessionState::AwaitingInform { .. } => Some("awaiting-inform".to_string()),
+            SessionState::AwaitingSandboxUnlock { .. } => Some("awaiting-unlock".to_string()),
         };
         match reason {
             None => eligible.push(id),
@@ -1313,12 +1326,82 @@ mod tests {
         );
     }
 
+    /// Policy change (gp): a session dir minted but never prompted (no
+    /// log.jsonl) is eligible for both bulk verbs unless it is running.
     #[test]
-    fn classify_omits_dir_without_log() {
+    fn classify_lists_a_never_prompted_dir_as_eligible() {
         let ws = ws_with_session("snolog");
-        let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
-        assert!(!plan.eligible.contains(&"snolog".to_string()));
-        assert!(plan.skipped.iter().all(|(id, _)| id != "snolog"));
+        for verb in [BulkVerb::Persist, BulkVerb::Discard] {
+            let plan = classify_bulk(ws.path(), verb).unwrap();
+            assert!(
+                plan.eligible.contains(&"snolog".to_string()),
+                "verb {:?}: never-prompted dir must be eligible",
+                verb
+            );
+            assert!(
+                plan.skipped.iter().all(|(id, _)| id != "snolog"),
+                "verb {:?}: never-prompted dir must not be skipped",
+                verb
+            );
+        }
+    }
+
+    /// A never-prompted dir with a live lock is skipped as "running".
+    #[test]
+    fn classify_skips_a_never_prompted_dir_with_a_live_lock() {
+        let ws = ws_with_session("snolog2");
+        std::fs::write(
+            gait_state::session::live::worktree_dir(ws.path(), "snolog2").join("lock"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        for verb in [BulkVerb::Persist, BulkVerb::Discard] {
+            let plan = classify_bulk(ws.path(), verb).unwrap();
+            assert!(
+                plan.eligible.is_empty(),
+                "verb {:?}: running session must not be eligible",
+                verb
+            );
+            assert_eq!(
+                plan.skipped,
+                vec![("snolog2".to_string(), "running".to_string())],
+                "verb {:?}",
+                verb
+            );
+        }
+    }
+
+    /// bulk_act itself must not error on a never-prompted session.
+    #[test]
+    fn persist_and_discard_of_a_never_prompted_session_do_not_error() {
+        let ws_persist = ws_with_session("snolog3");
+        let plan = classify_bulk(ws_persist.path(), BulkVerb::Persist).unwrap();
+        let head_before = git2::Repository::open(ws_persist.path())
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        let outcome = bulk_act(ws_persist.path(), &plan, true, false).unwrap();
+        assert_eq!(outcome.acted, vec!["snolog3".to_string()]);
+        assert!(outcome.failed.is_empty());
+        let head_after = git2::Repository::open(ws_persist.path())
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        assert_eq!(head_before, head_after, "no merge commit into main");
+        assert!(!gait_state::session::live::worktree_dir(ws_persist.path(), "snolog3").exists());
+
+        let ws_discard = ws_with_session("snolog4");
+        let plan = classify_bulk(ws_discard.path(), BulkVerb::Discard).unwrap();
+        let outcome = bulk_act(ws_discard.path(), &plan, true, false).unwrap();
+        assert_eq!(outcome.acted, vec!["snolog4".to_string()]);
+        assert!(outcome.failed.is_empty());
+        assert!(!gait_state::session::live::worktree_dir(ws_discard.path(), "snolog4").exists());
     }
 
     #[test]
