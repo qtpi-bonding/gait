@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use gait_core::embed::{Diag, SinkFrame, TurnSink};
 use gait_core::proto::gait::log::v1::{RunResult, StreamItem};
 use gait_core::proto::gait::workflow::v1::{Node, PromptNode, Workflow};
@@ -18,7 +16,7 @@ use crate::vars::{substitute, NodeOutput};
 /// unlike `gait_turn_runner::DirectSink`, which forwards straight to a
 /// caller's sink with no channel — so it stays here even though the actual
 /// sealed-turn execution now lives in `gait-turn-runner` (Task 2).
-struct CapturingSink {
+pub(crate) struct CapturingSink {
     /// Borrowed workflow channel sender. Forwards every call we receive so the
     /// workflow's drain consumer sees the sub-turn's full output, verbatim.
     workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>,
@@ -27,7 +25,7 @@ struct CapturingSink {
 }
 
 impl CapturingSink {
-    fn new(workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>) -> Self {
+    pub(crate) fn new(workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>) -> Self {
         Self {
             workflow_tx,
             result: None,
@@ -108,116 +106,13 @@ pub async fn exec_prompt_node(
     wf: &Workflow,
     input: Option<Box<dyn gait_core::embed::TurnSource>>,
 ) -> anyhow::Result<NodeOutput> {
-    use gait_core::config::resolver::{ConfigResolver, Overrides};
-    let loaded = gait_core::config::load_config(ctx.gait_dir);
-    // consumer layer: Workflow fields
-    let consumer = Overrides {
-        inference: wf.inference.clone(),
-        allow: Some(wf.allow.clone()),
-        ..Overrides::empty()
-    };
-    // per-call layer: Node fields (higher priority)
-    let per_call = Overrides {
-        inference: node.inference.clone(),
-        allow: if node.allow.is_empty() {
-            None
-        } else {
-            Some(node.allow.clone())
-        },
-        agent: node.agent.clone(),
-        ..Overrides::empty()
-    };
-    let resolved_cfg = ConfigResolver::new(loaded)
-        .with(consumer)
-        .with(per_call)
-        .resolve_checked()?;
-    let inference = resolved_cfg
-        .inference
-        .clone()
-        .expect("resolve_checked guarantees inference is Some");
-    let allow = resolved_cfg.allow.clone();
-    let auto = node.auto.unwrap_or(wf.auto);
-
-    // output_schema_json: parse non-empty string to Value
-    let result_schema: Option<serde_json::Value> = if node.output_schema_json.is_empty() {
-        None
-    } else {
-        Some(serde_json::from_str(&node.output_schema_json).map_err(|e| {
-            anyhow::anyhow!("node '{}': invalid output_schema_json: {}", node.id, e)
-        })?)
-    };
-
-    let codebase = p
-        .codebase
-        .as_deref()
-        .map(|cb| PathBuf::from(substitute(cb, &ctx.vars)))
-        .unwrap_or_else(|| ctx.codebase.to_path_buf());
-
+    // One path, no duplication: the config resolution / CLI-override folding /
+    // `TurnRunOpts` construction lives solely in
+    // `RealTurnExecutor::build_turn_opts` — `exec_prompt_node` calls it with a
+    // default `TurnRequest` (proto node fields, no script-level overrides).
+    let exec = crate::turn_exec::RealTurnExecutor::new(node, p, wf, ctx);
+    let turn_opts = exec.build_turn_opts(&crate::turn_exec::TurnRequest::default())?;
     let session_id = ctx.node_session.to_string();
-
-    // Note: the sandbox config is re-loaded from `ctx.gait_dir` inside
-    // `gait_turn_runner::run_turn_source`/`run_single_prompt` now — it no
-    // longer needs a separate `load_config` call here.
-
-    // spec-06 §3 Task 3.2 (the C1 fix): a CLI-only override, when present,
-    // takes priority over the disk-resolved config above — this is what makes
-    // `gait run --model/--allow/--deny/--agent/--max-iter/--result-schema`
-    // still work now that `cmd_run` is routed through this same function
-    // instead of building its own driver directly. Every real workflow node
-    // has `ctx.profile == None` and is unaffected.
-    let ov = ctx.profile;
-    let session_updates = ov.map(|p| p.session_updates.clone()).unwrap_or_default();
-    let inference = ov.and_then(|p| p.inference.clone()).unwrap_or(inference);
-    let explicit_inference_override = ov.map(|p| p.explicit_inference_override).unwrap_or(false);
-    let allow = ov
-        .filter(|p| !p.allow.is_empty())
-        .map(|p| p.allow.clone())
-        .unwrap_or(allow);
-    let deny = ov.map(|p| p.deny.clone()).unwrap_or_default();
-    let agent_name = ov
-        .and_then(|p| p.agent.clone())
-        .or_else(|| node.agent.clone());
-    let max_iter = ov.and_then(|p| p.max_iter);
-    let result_schema = ov.and_then(|p| p.result_schema.clone()).or(result_schema);
-    // Effective `auto`: node/workflow default, overridden by a CLI `--auto`
-    // (spec-06's degenerate-node override), matching the resolution
-    // `gait_turn_runner::TurnProfileOverride::resolve_auto` performs for its
-    // own callers — here the *base* is workflow/node-specific, so it's
-    // resolved inline rather than through that (crate-private) helper.
-    let auto = ov.and_then(|p| p.auto).unwrap_or(auto);
-    let sandbox_on = ctx.sandbox_on.unwrap_or(true); // workflow nodes default sandboxed
-
-    let turn_profile = gait_turn_runner::TurnProfileOverride {
-        verified_goal: None,
-        inference: Some(inference),
-        explicit_inference_override,
-        session_updates,
-        allow,
-        deny,
-        agent: agent_name,
-        max_iter,
-        result_schema,
-        auto: Some(auto),
-    };
-
-    let turn_opts = gait_turn_runner::TurnRunOpts {
-        // The workflow run's own id (doubles as SESSION_ID env / workflow_id
-        // default — see `runner::run_workflow`), threaded through as the
-        // turn's run identity.
-        run_id: ctx.session_id.to_string(),
-        session_id: session_id.clone(),
-        continue_session: p.continue_session.clone(),
-        gait_dir: ctx.gait_dir.to_path_buf(),
-        codebase,
-        args: Vec::new(),
-        sandbox_on: Some(sandbox_on),
-        cascade_group_arg: ctx.cascade_group_arg.clone(),
-        cascade: ctx.cascade.cloned(),
-        profile: Some(turn_profile),
-        fs_delegate: ctx.fs_delegate.clone(),
-        allow_intree: ctx.allow_intree,
-        workflow_requests: None,
-    };
 
     if !p.prompt.is_empty() || input.is_some() {
         // A caller may provide a live source even for a prompt-bearing node.
