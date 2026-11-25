@@ -9,6 +9,7 @@ mod auth_models;
 mod config;
 mod exit_codes;
 mod gait_min_doc_smoke;
+mod merge_guard;
 mod min_composition;
 mod no_daemon_wire;
 mod reply;
