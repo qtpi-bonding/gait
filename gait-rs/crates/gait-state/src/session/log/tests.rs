@@ -196,10 +196,10 @@ fn emit_writes_to_transcript() {
     assert!(matches!(k(&events[0]), payload::Kind::AssistantText(a) if a.content == "hello emit"));
 }
 #[test]
-fn log_path_is_log_jsonl() {
+fn persisted_log_path_is_sessions_id_log_jsonl() {
     let dir = tempfile::TempDir::new().unwrap();
     assert_eq!(
-        log_path(dir.path(), "s1"),
+        persisted_log_path(dir.path(), "s1"),
         dir.path().join("sessions").join("s1").join("log.jsonl"),
     );
 }

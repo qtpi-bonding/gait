@@ -2185,11 +2185,18 @@ async fn run_unlocked_write(
     session_id: &str,
     tool_call_id: &str,
     unlock_dimension: &str,
+    request_rel: &str,
 ) -> (TurnResult, std::path::PathBuf, TempDir, TempDir) {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
     let outside = TempDir::new().unwrap();
-    let target = outside.path().join("f.txt");
+    let target = outside.path().join(request_rel);
+    // The seeded session grant stays on the lexically cleaned path
+    // `<outside>/f.txt`, even when the model requests a raw unclean path.
+    let grant_resource = outside.path().join("f.txt");
+    // Create the parent dir first so the path is realistic (the write tool
+    // may fail on a missing dir otherwise).
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
 
     // Seed the LIVE session log with a session-scope grant of the given
     // dimension for the target resource.
@@ -2205,7 +2212,7 @@ async fn run_unlocked_write(
         crate::proto::events::sandbox_unlock(&[pb::SandboxUnlockItem {
             id: "u1".into(),
             tool_name: unlock_dimension.into(),
-            resource: target.to_string_lossy().to_string(),
+            resource: grant_resource.to_string_lossy().to_string(),
             dimension: unlock_dimension.into(),
             preview: None,
         }]),
@@ -2278,7 +2285,7 @@ async fn run_unlocked_write(
 #[tokio::test]
 async fn read_only_session_unlock_does_not_admit_a_write() {
     let (result, target, _ws, _outside) =
-        run_unlocked_write("ug-write-01", "tc-ug-write", "read").await;
+        run_unlocked_write("ug-write-01", "tc-ug-write", "read", "f.txt").await;
 
     // The read-dimension session grant must NOT admit the write: the turn
     // must pause with an unlock asking for the write dimension.
@@ -2307,7 +2314,7 @@ async fn read_only_session_unlock_does_not_admit_a_write() {
 #[tokio::test]
 async fn write_session_unlock_admits_a_write() {
     let (result, target, _ws, _outside) =
-        run_unlocked_write("ug-write-02", "tc-ug-write2", "write").await;
+        run_unlocked_write("ug-write-02", "tc-ug-write2", "write", "f.txt").await;
 
     if let TurnResult::SandboxUnlock { .. } = &result {
         panic!("write-dimension session grant must admit the write, got unlock: {result:?}");
@@ -2317,6 +2324,52 @@ async fn write_session_unlock_admits_a_write() {
         target.exists(),
         "target must exist after the admitted write, result: {result:?}"
     );
+}
+
+/// The turn pre-check must look up unlock grants using the lexically cleaned
+/// path (crate::sandbox::clean_target), not the RAW model-supplied path. A
+/// session grant on `<outside>/f.txt` must therefore admit a model write to
+/// `<outside>/sub/../f.txt` exactly like the cleaned path, and must NOT admit
+/// a write to `<outside>/sub/../g.txt` (no grant for g.txt).
+///
+/// Expected to FAIL today: the pre-check keys on the raw request path.
+#[tokio::test]
+async fn unclean_request_path_is_admitted_like_the_cleaned_one() {
+    // (a) grant on f.txt, raw request path "sub/../f.txt": must be admitted.
+    {
+        let (result, target, _ws, _outside) =
+            run_unlocked_write("ug-key-01", "tc-ug-key-01", "write", "sub/../f.txt").await;
+
+        if let TurnResult::SandboxUnlock { items } = &result {
+            panic!(
+                "grant on f.txt must admit a write via sub/../f.txt (like the cleaned path), got unlock: {items:?}"
+            );
+        }
+
+        assert!(
+            target.exists(),
+            "f.txt must exist after the admitted write, result: {result:?}"
+        );
+    }
+
+    // (b) same grant shape, raw request path "sub/../g.txt": no grant for
+    // g.txt, so the turn must pause with a single not-granted unlock item.
+    {
+        let (result, target, _ws, _outside) =
+            run_unlocked_write("ug-key-02", "tc-ug-key-02", "write", "sub/../g.txt").await;
+
+        match &result {
+            TurnResult::SandboxUnlock { items } => {
+                assert_eq!(items.len(), 1, "expected one unlock item, got {items:?}");
+            }
+            other => panic!("expected TurnResult::SandboxUnlock, got: {other:?}"),
+        }
+
+        assert!(
+            !target.exists(),
+            "g.txt must not exist (no grant for it), result: {result:?}"
+        );
+    }
 }
 
 /// Regression test for I1 (canonicalization mismatch): a supervised write to a

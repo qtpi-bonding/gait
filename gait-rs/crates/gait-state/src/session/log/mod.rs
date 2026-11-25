@@ -5,9 +5,12 @@ mod retired;
 use super::SessionError;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{payload, Event};
-/// The session's append-only Log file. (The file is the Log, not the Transcript —
-/// the Transcript is the ActiveMessages projection derived from it.)
-pub fn log_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+/// The FINISHED/persisted session's append-only Log file location:
+/// `gait_dir/sessions/<id>/log.jsonl`. (The file is the Log, not the
+/// Transcript — the Transcript is the ActiveMessages projection derived from
+/// it.) This path is never written by a running session; live callers use
+/// `crate::session::live::log_path`.
+pub fn persisted_log_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
     gait_dir.join("sessions").join(session_id).join("log.jsonl")
 }
 

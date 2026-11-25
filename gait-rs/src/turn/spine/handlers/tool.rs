@@ -443,8 +443,8 @@ pub async fn run_tool_as_spine(
                 } else {
                     crate::types::Dimension::Read
                 };
-                let unlocked =
-                    crate::session::retrace::active_unlock_state(&events).grants(path, dimension);
+                let unlocked = crate::session::retrace::active_unlock_state(&events)
+                    .grants(&crate::turn::unlock_key(codebase, path), dimension);
                 if !unlocked {
                     let _ = std::fs::remove_dir_all(&jail);
                     return error_feedback(&format!(
@@ -1334,15 +1334,23 @@ mod tests {
         use std::sync::atomic::Ordering;
         let (ws, session, file_path, _outside) = seed_unlock("sess-write-write-unlock", "write");
 
-        let (rendered, _read_called, _write_called) =
+        let (rendered, _read_called, write_called) =
             run_unlocked_tool(ws.path(), &session, "write", &file_path, Some("x")).await;
         assert!(
             !rendered.to_lowercase().contains("out of scope"),
             "session-unlocked write must not be refused: {rendered}"
         );
-        // The write delegate itself cannot be asserted here: with a
-        // nonexistent hand exe the delegated spawn fails after the scope
-        // check passes, so we only assert the scope check outcome above.
+        // The write delegate cannot run here: after the scope check passes,
+        // the delegated spawn fails on the nonexistent hand exe. Assert that
+        // exact dispatch outcome — NOT the scope-rejection text.
+        assert!(
+            rendered.contains("failed to spawn __run-tool"),
+            "expected the delegated write dispatch's spawn failure, got: {rendered}"
+        );
+        assert!(
+            !write_called.load(Ordering::SeqCst),
+            "fake write delegate must not have run (spawn failed first): {rendered}"
+        );
 
         // Today's rule: a write unlock also implies read access to the same path.
         let (rendered, read_called, _write_called) =

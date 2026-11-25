@@ -2,8 +2,8 @@
 //! persisted into `main`). The worktree mounts at `gait_dir/.active/<id>/`
 //! rather than `gait_dir/sessions/<id>/` — the latter is reserved for the
 //! *persisted* shape a session's branch merges into `main` as (see
-//! `crate::session::log::log_path`, which is unchanged and means exactly
-//! that persisted location).
+//! `crate::session::log::persisted_log_path`, which is unchanged and means
+//! exactly that persisted location).
 use std::path::{Path, PathBuf};
 
 /// The live worktree's mount point: `gait_dir/.active/<session_id>/`.

@@ -700,7 +700,7 @@ pub async fn run_turn(
                     // Filter out items whose resource path is already granted
                     // by a prior unlock reply (once or session scope).
                     for item in items {
-                        let path = std::path::PathBuf::from(&item.resource);
+                        let path = unlock_key(&codebase_path, std::path::Path::new(&item.resource));
                         let already_granted = crate::types::Dimension::parse(&item.dimension)
                             .is_some_and(|dimension| active_unlock.grants(&path, dimension));
                         if !already_granted {
@@ -790,13 +790,21 @@ fn check_own_tool_scope(
             items.push(pb::SandboxUnlockItem {
                 id: uuid::Uuid::new_v4().to_string(),
                 tool_name: tc.tool_name.clone(),
-                resource: path.to_string_lossy().into_owned(),
+                resource: unlock_key(codebase, &path).to_string_lossy().into_owned(),
                 dimension: dim.as_str().to_string(),
                 preview: None,
             });
         }
     }
     Ok(items)
+}
+
+/// The single key form for unlock grants (lexically cleaned, absolute).
+///
+/// Every grant lookup and every emitted `SandboxUnlockItem.resource` must go
+/// through this helper so that a granted item's key equals the lookup key.
+pub(crate) fn unlock_key(codebase: &std::path::Path, path: &std::path::Path) -> std::path::PathBuf {
+    crate::sandbox::clean_target(&crate::sandbox::normalize_lexical(codebase), path)
 }
 
 #[cfg(test)]
