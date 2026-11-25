@@ -130,7 +130,11 @@ fn marker_script(marker: &Path, step_id: &str) -> String {
     format!(
         r#"
         await gait.wf.config({{ name: "t" }});
-        await gait.wf.shell({{ id: "{step_id}", script: "echo tick >> {m}" }});
+        await gait.wf.shell({{
+            id: "{step_id}",
+            script: "echo tick >> \"$MARKER_PATH\"",
+            env: {{ MARKER_PATH: {m} }},
+        }});
     "#
     )
 }
@@ -231,13 +235,15 @@ async fn parallel_steps_replay_in_any_settle_order() {
 async fn changed_kind_for_same_id_fails() {
     let tmp = TempDir::new().unwrap();
     init_git_repo(tmp.path());
+    // The step id is long and unique so it cannot appear in the run id or in
+    // unrelated error text; "a" alone would be too weak a probe.
     let original = r#"
         await gait.wf.config({ name: "t" });
-        await gait.wf.shell({ id: "a", argv: ["true"] });
+        await gait.wf.shell({ id: "step-kind-changed", argv: ["true"] });
     "#;
     let changed = r#"
         await gait.wf.config({ name: "t" });
-        await gait.wf.turn({ id: "a", prompt: "now a turn" });
+        await gait.wf.turn({ id: "step-kind-changed", prompt: "now a turn" });
     "#;
     let run_id = "replay-kind-001";
 
@@ -263,8 +269,15 @@ async fn changed_kind_for_same_id_fails() {
     .await;
     let text = err_text(second);
     assert!(
-        text.contains("a"),
+        text.contains("step-kind-changed"),
         "the error must name the changed step id: {text}"
+    );
+    assert!(
+        // The generic "resuming script runs is not implemented yet" stub error
+        // would satisfy the assertions above, so refuse it explicitly: this
+        // test stays red until kind-change detection on replay is implemented.
+        !text.contains("not implemented"),
+        "the failure must be real kind-change detection, not the resume stub: {text}"
     );
     assert!(
         !text.contains("script changed"),
@@ -280,12 +293,20 @@ async fn crashed_step_trips_guard_and_force_rerun_clears_it() {
     let tmp = TempDir::new().unwrap();
     init_git_repo(tmp.path());
     let marker = tmp.path().join("MARKER");
-    let source = r#"
-        await gait.wf.config({ name: "t" });
-        await gait.wf.shell({ id: "done-step", argv: ["true"] });
-        await gait.wf.shell({ id: "crashed", script: "echo tick >> MARKER" });
+    // Same rule as `marker_script`: never splice a path into a JS string;
+    // pass it as an env var instead.
+    let m = serde_json::to_string(&marker.to_string_lossy().to_string()).unwrap();
+    let source = format!(
+        r#"
+        await gait.wf.config({{ name: "t" }});
+        await gait.wf.shell({{ id: "done-step", argv: ["true"] }});
+        await gait.wf.shell({{
+            id: "crashed",
+            script: "echo tick >> \"$MARKER_PATH\"",
+            env: {{ MARKER_PATH: {m} }},
+        }});
     "#
-    .replace("MARKER", &marker.to_string_lossy().to_string());
+    );
     let run_id = "replay-crash-001";
 
     let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
@@ -343,16 +364,27 @@ async fn drift_refused_and_force_uses_logged_source() {
     init_git_repo(tmp.path());
     let out = tmp.path().join("out.txt");
     let o = serde_json::to_string(&out.to_string_lossy().to_string()).unwrap();
+    // Same rule as `marker_script`: the path goes through an env var, never
+    // into the JS script text (a JSON-quoted path inside a JS string literal
+    // is a syntax error).
     let original = format!(
         r#"
         await gait.wf.config({{ name: "t" }});
-        await gait.wf.shell({{ id: "w", script: "echo v1 > {o}" }});
+        await gait.wf.shell({{
+            id: "w",
+            script: "echo v1 > \"$OUT_PATH\"",
+            env: {{ OUT_PATH: {o} }},
+        }});
     "#
     );
     let changed = format!(
         r#"
         await gait.wf.config({{ name: "t" }});
-        await gait.wf.shell({{ id: "w", script: "echo v2 > {o}" }});
+        await gait.wf.shell({{
+            id: "w",
+            script: "echo v2 > \"$OUT_PATH\"",
+            env: {{ OUT_PATH: {o} }},
+        }});
     "#
     );
     let run_id = "replay-drift-001";
@@ -448,6 +480,9 @@ async fn now_and_random_replay_same_values() {
 async fn continue_after_failed_run_matches_pinned_behavior() {
     let tmp = TempDir::new().unwrap();
     init_git_repo(tmp.path());
+    // The first run is deliberately about a failing step, so its failure is
+    // expected. The script text mirrors the pinned form documented in
+    // tests/failed_run_pinned.rs (shell `sleep 5` with `timeout: 50`).
     let source = r#"
         await gait.wf.config({ name: "t" });
         await gait.wf.shell({ id: "first", script: "sleep 5", timeout: 50 });
@@ -458,8 +493,11 @@ async fn continue_after_failed_run_matches_pinned_behavior() {
     let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
     let text = err_text(first);
     assert!(
-        text.contains("first"),
-        "the first run must fail naming the failed step: {text}"
+        // Today's shell-timeout error is "Code Mode runtime error: shell
+        // timed out after 50ms" and does NOT name the step, so only assert
+        // that the first run failed on the timeout.
+        text.contains("timed out"),
+        "the first run must fail on the shell timeout: {text}"
     );
 
     let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
