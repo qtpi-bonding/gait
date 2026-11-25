@@ -1,5 +1,5 @@
 use crate::vars::NodeOutput;
-use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
+use gait_core::proto::gait::workflow::v1::{workflow_event, NodeErrorKind, WorkflowEvent};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +164,131 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
     state
 }
 
+/// What the run log says about one script step id.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JournalState {
+    /// NodeStart with no terminal event (crashed mid-step).
+    Open,
+    /// NodeComplete: replay returns the recorded result.
+    Complete {
+        session_id: String,
+        output: String,
+        exit_code: Option<i32>,
+        json_output: String,
+    },
+    /// NodeError with kind FAILED or CONTINUED: replays as an `{error}`
+    /// result (a failed node counts as finished, as the YAML engine does).
+    Errored { error: String },
+    /// NodeError with kind CANCELLED: not terminal; the step runs again.
+    Cancelled,
+}
+
+/// One script step's journal record, keyed by node id in [`ScriptJournal`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalEntry {
+    /// `NodeStart.node_type`: `"shell"`, `"turn"`, `"now"`, `"random"`.
+    pub kind: String,
+    /// Session id recorded by `NodeStart` (or a later `NodeComplete`).
+    pub session_id: String,
+    /// What the log's last terminal event for this id says.
+    pub state: JournalState,
+}
+
+/// Pure replay journal folded from a `WorkflowEvent` run log. Unlike
+/// [`reconstruct_state`] it tracks per-step-id terminal disposition, including
+/// CANCELLED (not terminal) and OPEN (crashed mid-step) for the crash guard.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptJournal {
+    entries: HashMap<String, JournalEntry>,
+    workflow_start_seen: bool,
+}
+
+impl ScriptJournal {
+    /// Fold the events in order into per-step entries.
+    pub fn from_events(events: &[WorkflowEvent]) -> Self {
+        let mut journal = ScriptJournal::default();
+        for event in events {
+            let Some(kind) = &event.kind else {
+                continue;
+            };
+            match kind {
+                workflow_event::Kind::WorkflowStart(_) => {
+                    journal.workflow_start_seen = true;
+                }
+                workflow_event::Kind::NodeStart(ns) => {
+                    // A later NodeStart for the same id (force-rerun, or a
+                    // re-run after Cancelled) resets the entry; the new kind
+                    // and session_id win.
+                    journal.entries.insert(
+                        ns.node_id.clone(),
+                        JournalEntry {
+                            kind: ns.node_type.clone(),
+                            session_id: ns.session_id.clone(),
+                            state: JournalState::Open,
+                        },
+                    );
+                }
+                workflow_event::Kind::NodeComplete(nc) => {
+                    let Some(entry) = journal.entries.get_mut(&nc.node_id) else {
+                        continue;
+                    };
+                    if !nc.session_id.is_empty() {
+                        entry.session_id = nc.session_id.clone();
+                    }
+                    entry.state = JournalState::Complete {
+                        session_id: entry.session_id.clone(),
+                        output: nc.output.clone(),
+                        exit_code: nc.exit_code,
+                        json_output: nc.json_output.clone(),
+                    };
+                }
+                workflow_event::Kind::NodeError(ne) => {
+                    let Some(entry) = journal.entries.get_mut(&ne.node_id) else {
+                        continue;
+                    };
+                    // Unknown enum values decode as FAILED, matching the
+                    // proto3 default for old log lines without `kind`.
+                    entry.state = match NodeErrorKind::try_from(ne.kind) {
+                        Ok(NodeErrorKind::Cancelled) => JournalState::Cancelled,
+                        _ => JournalState::Errored {
+                            error: ne.error.clone(),
+                        },
+                    };
+                }
+                _ => {}
+            }
+        }
+        journal
+    }
+
+    /// The journal record for a step id, if any.
+    pub fn get(&self, id: &str) -> Option<&JournalEntry> {
+        self.entries.get(id)
+    }
+
+    /// Iterate over all journal entries (id, entry), in arbitrary order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &JournalEntry)> {
+        self.entries.iter()
+    }
+
+    /// Ids whose state is Open, sorted, for the crash guard.
+    pub fn open_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.state == JournalState::Open)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Whether a WorkflowStart event was seen in the log.
+    pub fn has_workflow_start(&self) -> bool {
+        self.workflow_start_seen
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +439,214 @@ mod tests {
             out.text, "ok",
             "the rest of the NodeComplete payload must still fold in normally"
         );
+    }
+
+    #[test]
+    fn journal_complete_after_start_carries_all_fields() {
+        let evs = vec![
+            we(workflow_event::Kind::WorkflowStart(WorkflowStart {
+                run_id: "r".into(),
+                workflow: "t".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                node_type: "shell".into(),
+                session_id: "s1".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "a".into(),
+                session_id: "s2".into(),
+                output: "ok".into(),
+                exit_code: Some(0),
+                json_output: "{\"v\":1}".into(),
+                ..Default::default()
+            })),
+        ];
+        let j = ScriptJournal::from_events(&evs);
+        assert!(j.has_workflow_start());
+        assert_eq!(j.open_ids(), Vec::<String>::new());
+        let e = j.get("a").expect("entry for a");
+        assert_eq!(e.kind, "shell");
+        // NodeComplete's non-empty session_id wins over the NodeStart's.
+        assert_eq!(
+            e.state,
+            JournalState::Complete {
+                session_id: "s2".into(),
+                output: "ok".into(),
+                exit_code: Some(0),
+                json_output: "{\"v\":1}".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn journal_start_only_is_open_and_listed() {
+        let evs = vec![we(workflow_event::Kind::NodeStart(NodeStart {
+            node_id: "a".into(),
+            node_type: "turn".into(),
+            session_id: "s1".into(),
+            ..Default::default()
+        }))];
+        let j = ScriptJournal::from_events(&evs);
+        assert!(!j.has_workflow_start());
+        assert_eq!(j.open_ids(), vec!["a".to_string()]);
+        let e = j.get("a").unwrap();
+        assert_eq!(e.kind, "turn");
+        assert_eq!(e.session_id, "s1");
+        assert_eq!(e.state, JournalState::Open);
+    }
+
+    #[test]
+    fn journal_node_error_kinds_map_to_errored_or_cancelled() {
+        let evs = vec![
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "f".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "c".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "x".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeError(NodeError {
+                node_id: "f".into(),
+                error: "boom".into(),
+                kind: NodeErrorKind::Failed as i32,
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeError(NodeError {
+                node_id: "c".into(),
+                error: "skipped past".into(),
+                kind: NodeErrorKind::Continued as i32,
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeError(NodeError {
+                node_id: "x".into(),
+                error: "user cancelled".into(),
+                kind: NodeErrorKind::Cancelled as i32,
+                ..Default::default()
+            })),
+        ];
+        let j = ScriptJournal::from_events(&evs);
+        assert_eq!(
+            j.get("f").unwrap().state,
+            JournalState::Errored {
+                error: "boom".into()
+            }
+        );
+        // CONTINUED counts as finished, like FAILED.
+        assert_eq!(
+            j.get("c").unwrap().state,
+            JournalState::Errored {
+                error: "skipped past".into()
+            }
+        );
+        // CANCELLED is not terminal, but it is not Open either: the step
+        // just runs again on the next pass.
+        assert_eq!(j.get("x").unwrap().state, JournalState::Cancelled);
+        assert_eq!(j.open_ids(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn journal_cancelled_then_fresh_start_is_open_again() {
+        let evs = vec![
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                node_type: "shell".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeError(NodeError {
+                node_id: "a".into(),
+                kind: NodeErrorKind::Cancelled as i32,
+                ..Default::default()
+            })),
+            // A re-run after CANCELLED resets the entry; the new kind wins.
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                node_type: "turn".into(),
+                session_id: "s9".into(),
+                ..Default::default()
+            })),
+        ];
+        let j = ScriptJournal::from_events(&evs);
+        let e = j.get("a").unwrap();
+        assert_eq!(e.kind, "turn");
+        assert_eq!(e.session_id, "s9");
+        assert_eq!(e.state, JournalState::Open);
+        assert_eq!(j.open_ids(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn journal_interleaved_ids_stay_independent() {
+        let evs = vec![
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                node_type: "shell".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "b".into(),
+                node_type: "turn".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "a".into(),
+                output: "done-a".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeError(NodeError {
+                node_id: "b".into(),
+                error: "boom".into(),
+                ..Default::default()
+            })),
+        ];
+        let j = ScriptJournal::from_events(&evs);
+        assert_eq!(
+            j.get("a").unwrap().state,
+            JournalState::Complete {
+                session_id: String::new(),
+                output: "done-a".into(),
+                exit_code: None,
+                json_output: String::new(),
+            }
+        );
+        assert_eq!(
+            j.get("b").unwrap().state,
+            JournalState::Errored {
+                error: "boom".into()
+            }
+        );
+        assert_eq!(j.open_ids(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn journal_ignores_events_for_unknown_ids() {
+        let evs = vec![
+            we(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "ghost".into(),
+                output: "no start".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeError(NodeError {
+                node_id: "phantom".into(),
+                error: "no start".into(),
+                ..Default::default()
+            })),
+            // Other event kinds are ignored too.
+            we(workflow_event::Kind::NodeSkip(NodeSkip {
+                node_id: "skipped".into(),
+                reason: "inactive branch".into(),
+            })),
+        ];
+        let j = ScriptJournal::from_events(&evs);
+        assert!(j.get("ghost").is_none());
+        assert!(j.get("phantom").is_none());
+        assert!(j.get("skipped").is_none());
+        assert!(j.open_ids().is_empty());
     }
 }

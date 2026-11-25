@@ -9,11 +9,13 @@ use anyhow::{anyhow, Context, Result};
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use gait_codemode::{ApiSurface, CodeModeError, LimitsMode, RunOptions, WorkflowLimits};
+use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
 use crate::host::{error_text, StepEngine, StepRequest, WorkflowHost};
 use crate::observer::WorkflowObserver;
 use crate::run_log::WorkflowRunLog;
 use crate::runner::WorkflowOutcome;
+use crate::state::ScriptJournal;
 use crate::turn_exec::TurnExecutor;
 use sha2::{Digest, Sha256};
 
@@ -29,6 +31,86 @@ pub struct LoadedScript {
     pub path: PathBuf,
     pub source: String,
     pub sha256: String,
+}
+
+/// The script identity a resumed run must execute: everything comes from the
+/// run log's WorkflowStart event, never from the (possibly changed) disk file.
+#[derive(Debug, Clone)]
+pub struct ResolvedScript {
+    /// The logged script source text.
+    pub source: String,
+    /// The logged sha256 of the source text.
+    pub sha256: String,
+    /// The logged script path (as recorded when the run started).
+    pub script_path: String,
+    /// The logged CLI args.
+    pub args: Vec<String>,
+}
+
+/// Errors from [`resolve_script_continue`].
+#[derive(Debug, thiserror::Error)]
+pub enum ScriptContinueError {
+    /// The script file on disk no longer matches the source logged when the
+    /// run started, and the caller did not pass `force`.
+    #[error(
+        "workflow script drift: the script changed on disk since the run started \
+         (logged {logged}, disk {disk}); pass --force to continue with the logged source"
+    )]
+    Drift {
+        /// The sha256 recorded in the run log's WorkflowStart event.
+        logged: String,
+        /// The sha256 of the script file currently on disk.
+        disk: String,
+    },
+    /// The run log has no script WorkflowStart (or a legacy YAML one with an
+    /// empty script source), so it cannot be resumed as a script run.
+    #[error("run is not a script workflow run (no logged script source)")]
+    NotAScriptRun,
+}
+
+/// Resolve the script identity for a resumed script run, purely from the run
+/// log's WorkflowStart event.
+///
+/// The returned source, sha, path, and args are ALWAYS the logged values,
+/// never the disk file's. If `disk` is `Some` and its sha256 differs from the
+/// logged sha and `force` is false, the run is refused with
+/// [`ScriptContinueError::Drift`]. A log without a script WorkflowStart (no
+/// WorkflowStart at all, or a legacy YAML log whose script source is empty)
+/// is refused with [`ScriptContinueError::NotAScriptRun`].
+pub fn resolve_script_continue(
+    events: &[WorkflowEvent],
+    disk: Option<&LoadedScript>,
+    force: bool,
+) -> Result<ResolvedScript, ScriptContinueError> {
+    if !ScriptJournal::from_events(events).has_workflow_start() {
+        return Err(ScriptContinueError::NotAScriptRun);
+    }
+    let start = events.iter().find_map(|ev| match ev.kind.as_ref() {
+        Some(workflow_event::Kind::WorkflowStart(start)) => Some(start),
+        _ => None,
+    });
+    let Some(start) = start else {
+        return Err(ScriptContinueError::NotAScriptRun);
+    };
+    // A legacy YAML log carries a WorkflowStart but no script source (the
+    // definition lives in `def` instead).
+    if start.script_source.is_empty() {
+        return Err(ScriptContinueError::NotAScriptRun);
+    }
+    if let Some(disk) = disk {
+        if disk.sha256 != start.script_sha256 && !force {
+            return Err(ScriptContinueError::Drift {
+                logged: start.script_sha256.clone(),
+                disk: disk.sha256.clone(),
+            });
+        }
+    }
+    Ok(ResolvedScript {
+        source: start.script_source.clone(),
+        sha256: start.script_sha256.clone(),
+        script_path: start.script_path.clone(),
+        args: start.args.clone(),
+    })
 }
 
 /// Load a workflow script from disk, refusing files over [`MAX_SCRIPT_BYTES`].
@@ -146,21 +228,70 @@ pub async fn run_script(
         ..
     } = opts;
 
-    // (1) Load and size-check the script before touching the filesystem for
-    // the run itself.
-    let script = load_script(&script_path)?;
-
-    // (2) Run dir, run lock, run log. Resuming is not implemented yet.
+    // (2) Run dir, run lock, run log. On an existing log we resume: the run
+    // identity comes from the logged WorkflowStart event, not the disk file.
     let workflow_runs_dir = gait_dir.join("workflow-runs");
     let run_dir = workflow_runs_dir.join(&run_id);
     let run_worktree = run_dir.join("worktree");
-    if run_dir.join("log.jsonl").exists() {
-        anyhow::bail!("run '{run_id}' already exists; resuming script runs is not implemented yet");
-    }
+    let resuming = run_dir.join("log.jsonl").exists();
+    // On a fresh run, load and size-check the script BEFORE creating any run
+    // directory or log. On a resume the disk file is only used for the drift
+    // check; a load failure means no drift check (disk = None).
+    let script = if resuming {
+        load_script(&script_path).ok()
+    } else {
+        Some(load_script(&script_path)?)
+    };
     std::fs::create_dir_all(&run_dir)?;
     // The run lock is held until run_script returns (dropped at function end).
     let _run_lock = gait_core::session::SessionLock::acquire(&run_dir)?;
-    let run_log = WorkflowRunLog::create(&workflow_runs_dir, &run_id)?;
+    let (run_log, script, args, journal) = if run_dir.join("log.jsonl").exists() {
+        let run_log = WorkflowRunLog::open(&workflow_runs_dir, &run_id)?;
+        let events = run_log.read_events()?;
+        let journal = ScriptJournal::from_events(&events);
+
+        // Crash guard: refuse to resume while steps are still Open, unless
+        // each such id was explicitly passed in `force_rerun_nodes`.
+        let open_ids = journal.open_ids();
+        let unaccepted: Vec<String> = open_ids
+            .iter()
+            .filter(|id| !opts.force_rerun_nodes.contains(id))
+            .cloned()
+            .collect();
+        if !unaccepted.is_empty() {
+            anyhow::bail!(
+                "the following step(s) were still running when this workflow was \
+                 interrupted and may have partially or fully executed: {}. \
+                 Re-running them may repeat side effects. Pass --force-rerun <id> \
+                 once per step to accept this and resume.",
+                unaccepted.join(", ")
+            );
+        }
+
+        let resolved = resolve_script_continue(&events, script.as_ref(), opts.force)
+            .map_err(|e| anyhow!(error_text(&e)))?;
+        (
+            run_log,
+            LoadedScript {
+                path: script_path.clone(),
+                source: resolved.source,
+                sha256: resolved.sha256,
+            },
+            resolved.args,
+            journal,
+        )
+    } else {
+        let script = match script {
+            Some(script) => script,
+            None => load_script(&script_path)?,
+        };
+        (
+            WorkflowRunLog::create(&workflow_runs_dir, &run_id)?,
+            script,
+            args,
+            ScriptJournal::from_events(&[]),
+        )
+    };
 
     // (3) Prelude, engine, host channel. The engine gets its own log handle
     // (the log is a plain path wrapper, so a second `open` is safe).
@@ -182,6 +313,8 @@ pub async fn run_script(
             engine_log,
             &run_dir,
             Arc::clone(&turns),
+            journal,
+            opts.force_rerun_nodes,
             observer,
         );
 
@@ -304,6 +437,126 @@ mod tests {
     use super::*;
     use gait_codemode::{ApiSurface, CapabilityHost, HostError, RunOptions, WorkflowLimits};
     use serde_json::{json, Value};
+
+    /// Write a script WorkflowStart event into a temp run log and read the
+    /// events back, so the tests exercise the real log shape.
+    fn logged_events(
+        dir: &tempfile::TempDir,
+        source: &str,
+        sha: &str,
+        args: &[String],
+    ) -> Vec<WorkflowEvent> {
+        let runs_dir = dir.path().join("workflow-runs");
+        let log = WorkflowRunLog::create(&runs_dir, "run-1").expect("create should work");
+        log.script_workflow_start("run-1", "t", "wf.js", sha, source, args)
+            .expect("start event should write");
+        log.read_events().expect("events should read back")
+    }
+
+    /// A disk file whose sha matches the logged one resolves with the LOGGED
+    /// source, path, and args.
+    #[test]
+    fn resolve_continue_matching_hash_returns_logged_fields() {
+        let dir = tempfile::tempdir().expect("tempdir should work");
+        let args = vec!["--x".to_string()];
+        let events = logged_events(&dir, "export default 1", "sha-a", &args);
+        let disk = LoadedScript {
+            path: dir.path().join("wf.js"),
+            source: "export default 1".to_string(),
+            sha256: "sha-a".to_string(),
+        };
+        let resolved =
+            resolve_script_continue(&events, Some(&disk), false).expect("matching hash is ok");
+        assert_eq!(resolved.source, "export default 1");
+        assert_eq!(resolved.sha256, "sha-a");
+        assert_eq!(resolved.script_path, "wf.js");
+        assert_eq!(resolved.args, args);
+    }
+
+    /// A changed disk file is refused as drift, naming both hashes.
+    #[test]
+    fn resolve_continue_refuses_drift() {
+        let dir = tempfile::tempdir().expect("tempdir should work");
+        let events = logged_events(&dir, "logged", "sha-a", &[]);
+        let disk = LoadedScript {
+            path: dir.path().join("wf.js"),
+            source: "changed".to_string(),
+            sha256: "sha-b".to_string(),
+        };
+        let err = resolve_script_continue(&events, Some(&disk), false)
+            .expect_err("drift must be refused");
+        let text = error_text(&err);
+        assert!(matches!(err, ScriptContinueError::Drift {
+            ref logged,
+            ref disk
+        } if logged == "sha-a" && disk == "sha-b"));
+        assert!(
+            text.starts_with(
+                "workflow script drift: the script changed on disk since the run started"
+            ),
+            "error text: {text}"
+        );
+        assert!(
+            text.contains("logged sha-a, disk sha-b"),
+            "error text: {text}"
+        );
+        assert!(text.ends_with("pass --force to continue with the logged source"));
+    }
+
+    /// With `force = true` drift is bypassed and the LOGGED source is
+    /// returned, never the disk text.
+    #[test]
+    fn resolve_continue_force_returns_logged_source() {
+        let dir = tempfile::tempdir().expect("tempdir should work");
+        let events = logged_events(&dir, "logged source", "sha-a", &[]);
+        let disk = LoadedScript {
+            path: dir.path().join("wf.js"),
+            source: "changed source".to_string(),
+            sha256: "sha-b".to_string(),
+        };
+        let resolved =
+            resolve_script_continue(&events, Some(&disk), true).expect("force bypasses drift");
+        assert_eq!(resolved.source, "logged source");
+        assert_eq!(resolved.sha256, "sha-a");
+    }
+
+    /// A missing (unloaded) disk file means no drift check: the logged
+    /// identity is returned.
+    #[test]
+    fn resolve_continue_without_disk_file_is_ok() {
+        let dir = tempfile::tempdir().expect("tempdir should work");
+        let events = logged_events(&dir, "logged source", "sha-a", &[]);
+        let resolved =
+            resolve_script_continue(&events, None, false).expect("no disk file means no drift");
+        assert_eq!(resolved.source, "logged source");
+    }
+
+    /// An empty event list (no WorkflowStart) is refused as not-a-script-run.
+    #[test]
+    fn resolve_continue_refuses_log_without_workflow_start() {
+        let err = resolve_script_continue(&[], None, false)
+            .expect_err("no WorkflowStart must be refused");
+        assert!(matches!(err, ScriptContinueError::NotAScriptRun));
+        assert_eq!(
+            error_text(&err),
+            "run is not a script workflow run (no logged script source)"
+        );
+    }
+
+    /// A legacy YAML log carries a WorkflowStart with an empty script source
+    /// (the definition lives in `def`); it is refused as not-a-script-run.
+    #[test]
+    fn resolve_continue_refuses_legacy_yaml_log() {
+        let dir = tempfile::tempdir().expect("tempdir should work");
+        let runs_dir = dir.path().join("workflow-runs");
+        let log = WorkflowRunLog::create(&runs_dir, "run-yaml").expect("create should work");
+        log.workflow_start("run-yaml", "wf", "wf.yaml", &[], &Default::default())
+            .expect("yaml start should write");
+        let events = log.read_events().expect("events should read back");
+        let err = resolve_script_continue(&events, None, false)
+            .expect_err("a YAML log has no script source");
+        assert!(matches!(err, ScriptContinueError::NotAScriptRun));
+    }
 
     /// Fake capability host: echoes the args back.
     struct FakeHost;
