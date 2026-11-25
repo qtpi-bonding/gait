@@ -60,21 +60,9 @@ pub fn children_of(gait_dir: &Path, parent_session_id: &str) -> Vec<ChildInfo> {
             continue;
         }
 
-        // "done" = lock absent or stale (dead PID). The lock lives at the
-        // worktree-root mount, not nested under sessions/<id>/.
-        let lock_path = session_dir.join("lock");
-        let is_done = if !lock_path.exists() {
-            true // no lock → not currently running
-        } else {
-            let pid_str = std::fs::read_to_string(&lock_path).unwrap_or_default();
-            let pid: i32 = pid_str.trim().parse().unwrap_or(-1);
-            if pid > 0 {
-                // SAFETY: kill(pid, 0) sends no signal; only checks if the process exists.
-                unsafe { libc::kill(pid, 0) != 0 }
-            } else {
-                true // malformed lock → treat as stale
-            }
-        };
+        // "done" is lock.rs's judgement: no lock file, stale/garbage lock, or
+        // a dead PID all count as not running.
+        let is_done = !crate::session::lock::SessionLock::is_running(&session_dir);
 
         // Summary: last non-empty AssistantText.
         let summary = events.iter().rev().find_map(|ev| {
@@ -155,5 +143,35 @@ mod tests {
             children[0].is_done,
             "stale lock (dead PID) → is_done = true"
         );
+    }
+
+    #[test]
+    fn a_live_lock_in_the_format_lock_rs_writes_is_not_done() {
+        let dir = TempDir::new().unwrap();
+        make_session(dir.path(), "slive001", Some("sparent"));
+        let session_dir = dir.path().join(".active/slive001");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let _guard = crate::session::lock::SessionLock::acquire(&session_dir).unwrap();
+        let children = children_of(dir.path(), "sparent");
+        let child = children.iter().find(|c| c.id == "slive001").unwrap();
+        assert!(
+            !child.is_done,
+            "live lock (pid + starttime) → is_done = false"
+        );
+    }
+
+    #[test]
+    fn a_stale_lock_with_a_start_time_is_done() {
+        let dir = TempDir::new().unwrap();
+        make_session(dir.path(), "sstale01", Some("sparent"));
+        let lock_path = dir.path().join(".active/sstale01/lock");
+        std::fs::write(&lock_path, "999999999 123").unwrap();
+        make_session(dir.path(), "snoloc01", Some("sparent"));
+
+        let children = children_of(dir.path(), "sparent");
+        let stale = children.iter().find(|c| c.id == "sstale01").unwrap();
+        assert!(stale.is_done, "dead pid + starttime → is_done = true");
+        let nolock = children.iter().find(|c| c.id == "snoloc01").unwrap();
+        assert!(nolock.is_done, "no lock → is_done = true");
     }
 }
