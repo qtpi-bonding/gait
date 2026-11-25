@@ -62,8 +62,9 @@ pub(crate) fn enrich_permissions_preview(
         // Empty targets → no declared scope; treat as out-of-scope (skip preview).
         let in_scope = !targets.is_empty()
             && targets.iter().all(|(path, _dim)| {
-                // Canonicalize the target path so /var/... and /private/var/... compare equal.
-                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                // Clean lexically first so `..` cannot escape, then canonicalize so /var and /private/var compare equal.
+                let cleaned = crate::sandbox::clean_target(codebase, path);
+                let canonical = cleaned.canonicalize().unwrap_or_else(|_| cleaned.clone());
                 ceiling.read_all
                     || ceiling.readable.iter().any(|r| canonical.starts_with(r))
                     || ceiling.writable.iter().any(|w| canonical.starts_with(w))
@@ -256,5 +257,64 @@ mod tests {
             Some("--- brain computed this ---"),
             "existing preview must not be overwritten"
         );
+    }
+
+    /// `..` components must be cleaned (lexically normalized) before the
+    /// scope check, so that paths like `<codebase>/../x` are refused as
+    /// out-of-scope rather than accepted.
+    #[test]
+    fn enrich_cleans_dotdot_before_scope_check() {
+        use crate::config::SandboxConfig;
+        use crate::proto::gait::log::v1::{event, payload, PermissionItem};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let codebase = dir.path();
+        std::fs::create_dir(codebase.join("sub")).unwrap();
+
+        let cases: Vec<String> = vec![
+            format!("{}/../x", codebase.display()),
+            format!("{}/sub/../../x", codebase.display()),
+            format!("{}/sub/../ok", codebase.display()),
+        ];
+
+        for case in cases {
+            let item = PermissionItem {
+                id: format!("req-dotdot-{}", case),
+                cmd: format!("write {}", case),
+                reason: "write requires permission".into(),
+                patterns: vec![format!("write:{}", case)],
+                tool_name: "write".into(),
+                tool_args: crate::proto::events::to_struct(&serde_json::json!({
+                    "file_path": case,
+                    "content": "content\n"
+                })),
+                preview: None,
+            };
+
+            let mut evt = make_permissions_event(vec![item]);
+            let sandbox_cfg = SandboxConfig::default();
+            enrich_permissions_preview(&mut evt, codebase, codebase, "s1", &sandbox_cfg);
+
+            let Some(event::Body::Payload(p)) = evt.body.as_ref() else {
+                panic!("expected payload body for case {}", case);
+            };
+            let Some(payload::Kind::Permissions(perm)) = p.kind.as_ref() else {
+                panic!("expected permissions kind for case {}", case);
+            };
+            assert_eq!(perm.items.len(), 1, "case {}", case);
+            if case.ends_with("/ok") {
+                assert!(
+                    perm.items[0].preview.is_some(),
+                    "expected preview Some for in-scope cleaned path; case {}",
+                    case
+                );
+            } else {
+                assert!(
+                    perm.items[0].preview.is_none(),
+                    "expected preview None (path escaping codebase after .. cleaning); case {}",
+                    case
+                );
+            }
+        }
     }
 }
