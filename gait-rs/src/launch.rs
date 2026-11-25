@@ -518,6 +518,66 @@ mod tests {
         assert!(value.starts_with("00-0af7651916cd43dd8448eb211c80319c-"));
     }
 
+    #[cfg(feature = "telemetry")]
+    #[test]
+    #[serial_test::serial]
+    fn with_trace_env_sends_the_current_turns_baggage_not_a_stale_one() {
+        let _capture = concord_telemetry::testing::capture();
+
+        let turn1 = tracing::info_span!("launch.trace_probe.turn1");
+        concord_telemetry::propagation::set_parent(&turn1, |key| match key {
+            "traceparent" => {
+                Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string())
+            }
+            "baggage" => Some("action_id=A1,turn_id=T1".to_string()),
+            _ => None,
+        });
+
+        let turn2 = tracing::info_span!("launch.trace_probe.turn2");
+        concord_telemetry::propagation::set_parent(&turn2, |key| match key {
+            "traceparent" => {
+                Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string())
+            }
+            "baggage" => Some("action_id=A2,turn_id=T2".to_string()),
+            _ => None,
+        });
+
+        let baggage_of = |cmd: &std::process::Command| {
+            cmd.get_envs()
+                .find(|(key, _)| *key == "BAGGAGE")
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str())
+                .expect("BAGGAGE is set")
+                .to_string()
+        };
+
+        let mut cmd1 = std::process::Command::new("gait");
+        cmd1.env("BAGGAGE", "action_id=STALE");
+        turn1.in_scope(|| with_trace_env(&mut cmd1));
+        let baggage1 = baggage_of(&cmd1);
+        assert!(
+            baggage1.contains("action_id=A1") && baggage1.contains("turn_id=T1"),
+            "turn 1 baggage must be sent, got: {baggage1}"
+        );
+        assert!(
+            !baggage1.contains("STALE"),
+            "stale baggage must be replaced, got: {baggage1}"
+        );
+
+        let mut cmd2 = std::process::Command::new("gait");
+        cmd2.env("BAGGAGE", "action_id=STALE");
+        turn2.in_scope(|| with_trace_env(&mut cmd2));
+        let baggage2 = baggage_of(&cmd2);
+        assert!(
+            baggage2.contains("action_id=A2") && baggage2.contains("turn_id=T2"),
+            "turn 2 baggage must be sent, got: {baggage2}"
+        );
+        assert!(
+            !baggage2.contains("A1") && !baggage2.contains("T1") && !baggage2.contains("STALE"),
+            "stale or previous-turn baggage must not leak, got: {baggage2}"
+        );
+    }
+
     #[test]
     fn traceparent_is_the_only_new_env_var_passed() {
         assert!(crate::env_passes_to_children("TRACEPARENT"));
