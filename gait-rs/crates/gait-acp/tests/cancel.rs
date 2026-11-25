@@ -305,6 +305,76 @@ async fn cancel_unknown_session_is_noop() {
         .expect("connection stays alive");
 }
 
+/// Deleting a session mid-turn must kill the brain cascade promptly, not join
+/// the turn thread. The brain hangs 10s; if the cascade is not killed, delete
+/// waits ~10s for the turn to wind down. Guards SessionMap::remove killing
+/// the cascade, as cancel does.
+#[tokio::test]
+async fn delete_during_a_running_turn_kills_the_brain_cascade() {
+    use agent_client_protocol::schema::v1::DeleteSessionRequest;
+    use std::time::Instant;
+
+    let (_t, gait_dir, repo) = workspace();
+    // Same hanging-brain setup as cancel_running_brain_resolves_cancelled:
+    // one forwarded event, then no Terminated (mock hangs 10s).
+    write_frames(
+        &gait_dir,
+        0,
+        &[forward_event(gait_core::proto::events::assistant_text(
+            "working".into(),
+        ))],
+    );
+    std::fs::write(gait_dir.join("mock_hang_ms"), "10000").unwrap();
+
+    let map = SessionMap::new();
+    let (channel, server) = gait_acp::build_agent(map).into_channel_and_future();
+    tokio::spawn(server);
+
+    Client
+        .builder()
+        .connect_with(channel, async |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+
+            // Fire the delete ~300ms in: the brain is spawned and enrolled in
+            // the cascade group by then, nowhere near its 10s hang deadline.
+            let cx2 = cx.clone();
+            let sid2 = sid.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                // The result may be anything; only the timing matters.
+                let _ = cx2
+                    .send_request(DeleteSessionRequest::new(sid2))
+                    .block_task()
+                    .await;
+            });
+
+            let started = Instant::now();
+            // The prompt result may be anything (Ok or Err after the delete).
+            let _prompt = cx
+                .send_request(PromptRequest::new(
+                    sid.clone(),
+                    vec!["run it".to_string().into()],
+                ))
+                .block_task()
+                .await;
+            let elapsed = started.elapsed();
+
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "delete during a running turn must kill the cascade promptly; \
+                 prompt resolved after {elapsed:?} (brain hangs 10s — a ~10s \
+                 wait means delete joined the turn thread instead)"
+            );
+            Ok(())
+        })
+        .await
+        .expect("connection stays alive");
+}
+
 fn meta(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     v.as_object().unwrap().clone()
 }

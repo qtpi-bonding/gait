@@ -40,6 +40,18 @@ pub struct SessionEntry {
 #[derive(Clone, Default)]
 pub struct SessionMap(Arc<Mutex<HashMap<String, SessionEntry>>>);
 
+/// Fire both cancel signals on a `SessionEntry`: trip the per-turn token
+/// (unblocks a pending permission await) and, if a cascade kill handle is
+/// attached, `kill()` it (SIGTERM a running brain). Shared by `cancel`
+/// (which peeks) and `remove` (which owns the entry); neither path may skip
+/// the cascade, or a hung brain would survive until its own deadline.
+fn stop_entry(entry: &SessionEntry) {
+    entry.cancel.cancel();
+    if let Some(c) = &entry.cascade {
+        c.kill();
+    }
+}
+
 impl SessionMap {
     pub fn new() -> Self {
         Self::default()
@@ -202,10 +214,7 @@ impl SessionMap {
         let guard = self.0.lock().unwrap();
         if let Some(entry) = guard.get(session_id) {
             crate::notice_meta::record_cause(&entry.cancel_cause, cause);
-            entry.cancel.cancel();
-            if let Some(c) = &entry.cascade {
-                c.kill();
-            }
+            stop_entry(entry);
         }
     }
 
@@ -329,7 +338,7 @@ impl SessionMap {
     /// connection) is a no-op. Returns the entry's gait_dir if it was present.
     pub fn remove(&self, session_id: &str) -> Option<PathBuf> {
         let entry = self.0.lock().unwrap().remove(session_id)?;
-        entry.cancel.cancel();
+        stop_entry(&entry);
         if let Some(join) = entry.join {
             let _ = join.join();
         }

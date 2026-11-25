@@ -23,6 +23,41 @@ use crate::error::{self, PromptError};
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::replay_updates;
 
+/// Classify a single session for `verb` and reduce `classify_bulk`'s
+/// multi-session result to a one-session verdict: `Ok(plan)` when `sid` is
+/// eligible, `Err(reason)` (the `skipped` reason, or a verb-specific
+/// fallback) when it is not. Shared by `close_session` (Persist) and
+/// `delete_session` (Discard) so the eligibility logic lives in one place.
+fn plan_for_one(
+    gait_dir: &Path,
+    sid: &str,
+    verb: BulkVerb,
+) -> anyhow::Result<Result<gait_ops::session::BulkPlan, String>> {
+    let plan = gait_ops::session::classify_bulk(gait_dir, verb)?;
+    if plan.eligible.iter().any(|s| s == sid) {
+        return Ok(Ok(gait_ops::session::BulkPlan {
+            verb,
+            eligible: vec![sid.to_string()],
+            skipped: Vec::new(),
+        }));
+    }
+    let why = plan
+        .skipped
+        .iter()
+        .find(|(id, _)| id == sid)
+        .map(|(_, r)| r.clone())
+        .unwrap_or_else(|| format!("session is not eligible to {}", verb_label(verb)));
+    Ok(Err(why))
+}
+
+/// Human label for a bulk verb, used in ineligibility messages.
+fn verb_label(verb: BulkVerb) -> &'static str {
+    match verb {
+        BulkVerb::Persist => "persist",
+        BulkVerb::Discard => "discard",
+    }
+}
+
 /// Resolve a persisted session against the request's claimed workspace.
 ///
 /// Unlike lifecycle operations carrying only an id, load/resume must prove the
@@ -256,32 +291,24 @@ pub fn close_session(
     // so the turn must be settled before we classify/act (design §6 ordering).
     map.remove(&sid);
 
-    let plan = match gait_ops::session::classify_bulk(&gait_dir, BulkVerb::Persist) {
+    let plan = match plan_for_one(&gait_dir, &sid, BulkVerb::Persist) {
         Ok(p) => p,
         Err(e) => return responder.respond_with_error(error::acp_error(&e, error::CLOSE_SESSION)),
     };
-    if !plan.eligible.iter().any(|s| s == &sid) {
-        let why = plan
-            .skipped
-            .iter()
-            .find(|(id, _)| id == &sid)
-            .map(|(_, r)| r.clone())
-            .unwrap_or_else(|| "session is not eligible to persist".to_string());
-        return responder.respond_with_error(error::acp_error(
-            &coded_error::into_anyhow(PromptError::CannotClose {
-                sid: sid.clone(),
-                why,
-            }),
-            error::CLOSE_SESSION,
-        ));
-    }
-    let one = gait_ops::session::BulkPlan {
-        verb: BulkVerb::Persist,
-        eligible: vec![sid.clone()],
-        skipped: Vec::new(),
+    let plan = match plan {
+        Ok(plan) => plan,
+        Err(why) => {
+            return responder.respond_with_error(error::acp_error(
+                &coded_error::into_anyhow(PromptError::CannotClose {
+                    sid: sid.clone(),
+                    why,
+                }),
+                error::CLOSE_SESSION,
+            ));
+        }
     };
     match gait_ops::session::bulk_act(
-        &gait_dir, &one, /* confirmed */ true, /* force */ true,
+        &gait_dir, &plan, /* confirmed */ true, /* force */ true,
     ) {
         Ok(_) => responder.respond(CloseSessionResponse::new()),
         Err(e) => responder.respond_with_error(error::acp_error(&e, error::CLOSE_SESSION)),
@@ -304,10 +331,21 @@ pub fn delete_session(
     };
 
     map.remove(&sid); // cancel + join any live turn
-    let plan = gait_ops::session::BulkPlan {
-        verb: BulkVerb::Discard,
-        eligible: vec![sid.clone()],
-        skipped: Vec::new(),
+    let plan = match plan_for_one(&gait_dir, &sid, BulkVerb::Discard) {
+        Ok(p) => p,
+        Err(e) => return responder.respond_with_error(error::acp_error(&e, error::DELETE_SESSION)),
+    };
+    let plan = match plan {
+        Ok(plan) => plan,
+        Err(why) => {
+            return responder.respond_with_error(error::acp_error(
+                &coded_error::into_anyhow(PromptError::CannotDelete {
+                    sid: sid.clone(),
+                    why,
+                }),
+                error::DELETE_SESSION,
+            ));
+        }
     };
     // Single-session discard (this is `session/delete` for one session,
     // never a bulk operation) — not gated on force, same as bulk_act's

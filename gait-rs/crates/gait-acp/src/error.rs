@@ -83,6 +83,9 @@ pub enum PromptError {
     #[error("cannot close {sid}: {why}")]
     #[coded(code = "cannot_close", class = Logical)]
     CannotClose { sid: String, why: String },
+    #[error("cannot delete {sid}: {why}")]
+    #[coded(code = "cannot_delete", class = Logical)]
+    CannotDelete { sid: String, why: String },
     #[error("failed to replay session: {0}")]
     #[coded(code = "replay_failed", class = Infrastructure)]
     ReplayFailed(String),
@@ -227,7 +230,7 @@ mod tests {
     #[test]
     fn prompt_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.prompt.", &[PromptError::ALL_CODES]).unwrap();
-        assert_eq!(PromptError::ALL_CODES.len(), 28);
+        assert_eq!(PromptError::ALL_CODES.len(), 29);
     }
 
     #[test]
