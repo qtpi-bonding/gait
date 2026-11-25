@@ -1,12 +1,20 @@
 use std::collections::HashMap;
+use std::path::Path;
 
+/// Run a hook command with a CLEARED environment: only the shared step env
+/// (`step::build_shell_env`) is visible. `cwd`, when given, is the hook's
+/// working directory.
 pub async fn run_hook(
     cmd: &str,
     env_vars: &HashMap<String, String>,
     timeout_ms: u64,
+    cwd: Option<&Path>,
 ) -> (i32, String) {
     let mut command = tokio::process::Command::new("sh");
-    command.arg("-c").arg(cmd).envs(env_vars);
+    command.arg("-c").arg(cmd).env_clear().envs(env_vars);
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
     // Without this, a timed-out hook's `sh` (and whatever it spawned) leaks as
     // an orphan on drop — same fix as exec_shell.rs's finding #4 kill_on_drop.
     command.kill_on_drop(true);
@@ -40,21 +48,21 @@ mod tests {
 
     #[tokio::test]
     async fn hook_runs_and_returns_exit() {
-        let (exit, out) = run_hook("echo hello", &Default::default(), 5_000).await;
+        let (exit, out) = run_hook("echo hello", &Default::default(), 5_000, None).await;
         assert_eq!(exit, 0);
         assert!(out.contains("hello"));
     }
 
     #[tokio::test]
     async fn hook_nonzero_exit_captured() {
-        let (exit, _) = run_hook("exit 2", &Default::default(), 5_000).await;
+        let (exit, _) = run_hook("exit 2", &Default::default(), 5_000, None).await;
         assert_eq!(exit, 2);
     }
 
     #[tokio::test]
     async fn hook_times_out_and_reports_negative_exit() {
         let start = tokio::time::Instant::now();
-        let (exit, out) = run_hook("sleep 5", &Default::default(), 50).await;
+        let (exit, out) = run_hook("sleep 5", &Default::default(), 50, None).await;
         let elapsed = start.elapsed();
         assert_eq!(exit, -1, "a timed-out hook must report exit -1");
         assert!(

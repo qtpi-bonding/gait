@@ -22,4 +22,5 @@ mod resume_exit;
 mod resume_guard;
 mod run_lock;
 mod session_log_purity;
+mod shell_env;
 mod wayfinder_poc;
