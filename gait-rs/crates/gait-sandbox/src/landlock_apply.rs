@@ -27,9 +27,8 @@ pub(crate) fn probe_abi() -> Result<i32, i32> {
     }
 }
 
-/// Newest ABI this applier handles. Rights added after it (ioctl on devices,
-/// pathname unix sockets) stay unhandled, so they are not restricted.
-const MAX_ABI: i32 = 4;
+/// Newest ABI the landlock 0.4.7 crate knows. ABI < 3 is Unavailable.
+const MAX_ABI: i32 = 9;
 
 /// An errno shown by name when it is one of the expected ones.
 #[derive(Debug, Clone, Copy)]
@@ -113,8 +112,27 @@ pub(crate) fn status_notes(
     }
     if found > MAX_ABI {
         notes.push(format!(
-            "Landlock ABI {found} is newer than the handled ABI {MAX_ABI}: rights added after it are not restricted"
+            "Landlock ABI {found} is newer than the newest ABI this build knows ({MAX_ABI}): rights added after it are not restricted"
         ));
+    }
+    if found < 5 {
+        notes.push(format!(
+            "device ioctl restriction not enforced (Landlock ABI {found} lacks IoctlDev; needs 5)"
+        ));
+    }
+    if found < 6 {
+        notes.push(format!(
+            "signal scoping not enforced (Landlock ABI {found}; needs 6)"
+        ));
+        notes.push(format!(
+            "abstract unix socket scoping not enforced (Landlock ABI {found}; needs 6)"
+        ));
+    }
+    if found >= 9 {
+        notes.push(
+            "pathname unix socket connect (ResolveUnix) not restricted (not handled by this build)"
+                .into(),
+        );
     }
     notes
 }
@@ -123,6 +141,14 @@ fn unavailable(why: SealError) -> anyhow::Result<SandboxStatus> {
     Ok(SandboxStatus::Unavailable {
         reason: why.to_string(),
     })
+}
+
+/// The fs rights this build actually handles: `Execute` stays unhandled
+/// (deny does not affect execute) and `ResolveUnix` stays unhandled (denying
+/// it would break connect() to pathname unix sockets like /run/nscd).
+fn handled_fs(abi: landlock::ABI) -> landlock::BitFlags<landlock::AccessFs> {
+    use landlock::{Access, AccessFs};
+    AccessFs::from_all(abi) & !AccessFs::Execute & !AccessFs::ResolveUnix
 }
 
 /// Apply `scope` to the calling thread using `probe` for the ABI.
@@ -136,7 +162,7 @@ pub(crate) fn apply_with_probe(
     probe: &AbiProbe,
 ) -> anyhow::Result<SandboxStatus> {
     use landlock::{
-        Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        AccessFs, AccessNet, Compatible, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
         RulesetCreatedAttr, ABI,
     };
 
@@ -149,8 +175,7 @@ pub(crate) fn apply_with_probe(
     }
 
     let abi = ABI::from(found.min(MAX_ABI));
-    // Execute stays unhandled: deny does not affect execute.
-    let handled = AccessFs::from_all(abi) & !AccessFs::Execute;
+    let handled = handled_fs(abi);
     let read_rights = AccessFs::from_read(abi) & !AccessFs::Execute;
 
     let mut eff = scope.clone();
@@ -174,10 +199,15 @@ pub(crate) fn apply_with_probe(
             net_handled |= AccessNet::BindTcp;
         }
     }
-    let created = Ruleset::default()
+    let mut built = Ruleset::default()
+        .set_compatibility(landlock::CompatLevel::BestEffort)
         .handle_access(handled)
-        .and_then(|r| r.handle_access(net_handled))
-        .and_then(|r| r.create());
+        .and_then(|r| r.handle_access(net_handled));
+    if found >= 6 {
+        built = built
+            .and_then(|r| r.scope(landlock::Scope::AbstractUnixSocket | landlock::Scope::Signal));
+    }
+    let created = built.and_then(|r| r.create());
     let mut ruleset = match created {
         Ok(r) => r,
         Err(source) => return unavailable(SealError::Create { abi: found, source }),
@@ -310,7 +340,15 @@ mod tests {
         let n = joined(status_notes(&Deny, &net(true, true, &[]), 4));
         assert!(n.contains("UDP"), "{n}");
         assert!(!n.contains("network not enforced"), "{n}");
-        assert!(status_notes(&All, &net(false, false, &[]), 4).is_empty());
+        assert!(status_notes(&All, &net(false, false, &[]), 6).is_empty());
+        let n = joined(status_notes(&All, &net(false, false, &[]), MAX_ABI));
+        assert!(n.contains("ResolveUnix"), "{n}");
+        assert!(!n.contains("ioctl"), "{n}");
+        assert!(!n.contains("signal"), "{n}");
+        assert!(!n.contains("abstract unix socket"), "{n}");
+        let n = joined(status_notes(&All, &net(false, false, &[]), 4));
+        assert!(!n.is_empty(), "{n}");
+        assert!(n.contains("not enforced"), "{n}");
     }
 
     #[test]
@@ -319,6 +357,48 @@ mod tests {
         let n = joined(status_notes(&All, &net(false, false, &[]), MAX_ABI + 2));
         assert!(n.contains(&format!("ABI {}", MAX_ABI + 2)), "{n}");
         assert!(n.contains("not restricted"), "{n}");
+    }
+
+    #[test]
+    fn older_kernel_notes_name_the_unenforced_scoping() {
+        use crate::sandbox::NetworkPolicy::*;
+        // ABI 4: none of the newer scoping is handled yet.
+        let n = joined(status_notes(&All, &net(false, false, &[]), 4));
+        assert!(n.contains("ioctl"), "{n}");
+        assert!(n.contains("signal"), "{n}");
+        assert!(n.contains("abstract unix socket"), "{n}");
+        assert!(n.contains("not enforced"), "{n}");
+        // ABI 5: ioctl on devices is handled, the ABI-6 scoping is not.
+        let n = joined(status_notes(&All, &net(false, false, &[]), 5));
+        assert!(n.contains("signal"), "{n}");
+        assert!(n.contains("abstract unix socket"), "{n}");
+        assert!(!n.contains("ioctl"), "{n}");
+        assert!(n.contains("not enforced"), "{n}");
+        // ABI 6: everything handled, nothing to note.
+        let n = joined(status_notes(&All, &net(false, false, &[]), 6));
+        assert!(!n.contains("ioctl"), "{n}");
+        assert!(!n.contains("signal"), "{n}");
+        assert!(!n.contains("abstract unix socket"), "{n}");
+        assert!(n.is_empty(), "expected no notes at ABI 6: {n}");
+        // ABI 9 (= MAX_ABI): the only note is the unhandled ResolveUnix.
+        let n = joined(status_notes(&All, &net(false, false, &[]), 9));
+        assert!(n.contains("ResolveUnix"), "{n}");
+        assert!(!n.contains("ioctl"), "{n}");
+        assert!(!n.contains("signal"), "{n}");
+        assert!(!n.contains("abstract unix socket"), "{n}");
+        // Newer than the crate knows: named as newer.
+        let n = joined(status_notes(&All, &net(false, false, &[]), 10));
+        assert!(n.contains("newer"), "{n}");
+        assert!(n.contains("ABI 10"), "{n}");
+    }
+
+    #[test]
+    fn resolve_unix_is_not_handled() {
+        let handled = handled_fs(landlock::ABI::V9);
+        assert!(
+            !handled.contains(landlock::AccessFs::ResolveUnix),
+            "ResolveUnix must not be handled: {handled:?}"
+        );
     }
 
     #[test]
@@ -349,6 +429,39 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout).into_owned()
             + &String::from_utf8_lossy(&out.stderr);
         (out.status.success(), text)
+    }
+
+    fn run_child_with(
+        mode: &str,
+        tmp: &std::path::Path,
+        extra: &[(&str, String)],
+    ) -> (bool, String) {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "landlock_apply::tests::child_entry",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("GAIT_LL_CHILD", mode)
+        .env("GAIT_LL_TMP", tmp);
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        (out.status.success(), text)
+    }
+
+    fn scoping_supported() -> bool {
+        match probe_abi() {
+            Ok(abi) if abi >= 6 => true,
+            other => {
+                eprintln!("skipped: scoping needs Landlock ABI 6 ({other:?})");
+                false
+            }
+        }
     }
 
     fn kernel_supports() -> bool {
@@ -382,7 +495,7 @@ mod tests {
                 local_bind: true,
                 ..Default::default()
             },
-            "apply" => SandboxScope {
+            "apply" | "scope" => SandboxScope {
                 read_all: true,
                 writable: vec![inside.clone()],
                 ..Default::default()
@@ -395,6 +508,46 @@ mod tests {
         };
         let status = apply_with_probe(&scope, &probe_abi).unwrap();
         println!("LL-STATUS:{status:?}");
+        if mode == "scope" {
+            let last_errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            let pid: libc::pid_t = std::env::var("GAIT_LL_PID").unwrap().parse().unwrap();
+            match unsafe { libc::kill(pid, 0) } {
+                0 => println!("LL-KILL0:ok"),
+                _ => println!("LL-KILL0:err {}", last_errno()),
+            }
+            match unsafe { libc::kill(pid, libc::SIGTERM) } {
+                0 => println!("LL-KILLTERM:ok"),
+                _ => println!("LL-KILLTERM:err {}", last_errno()),
+            }
+            use std::os::linux::net::SocketAddrExt;
+            let parent_name = std::env::var("GAIT_LL_ABSTRACT").unwrap().into_bytes();
+            let parent_addr =
+                std::os::unix::net::SocketAddr::from_abstract_name(&parent_name).unwrap();
+            match std::os::unix::net::UnixStream::connect_addr(&parent_addr) {
+                Ok(_) => println!("LL-ABSTRACT-CONNECT:ok"),
+                Err(e) => println!("LL-ABSTRACT-CONNECT:err {}", e.raw_os_error().unwrap_or(0)),
+            }
+            // Signalling a process inside its own domain must still work.
+            let mut own = Command::new("sleep").arg("60").spawn().unwrap();
+            match unsafe { libc::kill(own.id() as libc::pid_t, libc::SIGTERM) } {
+                0 => println!("LL-OWN-SIGNAL:ok"),
+                _ => println!("LL-OWN-SIGNAL:err {}", last_errno()),
+            }
+            let own_status = own.wait().unwrap();
+            println!("LL-OWN-WAIT:{own_status:?}");
+            // Binding and connecting over its own abstract socket must work.
+            let own_name = format!("gait-ll-child-{}", std::process::id()).into_bytes();
+            let own_addr = std::os::unix::net::SocketAddr::from_abstract_name(&own_name).unwrap();
+            match std::os::unix::net::UnixListener::bind_addr(&own_addr) {
+                Ok(_) => match std::os::unix::net::UnixStream::connect_addr(&own_addr) {
+                    Ok(_) => println!("LL-OWN-ABSTRACT:ok"),
+                    Err(e) => println!("LL-OWN-ABSTRACT:err {}", e.raw_os_error().unwrap_or(0)),
+                },
+                Err(e) => println!("LL-OWN-ABSTRACT:err {}", e.raw_os_error().unwrap_or(0)),
+            }
+            shell_probe();
+            return;
+        }
         match std::net::TcpStream::connect(addr) {
             Ok(_) => println!("LL-CONNECT:ok"),
             Err(e) => println!("LL-CONNECT:err {:?}", e.raw_os_error()),
@@ -413,6 +566,10 @@ mod tests {
             "LL-OUTSIDE-READ:{}",
             std::fs::read(tmp.join("outside.txt")).is_ok()
         );
+        shell_probe();
+    }
+
+    fn shell_probe() {
         let sh = Command::new("/bin/sh")
             .args(["-c", "echo hi > /dev/null; echo shell-ok"])
             .output();
@@ -500,5 +657,77 @@ mod tests {
             out.contains("LL-SHELL:shell-ok"),
             "shell must load libc and write /dev/null: {out}"
         );
+    }
+
+    /// Spawn the outside targets and run the child in "scope" mode with the
+    /// parent's sleep pid and abstract name in its environment.
+    fn run_scoped_child(
+        tmp: &std::path::Path,
+    ) -> (
+        std::process::Child,
+        std::os::unix::net::UnixListener,
+        (bool, String),
+    ) {
+        use std::os::linux::net::SocketAddrExt;
+        let sleeper = Command::new("sleep").arg("60").spawn().unwrap();
+        let name = format!("gait-ll-parent-{}-{}", std::process::id(), sleeper.id()).into_bytes();
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(&name).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind_addr(&addr).unwrap();
+        let res = run_child_with(
+            "scope",
+            tmp,
+            &[
+                ("GAIT_LL_PID", sleeper.id().to_string()),
+                ("GAIT_LL_ABSTRACT", String::from_utf8(name).unwrap()),
+            ],
+        );
+        (sleeper, listener, res)
+    }
+
+    #[test]
+    fn scoped_child_cannot_signal_or_connect_outside_its_domain() {
+        if !scoping_supported() {
+            return;
+        }
+        let tmp = fixture();
+        let (mut sleeper, _listener, (ok, out)) = run_scoped_child(tmp.path());
+        let alive = matches!(sleeper.try_wait(), Ok(None));
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert!(
+            out.contains(&format!("LL-KILL0:err {}", libc::EPERM)),
+            "kill(0) on the outside pid must fail with EPERM ({}): {out}",
+            libc::EPERM
+        );
+        assert!(
+            out.contains(&format!("LL-KILLTERM:err {}", libc::EPERM)),
+            "kill(SIGTERM) on the outside pid must fail with EPERM ({}): {out}",
+            libc::EPERM
+        );
+        assert!(
+            out.contains(&format!("LL-ABSTRACT-CONNECT:err {}", libc::EPERM)),
+            "connecting to the parent's abstract socket must fail with EPERM ({}): {out}",
+            libc::EPERM
+        );
+        assert!(
+            alive,
+            "the outside sleep must still be alive after the child's attempts: {out}"
+        );
+        assert!(ok, "child failed: {out}");
+    }
+
+    #[test]
+    fn scoped_child_still_works_inside_its_own_domain() {
+        if !scoping_supported() {
+            return;
+        }
+        let tmp = fixture();
+        let (mut sleeper, _listener, (ok, out)) = run_scoped_child(tmp.path());
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert!(out.contains("LL-OWN-SIGNAL:ok"), "{out}");
+        assert!(out.contains("LL-OWN-ABSTRACT:ok"), "{out}");
+        assert!(out.contains("LL-SHELL:shell-ok"), "{out}");
+        assert!(ok, "child failed: {out}");
     }
 }
