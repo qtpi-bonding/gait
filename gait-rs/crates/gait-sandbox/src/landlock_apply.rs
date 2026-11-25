@@ -424,7 +424,18 @@ mod tests {
     }
 
     fn fixture() -> tempfile::TempDir {
+        #[cfg(target_os = "linux")]
+        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        #[cfg(not(target_os = "linux"))]
         let tmp = tempfile::tempdir().unwrap();
+        for root in crate::sandbox::platform_system_reads() {
+            assert!(
+                !tmp.path().starts_with(root),
+                "fixture dir {:?} must live outside every system-read root ({:?})",
+                tmp.path(),
+                root,
+            );
+        }
         std::fs::create_dir(tmp.path().join("in")).unwrap();
         std::fs::write(tmp.path().join("in/f"), b"x").unwrap();
         std::fs::write(tmp.path().join("outside.txt"), b"x").unwrap();
