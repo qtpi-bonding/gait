@@ -792,4 +792,105 @@ mod tests {
             .unwrap();
         assert_eq!(result, serde_json::json!({"n": 3}));
     }
+
+    struct MockMcp;
+
+    #[async_trait]
+    impl McpInvoker for MockMcp {
+        async fn call(
+            &self,
+            _tool: &str,
+            _args: Value,
+            _output_schema: Option<&Value>,
+        ) -> anyhow::Result<Value> {
+            Ok(serde_json::json!("mcp-ran"))
+        }
+    }
+
+    fn mcp_dispatcher_with_deny(deny: Vec<String>) -> CapabilityDispatcher {
+        let registry = vec![
+            crate::config::McpToolDef {
+                server_name: "alpha".to_string(),
+                name: "ping".to_string(),
+                description: "ping alpha".to_string(),
+                schema: serde_json::json!({"type":"object"}),
+                output_schema: None,
+            },
+            crate::config::McpToolDef {
+                server_name: "beta".to_string(),
+                name: "ping".to_string(),
+                description: "ping beta".to_string(),
+                schema: serde_json::json!({"type":"object"}),
+                output_schema: None,
+            },
+        ];
+        let mut clients: HashMap<String, Arc<dyn McpInvoker>> = HashMap::new();
+        clients.insert("alpha".to_string(), Arc::new(MockMcp));
+        clients.insert("beta".to_string(), Arc::new(MockMcp));
+        CapabilityDispatcher::new(
+            std::iter::empty::<Arc<dyn Tool>>(),
+            registry,
+            clients,
+            vec!["alpha".to_string(), "beta".to_string()],
+            None,
+            deny,
+        )
+    }
+
+    async fn invoke_mcp_ping(
+        dispatcher: &CapabilityDispatcher,
+        server: &str,
+        rec: &dyn Rec,
+    ) -> anyhow::Result<Value> {
+        dispatcher
+            .invoke(
+                CapabilityInvocation {
+                    address: CapabilityAddress::Mcp {
+                        server: server.to_string(),
+                        tool: "ping".to_string(),
+                    },
+                    args: serde_json::json!({}),
+                },
+                rec,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn mcp_server_deny_pattern_blocks_that_servers_tool() {
+        let dispatcher = mcp_dispatcher_with_deny(vec!["mcp:alpha".to_string()]);
+        let dir = tempfile::tempdir().unwrap();
+        let rec = recorder(dir.path(), "smcpdeny1");
+        let err = invoke_mcp_ping(&dispatcher, "alpha", &rec)
+            .await
+            .unwrap_err();
+        let coded = err
+            .downcast_ref::<CapabilityError>()
+            .expect("expected CapabilityError");
+        assert!(
+            matches!(coded, CapabilityError::Denied { .. }),
+            "expected Denied, got: {coded}"
+        );
+        let result = invoke_mcp_ping(&dispatcher, "beta", &rec).await.unwrap();
+        assert_eq!(result, serde_json::json!("mcp-ran"));
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_deny_pattern_blocks_only_that_tool() {
+        let dispatcher = mcp_dispatcher_with_deny(vec!["mcp:alpha:ping".to_string()]);
+        let dir = tempfile::tempdir().unwrap();
+        let rec = recorder(dir.path(), "smcpdeny2");
+        let err = invoke_mcp_ping(&dispatcher, "alpha", &rec)
+            .await
+            .unwrap_err();
+        let coded = err
+            .downcast_ref::<CapabilityError>()
+            .expect("expected CapabilityError");
+        assert!(
+            matches!(coded, CapabilityError::Denied { .. }),
+            "expected Denied, got: {coded}"
+        );
+        let result = invoke_mcp_ping(&dispatcher, "beta", &rec).await.unwrap();
+        assert_eq!(result, serde_json::json!("mcp-ran"));
+    }
 }
