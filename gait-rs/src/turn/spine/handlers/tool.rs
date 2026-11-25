@@ -166,19 +166,42 @@ fn detached_shell_scope(
     // enabled, bounded only by the session sandbox config) rather than the
     // per-call tool scope. This lets the process inherit the agent's
     // configured limits (e.g. network, codebase writes) rather than the narrower
-    // default shell scope.
+    // default shell scope. The full agent ceiling is inherited EXCEPT that
+    // `sandbox.tools.shell` overrides set to false narrow it.
     crate::sandbox::ceiling::compute_scope(
-        ToolAccess {
-            reads: true,
-            writes: true,
-            network: true,
-            spawns: true,
-            local_bind: true,
-        },
+        narrow_by_shell_override(
+            ToolAccess {
+                reads: true,
+                writes: true,
+                network: true,
+                spawns: true,
+                local_bind: true,
+            },
+            sandbox_cfg,
+        ),
         sandbox_cfg,
         codebase,
         jail,
     )
+}
+
+/// Narrow the full agent ToolAccess by the `sandbox.tools.shell` override:
+/// each field set to `Some(false)` clears the corresponding capability
+/// (narrowing only); `Some(true)` or `None` leave it unchanged. `spawns` has
+/// no override field and is always preserved.
+fn narrow_by_shell_override(
+    full: crate::types::ToolAccess,
+    sandbox_cfg: &SandboxConfig,
+) -> crate::types::ToolAccess {
+    let override_cfg = sandbox_cfg.tools.get("shell");
+    let is_off = |field: Option<bool>| field == Some(false);
+    crate::types::ToolAccess {
+        reads: full.reads && !override_cfg.map(|o| is_off(o.reads)).unwrap_or(false),
+        writes: full.writes && !override_cfg.map(|o| is_off(o.writes)).unwrap_or(false),
+        network: full.network && !override_cfg.map(|o| is_off(o.network)).unwrap_or(false),
+        spawns: full.spawns,
+        local_bind: full.local_bind && !override_cfg.map(|o| is_off(o.local_bind)).unwrap_or(false),
+    }
 }
 
 /// Add Gait-owned, current-session runtime paths to a hand's bounded scope.
