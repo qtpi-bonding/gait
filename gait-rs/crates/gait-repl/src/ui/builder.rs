@@ -13,7 +13,9 @@ use gait_core::proto::events;
 use gait_core::proto::gait::log::v1 as pb;
 
 pub struct InteractionOutcome {
-    pub event_body: pb::event::Body,
+    /// `None` when the reply was already written to the session log by the
+    /// permission door (`reply_through_door`).
+    pub event_body: Option<pb::event::Body>,
     pub respawn: bool,
 }
 
@@ -201,7 +203,7 @@ impl ReplBuilder {
             });
         }
         Ok(InteractionOutcome {
-            event_body: events::clarify_reply(&replies),
+            event_body: Some(events::clarify_reply(&replies)),
             respawn: true,
         })
     }
@@ -236,7 +238,7 @@ impl ReplBuilder {
             });
         }
         Ok(InteractionOutcome {
-            event_body: events::inform_reply(&replies),
+            event_body: Some(events::inform_reply(&replies)),
             respawn: true,
         })
     }
@@ -250,7 +252,7 @@ impl ReplBuilder {
         use crate::ui::permission::parse_permission_response;
         use gait_core::permissions::PermissionChoice;
         let prompt_str = format!("  {}", RESET);
-        let mut reply_items: Vec<pb::PermissionsReplyItem> = vec![];
+        let mut choices: Vec<PermissionChoice> = vec![];
         let mut cancelled = false;
         let mut bulk: Option<BulkScope> = None;
 
@@ -373,60 +375,17 @@ impl ReplBuilder {
                 }
             };
 
-            if let Err(e) = gait_core::permissions::save_choice(
-                &choice,
-                gait_dir,
-                session_id,
-                gait_ops::permission::resolve_active_mode_name(gait_dir, session_id).as_deref(),
-            ) {
-                eprint!("[gait] warning: could not save permission: {e}\r\n");
-            }
-
-            let perm = match &choice {
-                gait_core::permissions::PermissionChoice::Once(p) => pb::PermissionsReplyItem {
-                    id: item.id.clone(),
-                    decision: pb::Decision::Allow as i32,
-                    text: Some(p.clone()),
-                    scope: pb::Scope::Once as i32,
-                },
-                gait_core::permissions::PermissionChoice::Session(p) => pb::PermissionsReplyItem {
-                    id: item.id.clone(),
-                    decision: pb::Decision::Allow as i32,
-                    text: Some(p.clone()),
-                    scope: pb::Scope::Session as i32,
-                },
-                gait_core::permissions::PermissionChoice::Mode(p) => pb::PermissionsReplyItem {
-                    id: item.id.clone(),
-                    decision: pb::Decision::Allow as i32,
-                    text: Some(p.clone()),
-                    scope: pb::Scope::Mode as i32,
-                },
-                gait_core::permissions::PermissionChoice::Global(p) => pb::PermissionsReplyItem {
-                    id: item.id.clone(),
-                    decision: pb::Decision::Allow as i32,
-                    text: Some(p.clone()),
-                    scope: pb::Scope::Global as i32,
-                },
-                gait_core::permissions::PermissionChoice::Deny => pb::PermissionsReplyItem {
-                    id: item.id.clone(),
-                    decision: pb::Decision::Deny as i32,
-                    text: None,
-                    scope: pb::Scope::Unspecified as i32,
-                },
-                gait_core::permissions::PermissionChoice::DenySession(p) => {
-                    pb::PermissionsReplyItem {
-                        id: item.id.clone(),
-                        decision: pb::Decision::Deny as i32,
-                        text: Some(p.clone()),
-                        scope: pb::Scope::Session as i32,
-                    }
-                }
-            };
-            reply_items.push(perm);
+            choices.push(choice);
         }
 
+        // One save-and-log path for every grant: the door saves each choice,
+        // writes the PermissionsReply to the session log and emits
+        // PermissionDecided. A failed save surfaces here and nothing is
+        // logged.
+        crate::ui::permission::reply_through_door(gait_dir, session_id, &items, &choices)?;
+
         Ok(InteractionOutcome {
-            event_body: events::permissions_reply(&reply_items),
+            event_body: None,
             respawn: !cancelled,
         })
     }
@@ -510,7 +469,9 @@ mod tests {
     #[test]
     fn interaction_outcome_fields() {
         let outcome = InteractionOutcome {
-            event_body: gait_core::proto::events::inform_reply(&[] as &[pb::InformReplyItem]),
+            event_body: Some(gait_core::proto::events::inform_reply(
+                &[] as &[pb::InformReplyItem]
+            )),
             respawn: false,
         };
         assert!(!outcome.respawn);
@@ -640,6 +601,12 @@ mod tests {
             preview: None,
         }];
         let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(
+            gait_core::session::live::log_path(tmp.path(), "sess1")
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
         let outcome = builder
             .run_permission(items, tmp.path(), "sess1")
             .expect("run_permission must not error on a deny reply");
@@ -667,6 +634,12 @@ mod tests {
         }]);
 
         let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(
+            gait_core::session::live::log_path(tmp.path(), "sess1")
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
         builder
             .run_interaction(tmp.path(), "sess1")
             .expect("permission prompt must complete");
@@ -674,5 +647,59 @@ mod tests {
             builder.state.timer.is_none(),
             "interactive prompts must not leave the live timer writing to stderr"
         );
+    }
+
+    #[test]
+    fn a_failed_mode_save_returns_an_error_and_no_reply() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gait_dir = tmp.path().to_path_buf();
+        let sid = "rrf00001";
+
+        // Seed the session log with an active "plan" mode.
+        let log = gait_core::session::live::log_path(&gait_dir, sid);
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        gait_core::proto::wire::append(
+            &log,
+            gait_core::proto::events::mode("plan", vec![], vec![], "", "", None),
+        )
+        .unwrap();
+        assert_eq!(
+            gait_ops::permission::resolve_active_mode_name(&gait_dir, sid).as_deref(),
+            Some("plan"),
+            "setup: mode 'plan' must be active before the prompt"
+        );
+
+        // Sabotage the mode save: `gait_dir/modes` as a regular file makes
+        // `create_dir_all(gait_dir/modes/plan)` fail.
+        std::fs::write(gait_dir.join("modes"), b"not a directory").unwrap();
+
+        let reader = Box::new(crate::repl::ScriptedReader::lines(&["m"]));
+        let mut builder = ReplBuilder::new(reader, crate::theme::Theme::dark());
+        builder.begin_turn();
+        builder.state.interaction_pending = Pending::Permission(vec![pb::PermissionItem {
+            id: "p1".into(),
+            cmd: "ls".into(),
+            patterns: vec!["ls".into()],
+            tool_name: "shell".into(),
+            ..Default::default()
+        }]);
+
+        let result = builder.run_interaction(&gait_dir, sid);
+        assert!(
+            result.is_err(),
+            "a failed mode save must surface an error instead of building a reply"
+        );
+
+        // No PermissionsReply may have been appended to the session log.
+        use gait_core::proto::gait::log::v1::payload;
+        let events = gait_core::session::log::read_events(&log).unwrap();
+        for ev in &events {
+            if let Some(pb::event::Body::Payload(p)) = &ev.body {
+                assert!(
+                    !matches!(p.kind, Some(payload::Kind::PermissionsReply(_))),
+                    "no PermissionsReply event may be recorded when the save failed"
+                );
+            }
+        }
     }
 }
