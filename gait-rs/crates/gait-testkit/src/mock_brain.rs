@@ -71,10 +71,11 @@ pub fn run() {
     // Record the brain's own env so tests can prove per-turn causes reach it.
     let traceparent = std::env::var("TRACEPARENT").unwrap_or_default();
     let baggage = std::env::var("BAGGAGE").unwrap_or_default();
-    let _ = std::fs::write(
+    std::fs::write(
         dir.join(format!("mock_env.{step}.txt")),
         format!("TRACEPARENT={traceparent}\nBAGGAGE={baggage}\n"),
-    );
+    )
+    .expect("mock_brain: could not record env");
     let numbered = dir.join(format!("mock_frames.{step}.bin"));
     let numbered_fixture = numbered.exists();
     let frames_path = if numbered_fixture {
