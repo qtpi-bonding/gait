@@ -1028,6 +1028,44 @@ mod tests {
     }
 
     #[test]
+    fn default_deny_entries_with_tilde_deny_absolute_home_paths() {
+        let gait = tempfile::TempDir::new().unwrap();
+        gait_ops::workspace::run_init(gait.path()).unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let home_path = home.path().to_path_buf();
+        let var = move |k: &str| (k == "HOME").then(|| home_path.clone().into_os_string());
+        let (read, write) = local_deny_policy_with(gait.path(), var);
+        let denied = [
+            home.path().join(".ssh/x"),
+            home.path().join(".aws/credentials"),
+            home.path().join(".config/gh/hosts.yml"),
+        ];
+        for p in &denied {
+            assert!(
+                classify_denial_by_path(p, &read).is_some(),
+                "read of {} must be denied by default tilde-deny patterns",
+                p.display()
+            );
+            assert!(
+                classify_denial_by_path(p, &write).is_some(),
+                "write of {} must be denied by default tilde-deny patterns",
+                p.display()
+            );
+        }
+        let plain = home.path().join("notes/plain.txt");
+        assert!(
+            classify_denial_by_path(&plain, &read).is_none(),
+            "read of {} must not be denied",
+            plain.display()
+        );
+        assert!(
+            classify_denial_by_path(&plain, &write).is_none(),
+            "write of {} must not be denied",
+            plain.display()
+        );
+    }
+
+    #[test]
     fn select_fs_uses_buffered_when_prefetch_present() {
         use gait_proto::gait::sandbox::v1::{Impulse, Prefetch};
         let with = Impulse {
