@@ -779,14 +779,17 @@ pub fn bulk_act(
         )));
     }
 
-    for id in &plan.eligible {
-        require_session(gait_dir, id)?;
-    }
-
     let mut acted: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     let mut warnings: Vec<(String, String)> = Vec::new();
     for id in &plan.eligible {
+        if require_session(gait_dir, id).is_err() {
+            // Nothing on disk (a mint-only ACP id): no worktree dir, no log,
+            // no session branch — nothing to merge or remove, and
+            // SessionLock::acquire needs a dir.
+            acted.push(id.clone());
+            continue;
+        }
         let session_dir = gait_state::session::live::worktree_dir(gait_dir, id);
         let _lock = match gait_state::session::SessionLock::acquire(&session_dir) {
             Ok(l) => l,
@@ -920,9 +923,64 @@ fn emit_session_disposed(
 /// `cli/session.rs` as-is for parity.
 type BulkTargets = (Vec<String>, Vec<(String, String)>);
 
-fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
+/// The ONE per-session bulk verdict. `Eligible` means the session may be acted
+/// on; `Skipped(reason)` means it must be left alone, with a human-readable
+/// reason. Policy (gp, one door): an id with NO `.active/<id>` dir is
+/// `Eligible` only when nothing else on disk knows it either (no log, no
+/// `session/<id>` branch — `require_session` fails): there is nothing to lose,
+/// so the lock check does not apply. If any trace remains, the id is
+/// `Skipped("no-session-dir")`: the lock cannot be acquired without the dir,
+/// so acting on it would silently fail and leave the branch behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    Eligible,
+    Skipped(String),
+}
+
+/// Classify a single session id for the bulk verbs. If `.active/<id>` does not
+/// exist at all, the verdict is `Eligible` only if `require_session` fails too
+/// (no log, no branch); otherwise it is `Skipped("no-session-dir")` (the
+/// leftover session is left alone). Otherwise this is the per-dir logic from
+/// `classify_bulk_targets`: a missing/unparseable log counts as Idle, an idle
+/// session whose lock is held is `Skipped("running")`, and awaiting-* log
+/// states map to their own skip reasons.
+pub fn classify_one(gait_dir: &Path, id: &str) -> anyhow::Result<Verdict> {
     use gait_state::session::log::{session_state, SessionState};
 
+    let path = gait_state::session::live::worktree_dir(gait_dir, id);
+    if !path.exists() {
+        return Ok(if require_session(gait_dir, id).is_err() {
+            Verdict::Eligible
+        } else {
+            Verdict::Skipped("no-session-dir".to_string())
+        });
+    }
+    let tx_path = gait_state::session::live::log_path(gait_dir, id);
+    let state = if tx_path.exists() {
+        session_state(&tx_path)?
+    } else {
+        SessionState::Idle
+    };
+    Ok(match state {
+        SessionState::Idle => {
+            if gait_state::session::SessionLock::is_running(&path) {
+                Verdict::Skipped("running".to_string())
+            } else {
+                Verdict::Eligible
+            }
+        }
+        SessionState::AwaitingPermission { .. } => {
+            Verdict::Skipped("awaiting-permission".to_string())
+        }
+        SessionState::AwaitingClarify { .. } => Verdict::Skipped("awaiting-clarify".to_string()),
+        SessionState::AwaitingInform { .. } => Verdict::Skipped("awaiting-inform".to_string()),
+        SessionState::AwaitingSandboxUnlock { .. } => {
+            Verdict::Skipped("awaiting-unlock".to_string())
+        }
+    })
+}
+
+fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
     let sessions_dir = gait_dir.join(".active");
     let mut eligible: Vec<String> = Vec::new();
     let mut skipped: Vec<(String, String)> = Vec::new();
@@ -940,34 +998,14 @@ fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
         let Some(id) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
         };
-        let tx_path = gait_state::session::live::log_path(gait_dir, &id);
-        // A minted-but-never-prompted session (no log.jsonl) counts as Idle:
-        // eligible unless its lock is held, in which case it is skipped as
-        // "running" — same as any idle session.
-        let state = if tx_path.exists() {
-            match session_state(&tx_path) {
-                Ok(state) => state,
-                Err(_) => continue,
-            }
-        } else {
-            SessionState::Idle
+        // A dir whose verdict is Err is unparseable/non-session: skip it.
+        let verdict = match classify_one(gait_dir, &id) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
-        let reason: Option<String> = match state {
-            SessionState::Idle => {
-                if gait_state::session::SessionLock::is_running(&path) {
-                    Some("running".to_string())
-                } else {
-                    None
-                }
-            }
-            SessionState::AwaitingPermission { .. } => Some("awaiting-permission".to_string()),
-            SessionState::AwaitingClarify { .. } => Some("awaiting-clarify".to_string()),
-            SessionState::AwaitingInform { .. } => Some("awaiting-inform".to_string()),
-            SessionState::AwaitingSandboxUnlock { .. } => Some("awaiting-unlock".to_string()),
-        };
-        match reason {
-            None => eligible.push(id),
-            Some(r) => skipped.push((id, r)),
+        match verdict {
+            Verdict::Eligible => eligible.push(id),
+            Verdict::Skipped(r) => skipped.push((id, r)),
         }
     }
     eligible.sort();
@@ -1402,6 +1440,89 @@ mod tests {
         assert_eq!(outcome.acted, vec!["snolog4".to_string()]);
         assert!(outcome.failed.is_empty());
         assert!(!gait_state::session::live::worktree_dir(ws_discard.path(), "snolog4").exists());
+    }
+
+    // -- classify_one (per-id single-session classification) --
+
+    /// Policy (gp): an id with no `.active/<id>` dir at all (ACP session/new
+    /// mints the id but creates no dir until the first prompt) is Idle, so
+    /// eligible for both verbs.
+    #[test]
+    fn classify_one_of_an_id_with_no_dir_is_eligible() {
+        let ws = TempDir::new().unwrap();
+        assert_eq!(classify_one(ws.path(), "nodir").unwrap(), Verdict::Eligible);
+    }
+
+    /// A `session/<id>` branch with no `.active/<id>` dir (e.g. a partially
+    /// cleaned-up session) must be skipped, not acted on: the lock cannot be
+    /// acquired without the dir, so ACP close/delete would report success
+    /// while leaving the branch behind.
+    #[test]
+    fn classify_one_of_a_branch_without_a_dir_is_skipped() {
+        let ws = ws_with_session("sbr");
+        std::fs::remove_dir_all(gait_state::session::live::worktree_dir(ws.path(), "sbr")).unwrap();
+        // Guard: the branch must still exist, else the id is fully gone and
+        // the Eligible branch below would be exercised instead.
+        let repo = git2::Repository::open(ws.path()).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        if session_branch_exists(ws.path(), "sbr") {
+            // branch still present; nothing to do
+        } else {
+            repo.branch("session/sbr", &commit, true).unwrap();
+        }
+        assert_eq!(
+            classify_one(ws.path(), "sbr").unwrap(),
+            Verdict::Skipped("no-session-dir".into())
+        );
+    }
+
+    #[test]
+    fn classify_one_agrees_with_classify_bulk_for_existing_dirs() {
+        // No log, no lock => Idle => eligible.
+        let ws = ws_with_session("sx1");
+        assert_eq!(classify_one(ws.path(), "sx1").unwrap(), Verdict::Eligible);
+
+        // Our own live PID in the lock => running => skipped.
+        let ws = ws_with_session("sx2");
+        std::fs::write(
+            gait_state::session::live::worktree_dir(ws.path(), "sx2").join("lock"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            classify_one(ws.path(), "sx2").unwrap(),
+            Verdict::Skipped("running".into())
+        );
+    }
+
+    /// Policy (gp): bulk_act on an id with no session dir succeeds, reports it
+    /// as acted, and touches nothing (no dir is created, HEAD is unchanged).
+    #[test]
+    fn bulk_act_on_an_id_with_no_dir_succeeds_and_touches_nothing() {
+        for verb in [BulkVerb::Persist, BulkVerb::Discard] {
+            let ws = ws_with_session("other");
+            let repo = git2::Repository::open(ws.path()).unwrap();
+            let head_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+            drop(repo);
+
+            let plan = BulkPlan {
+                verb,
+                eligible: vec!["nodir".into()],
+                skipped: vec![],
+            };
+            let outcome = bulk_act(ws.path(), &plan, true, true).unwrap();
+            assert_eq!(outcome.acted, vec!["nodir".to_string()]);
+            assert!(outcome.failed.is_empty());
+
+            let repo = git2::Repository::open(ws.path()).unwrap();
+            let head_after = repo.head().unwrap().peel_to_commit().unwrap().id();
+            assert_eq!(head_before, head_after, "HEAD must be unchanged");
+            drop(repo);
+            assert!(
+                gait_state::session::live::worktree_dir(ws.path(), "other").exists(),
+                "the untouched session's dir must still exist"
+            );
+        }
     }
 
     #[test]

@@ -23,38 +23,23 @@ use crate::error::{self, PromptError};
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::replay_updates;
 
-/// Classify a single session for `verb` and reduce `classify_bulk`'s
-/// multi-session result to a one-session verdict: `Ok(plan)` when `sid` is
-/// eligible, `Err(reason)` (the `skipped` reason, or a verb-specific
-/// fallback) when it is not. Shared by `close_session` (Persist) and
-/// `delete_session` (Discard) so the eligibility logic lives in one place.
+/// Classify a single session for `verb` via
+/// `gait_ops::session::classify_one`: `Ok(plan)` when `sid` is eligible,
+/// `Err(reason)` (the skip reason) when it is not. Shared by `close_session`
+/// (Persist) and `delete_session` (Discard) so the eligibility logic lives in
+/// one place.
 fn plan_for_one(
     gait_dir: &Path,
     sid: &str,
     verb: BulkVerb,
 ) -> anyhow::Result<Result<gait_ops::session::BulkPlan, String>> {
-    let plan = gait_ops::session::classify_bulk(gait_dir, verb)?;
-    if plan.eligible.iter().any(|s| s == sid) {
-        return Ok(Ok(gait_ops::session::BulkPlan {
+    match gait_ops::session::classify_one(gait_dir, sid)? {
+        gait_ops::session::Verdict::Eligible => Ok(Ok(gait_ops::session::BulkPlan {
             verb,
             eligible: vec![sid.to_string()],
             skipped: Vec::new(),
-        }));
-    }
-    let why = plan
-        .skipped
-        .iter()
-        .find(|(id, _)| id == sid)
-        .map(|(_, r)| r.clone())
-        .unwrap_or_else(|| format!("session is not eligible to {}", verb_label(verb)));
-    Ok(Err(why))
-}
-
-/// Human label for a bulk verb, used in ineligibility messages.
-fn verb_label(verb: BulkVerb) -> &'static str {
-    match verb {
-        BulkVerb::Persist => "persist",
-        BulkVerb::Discard => "discard",
+        })),
+        gait_ops::session::Verdict::Skipped(why) => Ok(Err(why)),
     }
 }
 

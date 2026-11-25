@@ -467,3 +467,156 @@ async fn session_delete_succeeds_on_a_never_prompted_session() {
         "session/<id> branch is gone after discard"
     );
 }
+
+/// A close on a *mint-only* session (no session dir ever created, only
+/// in-memory bookkeeping from `session/new`) succeeds. Afterwards the session
+/// is unknown: prompts and further closes error. No dir existed to remove.
+#[tokio::test]
+async fn session_close_succeeds_on_a_mint_only_session() {
+    let (_t, gait_dir, codebase) = workspace();
+
+    let mint_map = SessionMap::new();
+    let session_id = drive(mint_map, async |cx| {
+        Ok(cx
+            .send_request(NewSessionRequest::new(codebase.clone()))
+            .block_task()
+            .await?
+            .session_id
+            .to_string())
+    })
+    .await
+    .expect("session/new should succeed");
+
+    let map = SessionMap::new();
+    map.insert(gait_dir.clone(), session_id.clone(), codebase.clone());
+
+    let (close_ok, prompt_err, second_close_err) = drive(map, async |cx| {
+        let close_ok = cx
+            .send_request(CloseSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+            .is_ok();
+        let prompt_err = cx
+            .send_request(PromptRequest::new(session_id.clone(), Vec::new()))
+            .block_task()
+            .await
+            .is_err();
+        let second_close_err = cx
+            .send_request(CloseSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+            .is_err();
+        Ok((close_ok, prompt_err, second_close_err))
+    })
+    .await
+    .expect("connection stays alive");
+
+    assert!(close_ok, "close on a mint-only session should succeed");
+    assert!(
+        prompt_err,
+        "a subsequent prompt to a closed mint-only session errors unknown session"
+    );
+    assert!(
+        second_close_err,
+        "a second close of a closed mint-only session errors"
+    );
+    assert!(
+        !gait_state::session::live::worktree_dir(&gait_dir, &session_id).exists(),
+        "no worktree was ever created"
+    );
+}
+
+/// A delete on a *mint-only* session (no session dir ever created) succeeds;
+/// a second delete for the same id errors. No dir existed to remove.
+#[tokio::test]
+async fn session_delete_succeeds_on_a_mint_only_session() {
+    let (_t, gait_dir, codebase) = workspace();
+
+    let mint_map = SessionMap::new();
+    let session_id = drive(mint_map, async |cx| {
+        Ok(cx
+            .send_request(NewSessionRequest::new(codebase.clone()))
+            .block_task()
+            .await?
+            .session_id
+            .to_string())
+    })
+    .await
+    .expect("session/new should succeed");
+
+    let map = SessionMap::new();
+    map.insert(gait_dir.clone(), session_id.clone(), codebase.clone());
+
+    let (delete_ok, second_delete_err) = drive(map, async |cx| {
+        let delete_ok = cx
+            .send_request(DeleteSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+            .is_ok();
+        let second_delete_err = cx
+            .send_request(DeleteSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await
+            .is_err();
+        Ok((delete_ok, second_delete_err))
+    })
+    .await
+    .expect("connection stays alive");
+
+    assert!(delete_ok, "delete on a mint-only session should succeed");
+    assert!(
+        second_delete_err,
+        "a second delete of a mint-only session errors"
+    );
+    assert!(
+        !gait_state::session::live::worktree_dir(&gait_dir, &session_id).exists(),
+        "no worktree was ever created"
+    );
+}
+
+/// Closing a mint-only session twice within one connection: the first close
+/// succeeds, the second answers "session unknown" for the same id.
+#[tokio::test]
+async fn a_second_close_of_a_mint_only_session_answers_session_unknown() {
+    let (_t, gait_dir, codebase) = workspace();
+
+    let mint_map = SessionMap::new();
+    let session_id = drive(mint_map, async |cx| {
+        Ok(cx
+            .send_request(NewSessionRequest::new(codebase.clone()))
+            .block_task()
+            .await?
+            .session_id
+            .to_string())
+    })
+    .await
+    .expect("session/new should succeed");
+
+    let map = SessionMap::new();
+    map.insert(gait_dir.clone(), session_id.clone(), codebase.clone());
+
+    let (first, second) = drive(map, async |cx| {
+        let first = cx
+            .send_request(CloseSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await;
+        let second = cx
+            .send_request(CloseSessionRequest::new(session_id.clone()))
+            .block_task()
+            .await;
+        Ok((first.is_ok(), second.err().map(|e| e.to_string())))
+    })
+    .await
+    .expect("connection stays alive");
+
+    assert!(first, "the first close of a mint-only session succeeds");
+    let second_err = second.expect("the second close must be an error");
+    assert!(
+        second_err.contains("unknown session"),
+        "second close must answer session unknown; got: {second_err}"
+    );
+    assert!(
+        !gait_state::session::live::worktree_dir(&gait_dir, &session_id).exists(),
+        "no worktree was ever created"
+    );
+}
