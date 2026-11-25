@@ -426,10 +426,25 @@ pub async fn run_tool_as_spine(
         // Mirrors check_own_tool_scope (src/turn/mod.rs:709-731).
         if sandbox_on {
             let is_write = impulse.tool != "read";
-            let ok = if is_write {
-                scope.writable.iter().any(|w| path.starts_with(w))
-            } else {
-                scope.read_all || scope.readable.iter().any(|r| path.starts_with(r))
+            // Follow symlinks: compare where the target really lands against
+            // where each scope root really lands. An unresolvable target is
+            // never in scope.
+            let resolved = crate::sandbox::resolve_links(path);
+            let ok = match resolved.as_ref() {
+                None => false,
+                Some(target) if is_write => scope
+                    .writable
+                    .iter()
+                    .filter_map(|w| crate::sandbox::resolve_links(w))
+                    .any(|w| target.starts_with(&w)),
+                Some(target) => {
+                    scope.read_all
+                        || scope
+                            .readable
+                            .iter()
+                            .filter_map(|r| crate::sandbox::resolve_links(r))
+                            .any(|r| target.starts_with(&r))
+                }
             };
             if !ok {
                 // Lazily consult the session log for once/session unlock grants
@@ -1619,6 +1634,133 @@ mod tests {
                 "[{tool} inside] read delegate must have run: {rendered}"
             );
             let _ = write_called;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delegated_read_and_write_refuse_a_link_that_leaves_the_workspace() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Fake {
+            read_called: Arc<AtomicBool>,
+            write_called: Arc<AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl crate::embed::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                self.read_called.store(true, Ordering::SeqCst);
+                Ok(None)
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                self.write_called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        async fn run_case(
+            ws: &Path,
+            tool: &str,
+            file_path: &str,
+            session: &str,
+        ) -> (String, Arc<AtomicBool>, Arc<AtomicBool>) {
+            let read_called = Arc::new(AtomicBool::new(false));
+            let write_called = Arc::new(AtomicBool::new(false));
+            let fake = Fake {
+                read_called: read_called.clone(),
+                write_called: write_called.clone(),
+            };
+
+            std::fs::create_dir_all(crate::session::live::worktree_dir(ws, session)).unwrap();
+            let mut s = pbjson_types::Struct::default();
+            s.fields.insert(
+                "file_path".into(),
+                pbjson_types::Value {
+                    kind: Some(pbjson_types::value::Kind::StringValue(
+                        file_path.to_string(),
+                    )),
+                },
+            );
+            let impulse = gait_proto::gait::sandbox::v1::Impulse {
+                tool: tool.to_string(),
+                args: Some(s),
+                requested: None,
+                prefetch: None,
+                shell_whitelist_patterns: vec![],
+                output_capture_mode: ProtoOutputCaptureMode::Returned as i32,
+                output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                    as i32,
+            };
+            let group = crate::process::establish(None);
+            let feedback = run_tool_as_spine(
+                impulse,
+                &crate::config::SandboxConfig::default(),
+                ws,
+                ws,
+                session,
+                true, // sandbox ON → spine enforces scope
+                Path::new("/nonexistent-exe"),
+                group,
+                Some(Arc::new(fake) as Arc<dyn crate::embed::FsDelegate>),
+            )
+            .await;
+            let rendered = serde_json::to_string(&feedback.result).unwrap();
+            (rendered, read_called, write_called)
+        }
+
+        for tool in ["read", "write"] {
+            let ws = tempfile::TempDir::new().unwrap();
+            let ws_str = format!("{}", ws.path().display());
+            let outside = tempfile::TempDir::new().unwrap();
+
+            // A real file outside the workspace, plus a link `ws/out` to its directory.
+            std::fs::write(outside.path().join("secret"), "s").unwrap();
+            std::os::unix::fs::symlink(outside.path(), ws.path().join("out")).unwrap();
+
+            // A dangling link `ws/fresh` to a not-yet-existing file outside.
+            let fresh = outside.path().join("fresh-file");
+            std::os::unix::fs::symlink(&fresh, ws.path().join("fresh")).unwrap();
+
+            // An in-workspace link: `ws/in` -> `ws/sub` with a readable file.
+            std::fs::create_dir_all(ws.path().join("sub")).unwrap();
+            std::fs::write(ws.path().join("sub/ok"), "hello").unwrap();
+            std::os::unix::fs::symlink(ws.path().join("sub"), ws.path().join("in")).unwrap();
+
+            // Through the escaping directory link: refused, delegate untouched.
+            let escaped = format!("{ws_str}/out/secret");
+            let (rendered, read_called, write_called) =
+                run_case(ws.path(), tool, &escaped, &format!("sess-{tool}-out")).await;
+            assert!(
+                rendered.to_lowercase().contains("out of scope"),
+                "[{tool} out] link leaving the workspace must be rejected: {rendered}"
+            );
+            assert!(!read_called.load(Ordering::SeqCst));
+            assert!(!write_called.load(Ordering::SeqCst));
+
+            // Through the dangling link to a not-yet-existing outside file.
+            let fresh_path = format!("{ws_str}/fresh");
+            let (rendered, read_called, write_called) =
+                run_case(ws.path(), tool, &fresh_path, &format!("sess-{tool}-fresh")).await;
+            assert!(
+                rendered.to_lowercase().contains("out of scope"),
+                "[{tool} fresh] dangling link outside must be rejected: {rendered}"
+            );
+            assert!(!read_called.load(Ordering::SeqCst));
+            assert!(!write_called.load(Ordering::SeqCst));
+
+            // An in-workspace link is NOT rejected and the read delegate runs.
+            let inside = format!("{ws_str}/in/ok");
+            let (rendered, read_called, _write_called) =
+                run_case(ws.path(), tool, &inside, &format!("sess-{tool}-in")).await;
+            assert!(
+                !rendered.to_lowercase().contains("out of scope"),
+                "[{tool} in] in-workspace link must not be rejected: {rendered}"
+            );
+            assert!(
+                read_called.load(Ordering::SeqCst),
+                "[{tool} in] read delegate must have run: {rendered}"
+            );
         }
     }
 

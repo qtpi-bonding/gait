@@ -62,9 +62,13 @@ pub(crate) fn enrich_permissions_preview(
         // Empty targets → no declared scope; treat as out-of-scope (skip preview).
         let in_scope = !targets.is_empty()
             && targets.iter().all(|(path, _dim)| {
-                // Clean lexically first so `..` cannot escape, then canonicalize so /var and /private/var compare equal.
+                // Follow symlinks (and lexical `..`) on both sides so an
+                // in-codebase link to /var vs /private/var compares equal and
+                // a link that leaves the codebase is refused.
                 let cleaned = crate::sandbox::clean_target(codebase, path);
-                let canonical = cleaned.canonicalize().unwrap_or_else(|_| cleaned.clone());
+                let Some(canonical) = crate::sandbox::resolve_links(&cleaned) else {
+                    return false;
+                };
                 ceiling.read_all
                     || ceiling.readable.iter().any(|r| canonical.starts_with(r))
                     || ceiling.writable.iter().any(|w| canonical.starts_with(w))
@@ -316,5 +320,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A link inside the codebase that points outside must not get a preview:
+    /// the scope check follows symlinks and refuses the escaped target.
+    #[cfg(unix)]
+    #[test]
+    fn preview_is_skipped_for_a_link_that_leaves_the_codebase() {
+        use crate::config::SandboxConfig;
+        use crate::proto::gait::log::v1::{event, payload, PermissionItem};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let codebase = dir.path();
+        let outside = tempfile::TempDir::new().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "old content\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), codebase.join("link")).unwrap();
+
+        let target = format!("{}/link/secret.txt", codebase.display());
+        let item = PermissionItem {
+            id: "req-escape-link".into(),
+            cmd: format!("write {target}"),
+            reason: "write requires permission".into(),
+            patterns: vec![],
+            tool_name: "write".into(),
+            tool_args: crate::proto::events::to_struct(&serde_json::json!({
+                "file_path": target,
+                "content": "new content\n"
+            })),
+            preview: None,
+        };
+
+        let mut evt = make_permissions_event(vec![item]);
+        let sandbox_cfg = SandboxConfig::default();
+        enrich_permissions_preview(&mut evt, codebase, codebase, "s1", &sandbox_cfg);
+
+        let Some(event::Body::Payload(p)) = evt.body.as_ref() else {
+            panic!("expected payload body");
+        };
+        let Some(payload::Kind::Permissions(perm)) = p.kind.as_ref() else {
+            panic!("expected permissions");
+        };
+        assert!(
+            perm.items[0].preview.is_none(),
+            "preview must stay None for a link that leaves the codebase"
+        );
     }
 }

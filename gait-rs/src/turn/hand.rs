@@ -209,7 +209,8 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
 
     // App-level deny-policy gate -- check-before-serve, not react-after-fail.
     // It covers only the read, write and apply_patch tools (never `shell`), and
-    // it matches path prefixes without resolving symlinks or `..`. It is the
+    // it matches path prefixes — as written, and with symlinks resolved — but
+    // never through `shell`. It is the
     // app-level layer; on Linux the Landlock seal adds kernel-level path denies.
     // On macOS the Seatbelt profile also emits `deny` rules for deny subpaths
     // (sandbox.rs `build_sbpl`). An earlier kernel deny attempt was reverted
@@ -644,20 +645,32 @@ fn classify_proactive_denial(
 }
 
 /// Compare a known target path against a deny policy, using the `glob` crate
-/// for pattern matching. Returns the first matched pattern string, or `None`
-/// if the path isn't denied by any pattern. This is the ONLY classification
-/// mechanism available — the kernel doesn't report which rule fired even when
-/// it does enforce something, so gait must do this comparison itself using
-/// data it already has locally.
+/// for pattern matching. The path is denied if it matches as written OR if its
+/// fully-resolved form (symlinks followed) matches a resolved deny subpath or
+/// deny glob; a target that cannot be resolved is denied ("unresolvable path").
+/// Returns the first matched pattern string, or `None` if the path isn't
+/// denied by any pattern. This is the ONLY classification mechanism
+/// available — the kernel doesn't report which rule fired even when it does
+/// enforce something, so gait must do this comparison itself using data it
+/// already has locally.
 fn classify_denial_by_path(target: &Path, deny: &DenyPolicy) -> Option<String> {
+    let resolved = crate::sandbox::resolve_links(target);
+    if resolved.is_none() {
+        return Some("unresolvable path".to_owned());
+    }
+    let resolved = resolved.unwrap();
+    let as_written = |subpath: &Path| target.starts_with(subpath);
+    let as_resolved = |subpath: &Path| {
+        crate::sandbox::resolve_links(subpath).is_some_and(|sp| resolved.starts_with(&sp))
+    };
     for subpath in &deny.subpaths {
-        if target.starts_with(subpath) {
+        if as_written(subpath) || as_resolved(subpath) {
             return Some(subpath.to_string_lossy().into_owned());
         }
     }
     for pattern in &deny.globs {
         if let Ok(compiled) = glob::Pattern::new(pattern) {
-            if compiled.matches_path(target) {
+            if compiled.matches_path(target) || compiled.matches_path(&resolved) {
                 return Some(pattern.clone());
             }
         }
@@ -840,6 +853,57 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn deny_policy_follows_links() {
+        let base = tempfile::TempDir::new().unwrap();
+        let secret_dir = base.path().join("secrets");
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        std::fs::write(secret_dir.join("key"), "s").unwrap();
+
+        // A deny subpath on the real directory...
+        let deny = DenyPolicy {
+            subpaths: vec![secret_dir.clone()],
+            globs: vec![],
+        };
+
+        // ...denies a read of the real file THROUGH a link from elsewhere.
+        let ws = tempfile::TempDir::new().unwrap();
+        std::os::unix::fs::symlink(&secret_dir, ws.path().join("leak")).unwrap();
+        assert_eq!(
+            classify_denial_by_path(&ws.path().join("leak/key"), &deny),
+            Some(secret_dir.to_string_lossy().into_owned()),
+            "a read through a link to a denied directory must be denied"
+        );
+
+        // ...and denies the read of the real path when the deny subpath is
+        // written through a link (the link resolves onto the real directory).
+        let link_dir = tempfile::TempDir::new().unwrap();
+        std::os::unix::fs::symlink(&secret_dir, link_dir.path().join("mirror")).unwrap();
+        let deny_via_link = DenyPolicy {
+            subpaths: vec![link_dir.path().join("mirror")],
+            globs: vec![],
+        };
+        assert_eq!(
+            classify_denial_by_path(&secret_dir.join("key"), &deny_via_link),
+            Some(
+                link_dir
+                    .path()
+                    .join("mirror")
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            "a deny subpath written through a link must deny the real path"
+        );
+
+        // An unrelated path is allowed.
+        assert_eq!(
+            classify_denial_by_path(&ws.path().join("plain.txt"), &deny),
+            None,
+            "an unrelated path must not be denied"
+        );
+    }
+
     #[test]
     fn classify_proactive_denial_blocks_read_of_denied_path() {
         use gait_proto::gait::sandbox::v1::Impulse;
@@ -945,6 +1009,106 @@ mod tests {
         // paths an arbitrary shell command might touch without parsing shell
         // syntax, which is out of scope.
         assert!(classify_proactive_denial("shell", &impulse, codebase, &scope).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deny_policy_ignores_case_where_the_filesystem_does() {
+        let base = tempfile::TempDir::new().unwrap();
+        // Probe whether this filesystem is case-insensitive; skip otherwise.
+        let probe = base.path().join("probe");
+        std::fs::write(&probe, b"").unwrap();
+        if !base.path().join("PROBE").exists() {
+            return;
+        }
+        std::fs::create_dir_all(base.path().join("secrets")).unwrap();
+        std::fs::write(base.path().join("secrets/x"), "s").unwrap();
+        std::fs::write(base.path().join("secret.env"), "e").unwrap();
+
+        // (a) deny subpath written with the on-disk case: targets opened with
+        // other case spellings are still denied.
+        let deny = DenyPolicy {
+            subpaths: vec![base.path().join("secrets")],
+            globs: vec![],
+        };
+        assert!(classify_denial_by_path(&base.path().join("Secrets/x"), &deny).is_some());
+        assert!(classify_denial_by_path(&base.path().join("SECRETS/x"), &deny).is_some());
+
+        // (b) deny subpath written with the WRONG case: the resolved path has
+        // the on-disk case, so the real target is still denied.
+        let deny_upper = DenyPolicy {
+            subpaths: vec![base.path().join("SECRETS")],
+            globs: vec![],
+        };
+        assert!(classify_denial_by_path(&base.path().join("secrets/x"), &deny_upper).is_some());
+
+        // (c) deny glob on the directory: wrong-case spelling of the target is denied.
+        let deny_glob = DenyPolicy {
+            subpaths: vec![],
+            globs: vec!["**/secrets/**".to_string()],
+        };
+        assert!(classify_denial_by_path(&base.path().join("SECRETS/x"), &deny_glob).is_some());
+
+        // (d) deny glob on a file: wrong-case spelling of the file is denied.
+        let deny_file = DenyPolicy {
+            subpaths: vec![],
+            globs: vec!["**/secret.env".to_string()],
+        };
+        assert!(classify_denial_by_path(&base.path().join("SECRET.ENV"), &deny_file).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_proactive_denial_follows_a_link_into_a_denied_directory() {
+        use gait_proto::gait::sandbox::v1::Impulse;
+
+        let base = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(base.path().join("secrets")).unwrap();
+        std::fs::write(base.path().join("secrets/x"), "s").unwrap();
+
+        let codebase_dir = tempfile::TempDir::new().unwrap();
+        std::os::unix::fs::symlink(base.path().join("secrets"), codebase_dir.path().join("ln"))
+            .unwrap();
+
+        for tool in ["read", "write"] {
+            let mut args = pbjson_types::Struct::default();
+            args.fields.insert(
+                "file_path".into(),
+                pbjson_types::Value {
+                    kind: Some(pbjson_types::value::Kind::StringValue("ln/x".into())),
+                },
+            );
+            let impulse = Impulse {
+                tool: tool.into(),
+                args: Some(args),
+                requested: None,
+                prefetch: None,
+                shell_whitelist_patterns: vec![],
+                output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned
+                    as i32,
+                output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                    as i32,
+            };
+            let scope = SandboxScope {
+                read_deny: DenyPolicy {
+                    subpaths: vec![base.path().join("secrets")],
+                    globs: vec![],
+                },
+                write_deny: DenyPolicy {
+                    subpaths: vec![base.path().join("secrets")],
+                    globs: vec![],
+                },
+                ..SandboxScope::default()
+            };
+
+            let denial = classify_proactive_denial(tool, &impulse, codebase_dir.path(), &scope)
+                .expect("a link into a denied directory must be denied");
+            assert_eq!(denial.dimension, tool);
+            assert_eq!(
+                denial.pattern,
+                base.path().join("secrets").to_string_lossy().into_owned()
+            );
+        }
     }
 
     #[test]
