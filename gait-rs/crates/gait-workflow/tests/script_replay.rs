@@ -65,16 +65,6 @@ async fn run_js_full(
     .await
 }
 
-/// First-run flavor: no force, no forced reruns.
-async fn run_js(
-    tmp: &TempDir,
-    run_id: &str,
-    source: &str,
-    exec: Arc<ScriptedTurnExecutor>,
-) -> anyhow::Result<WorkflowOutcome> {
-    run_js_full(tmp, run_id, source, exec, false, vec![]).await
-}
-
 /// Continue flavor: same run id, no force flags (the plain
 /// `gait workflow continue <run_id>` case).
 async fn continue_js(
@@ -158,14 +148,14 @@ async fn completed_step_replays_without_running() {
     let source = marker_script(&marker, "s1");
     let run_id = "replay-once-001";
 
-    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(
         matches!(first, Ok(WorkflowOutcome::Completed)),
         "first run must complete"
     );
     assert_eq!(marker_lines(&marker), 1, "first run writes once");
 
-    let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let second = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(
         matches!(second, Ok(WorkflowOutcome::Completed)),
         "second run must complete, not error with 'resuming script runs is not implemented yet'"
@@ -193,7 +183,7 @@ async fn parallel_steps_replay_in_any_settle_order() {
     "#;
     let run_id = "replay-par-001";
 
-    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(matches!(first, Ok(WorkflowOutcome::Completed)));
 
     // On run one the log's completion order is fast then slow (sleep 0.3
@@ -213,7 +203,7 @@ async fn parallel_steps_replay_in_any_settle_order() {
         "run one must settle fast before slow for this test to be meaningful: {completes:?}"
     );
 
-    let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let second = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     match second {
         Ok(WorkflowOutcome::Completed) => {}
         Err(e) => {
@@ -309,7 +299,7 @@ async fn crashed_step_trips_guard_and_force_rerun_clears_it() {
     );
     let run_id = "replay-crash-001";
 
-    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(matches!(first, Ok(WorkflowOutcome::Completed)));
 
     // Truncate the log right after NodeStart(crashed): drop its
@@ -327,7 +317,7 @@ async fn crashed_step_trips_guard_and_force_rerun_clears_it() {
     );
 
     // Plain continue refuses: the open node has no terminal event.
-    let guarded = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let guarded = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     let text = err_text(guarded);
     assert!(
         text.contains("crashed"),
@@ -452,7 +442,7 @@ async fn now_and_random_replay_same_values() {
     "#;
     let run_id = "replay-now-001";
 
-    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     let text1 = err_text(first);
     let s = text1.find('[').expect("JSON array in first error");
     let e = text1.rfind(']').expect("JSON array in first error");
@@ -462,7 +452,7 @@ async fn now_and_random_replay_same_values() {
         "now/random must produce real values: {values1}"
     );
 
-    let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let second = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     let text2 = err_text(second);
     let s2 = text2.find('[').expect("JSON array in second error");
     let e2 = text2.rfind(']').expect("JSON array in second error");
@@ -490,7 +480,7 @@ async fn continue_after_failed_run_matches_pinned_behavior() {
     "#;
     let run_id = "replay-fail-001";
 
-    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     let text = err_text(first);
     assert!(
         // Today's shell-timeout error is "Code Mode runtime error: shell
@@ -500,7 +490,7 @@ async fn continue_after_failed_run_matches_pinned_behavior() {
         "the first run must fail on the shell timeout: {text}"
     );
 
-    let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let second = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(
         matches!(second, Ok(WorkflowOutcome::Completed)),
         "continue after a failed run must complete"
@@ -551,13 +541,13 @@ async fn replayed_steps_do_not_count_toward_the_step_cap() {
     "#;
     let run_id = "replay-cap-001";
 
-    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let first = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(
         err_text(first).contains("step cap"),
         "the first run must hit the cap on s3"
     );
 
-    let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
+    let second = continue_js(&tmp, run_id, source, Arc::new(ScriptedTurnExecutor::new())).await;
     assert!(
         matches!(second, Ok(WorkflowOutcome::Completed)),
         "the continue must not count replayed steps against the cap"
