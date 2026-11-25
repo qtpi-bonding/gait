@@ -321,6 +321,48 @@ fn restore_to_does_not_touch_codebase_git() {
 }
 
 #[test]
+fn restore_to_leaves_a_nested_git_repo_untouched() {
+    let (ws, cb, id) = fixture();
+    GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+    let nested = cb.path().join("nested");
+    Repository::init(&nested).unwrap();
+    std::fs::write(nested.join("inner.txt"), "inner\n").unwrap();
+    std::fs::write(nested.join(".git").join("marker"), "m\n").unwrap();
+    let baseline_sha = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
+        .unwrap();
+
+    std::fs::write(cb.path().join("created_later.txt"), "later\n").unwrap();
+    std::fs::write(nested.join("later.txt"), "later\n").unwrap();
+
+    GitCheckpointRepo
+        .restore_to(ws.path(), &id, cb.path(), &baseline_sha)
+        .unwrap();
+
+    assert!(
+        !cb.path().join("created_later.txt").exists(),
+        "undo must still remove files created after the checkpoint"
+    );
+    assert!(
+        nested.join("inner.txt").exists()
+            && std::fs::read_to_string(nested.join("inner.txt")).unwrap() == "inner\n",
+        "undo must not delete or alter files in a nested git repo"
+    );
+    assert!(
+        nested.join("later.txt").exists(),
+        "undo must not delete untracked files in a nested git repo"
+    );
+    assert!(
+        nested.join(".git").join("marker").exists(),
+        "undo must not delete or alter a nested git repo internals"
+    );
+    assert!(
+        nested.join(".git").is_dir(),
+        "undo must not delete or alter a nested git repo directory"
+    );
+}
+
+#[test]
 fn remove_deletes_shadow_db() {
     let (ws, cb, id) = fixture();
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
