@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::LazyLock;
+use std::sync::{Arc, Mutex};
 
 static WF_SCRIPT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex literal"));
@@ -99,6 +100,26 @@ impl WebfetchTool {
         self.network_allowlist = Some(hosts);
         self
     }
+}
+
+/// Check a URL's host against the egress allowlist. Returns the denial
+/// message (`Some`) when the host is not permitted (a missing host is never permitted).
+fn check_egress(allowlist: &[String], url: Option<&reqwest::Url>) -> Option<String> {
+    let host = url
+        .and_then(|u| u.host_str())
+        .map(|h: &str| h.to_lowercase());
+    let display = host.as_deref().unwrap_or("<no host>");
+    let permitted = host.as_deref().is_some_and(|host| {
+        allowlist.iter().any(|allowed| {
+            let allowed = allowed.to_lowercase();
+            allowed == host
+                || (allowed.starts_with("*.")
+                    && !allowed[2..].is_empty()
+                    && host.ends_with(&allowed[1..]))
+        })
+    });
+    (!permitted)
+        .then(|| format!("egress denied: host '{display}' not in sandbox.network allowlist"))
 }
 
 /// Strip all HTML tags and decode entities. Uses regex for char-boundary-safe processing.
@@ -233,23 +254,9 @@ impl Tool for WebfetchTool {
         // the kernel SBPL allows all outbound (can't filter by host). Check
         // the URL's host against the allowlist here to close the gap.
         if let Some(ref allowlist) = self.network_allowlist {
-            let host = reqwest::Url::parse(&params.url)
-                .ok()
-                .and_then(|u: reqwest::Url| u.host_str().map(|h: &str| h.to_lowercase()));
-            let permitted = host.as_deref().is_some_and(|h| {
-                allowlist.iter().any(|allowed| {
-                    let allowed = allowed.to_lowercase();
-                    allowed == h
-                        || (allowed.starts_with("*.")
-                            && !allowed[2..].is_empty()
-                            && h.ends_with(&allowed[1..]))
-                })
-            });
-            if !permitted {
-                let display = host.as_deref().unwrap_or("<no host>");
-                return Err(crate::tools::ToolError::Execute(format!(
-                    "egress denied: host '{display}' not in sandbox.network allowlist"
-                )));
+            let first_url = reqwest::Url::parse(&params.url).ok();
+            if let Some(msg) = check_egress(allowlist, first_url.as_ref()) {
+                return Err(crate::tools::ToolError::Execute(msg));
             }
         }
 
@@ -266,7 +273,30 @@ impl Tool for WebfetchTool {
             FetchFormat::Html    => "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, */*;q=0.1",
         };
 
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        let denied_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        if let Some(ref allowlist) = self.network_allowlist {
+            let allowlist = allowlist.clone();
+            let slot = Arc::clone(&denied_slot);
+            let policy = reqwest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error("too many redirects");
+                }
+                match check_egress(&allowlist, Some(attempt.url())) {
+                    None => attempt.follow(),
+                    Some(msg) => {
+                        if let Ok(mut guard) = slot.lock() {
+                            *guard = Some(msg);
+                        }
+                        attempt.stop()
+                    }
+                }
+            });
+            builder = builder.redirect(policy);
+        } else {
+            builder = builder.redirect(reqwest::redirect::Policy::default());
+        }
+        let client = builder
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
             .build()
@@ -281,6 +311,12 @@ impl Tool for WebfetchTool {
             .map_err(|e| {
                 crate::tools::ToolError::Internal(anyhow::anyhow!("Request failed: {}", e))
             })?;
+
+        if let Ok(guard) = denied_slot.lock() {
+            if let Some(msg) = guard.as_ref() {
+                return Err(crate::tools::ToolError::Execute(msg.clone()));
+            }
+        }
 
         // Retry with honest UA on Cloudflare challenge
         let response = if initial.status() == 403 && initial.headers().get("cf-mitigated").is_some()
@@ -301,6 +337,12 @@ impl Tool for WebfetchTool {
         } else {
             initial
         };
+
+        if let Ok(guard) = denied_slot.lock() {
+            if let Some(msg) = guard.as_ref() {
+                return Err(crate::tools::ToolError::Execute(msg.clone()));
+            }
+        }
 
         if !response.status().is_success() {
             return Err(crate::tools::ToolError::Execute(format!(
