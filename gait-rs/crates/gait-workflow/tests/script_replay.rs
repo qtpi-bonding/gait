@@ -218,9 +218,11 @@ async fn parallel_steps_replay_in_any_settle_order() {
     }
 }
 
-/// A completed step whose KIND changed in the script (shell -> turn) must
-/// fail the continue, naming the step — even with `force = true`, so the
-/// source-drift check does not trip first.
+/// A completed step whose KIND changed between the LOGGED source and the
+/// source used for the continue (shell -> turn) must fail the continue,
+/// naming the step. `continue` always runs the LOGGED source, so the drift
+/// check passes (disk file untouched); the kind change must still be caught
+/// against the journal.
 #[tokio::test]
 async fn changed_kind_for_same_id_fails() {
     let tmp = TempDir::new().unwrap();
@@ -230,10 +232,6 @@ async fn changed_kind_for_same_id_fails() {
     let original = r#"
         await gait.wf.config({ name: "t" });
         await gait.wf.shell({ id: "step-kind-changed", argv: ["true"] });
-    "#;
-    let changed = r#"
-        await gait.wf.config({ name: "t" });
-        await gait.wf.turn({ id: "step-kind-changed", prompt: "now a turn" });
     "#;
     let run_id = "replay-kind-001";
 
@@ -246,32 +244,45 @@ async fn changed_kind_for_same_id_fails() {
     .await;
     assert!(matches!(first, Ok(WorkflowOutcome::Completed)));
 
-    let mut exec = ScriptedTurnExecutor::new();
-    exec.script_text("turn out");
-    let second = run_js_full(
+    // Edit the run log so the LOGGED source uses a turn for the same id.
+    // JSON-escape each JS line the way serde_json would (strip the wrapping
+    // quotes), then swap the logged shell line for the turn line.
+    let logged_shell = r#"await gait.wf.shell({ id: "step-kind-changed", argv: ["true"] });"#;
+    let logged_turn = r#"await gait.wf.turn({ id: "step-kind-changed", prompt: "now a turn" });"#;
+    fn escaped(s: &str) -> String {
+        let q = serde_json::to_string(s).unwrap();
+        q[1..q.len() - 1].to_string()
+    }
+    let log_path = tmp
+        .path()
+        .join("workflow-runs")
+        .join(run_id)
+        .join("log.jsonl");
+    let log_text = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        log_text.contains(&escaped(logged_shell)),
+        "logged source line must be present in log.jsonl"
+    );
+    let new_log_text = log_text.replacen(&escaped(logged_shell), &escaped(logged_turn), 1);
+    assert_ne!(
+        new_log_text, log_text,
+        "the log edit must actually replace the line"
+    );
+    std::fs::write(&log_path, new_log_text).unwrap();
+
+    // Disk wf.js still matches the (edited) logged source, so no drift
+    // refusal — the failure must come from kind-change detection alone.
+    let second = continue_js(
         &tmp,
         run_id,
-        changed,
-        Arc::new(exec),
-        /* force */ true,
-        vec![],
+        original,
+        Arc::new(ScriptedTurnExecutor::new()),
     )
     .await;
     let text = err_text(second);
     assert!(
-        text.contains("step-kind-changed"),
-        "the error must name the changed step id: {text}"
-    );
-    assert!(
-        // The generic "resuming script runs is not implemented yet" stub error
-        // would satisfy the assertions above, so refuse it explicitly: this
-        // test stays red until kind-change detection on replay is implemented.
-        !text.contains("not implemented"),
-        "the failure must be real kind-change detection, not the resume stub: {text}"
-    );
-    assert!(
-        !text.contains("script changed"),
-        "force must bypass the source-drift check; the failure is the kind change: {text}"
+        text.contains("workflow script changed (step step-kind-changed)"),
+        "the error must be the kind-change failure: {text}"
     );
 }
 

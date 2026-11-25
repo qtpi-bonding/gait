@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use gait_codemode::{ApiSurface, CodeModeError, LimitsMode, RunOptions, WorkflowLimits};
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
-use crate::host::{error_text, StepEngine, StepRequest, WorkflowHost};
+use crate::host::{StepEngine, StepRequest, WorkflowHost};
 use crate::observer::WorkflowObserver;
 use crate::run_log::WorkflowRunLog;
 use crate::runner::WorkflowOutcome;
@@ -268,8 +268,7 @@ pub async fn run_script(
             );
         }
 
-        let resolved = resolve_script_continue(&events, script.as_ref(), opts.force)
-            .map_err(|e| anyhow!(error_text(&e)))?;
+        let resolved = resolve_script_continue(&events, script.as_ref(), opts.force)?;
         (
             run_log,
             LoadedScript {
@@ -405,7 +404,7 @@ pub async fn run_script(
             Ok(WorkflowOutcome::Completed)
         }
         Err(e) => {
-            let message = error_text(&e);
+            let message = e.to_string();
             finish_with_error(&run_log, &run_id, started, &message, observer)
         }
     }
@@ -485,7 +484,7 @@ mod tests {
         };
         let err = resolve_script_continue(&events, Some(&disk), false)
             .expect_err("drift must be refused");
-        let text = error_text(&err);
+        let text = err.to_string();
         assert!(matches!(err, ScriptContinueError::Drift {
             ref logged,
             ref disk
@@ -538,7 +537,7 @@ mod tests {
             .expect_err("no WorkflowStart must be refused");
         assert!(matches!(err, ScriptContinueError::NotAScriptRun));
         assert_eq!(
-            error_text(&err),
+            err.to_string(),
             "run is not a script workflow run (no logged script source)"
         );
     }

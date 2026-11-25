@@ -11,11 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-// The sink channel type is fixed by `NodeContext::workflow_tx`
-// (`UnboundedSender<SinkFrame>`); the lint keys on the literal call text, so
-// route the constructor through a local alias here.
 use tokio::sync::mpsc::channel as workflow_channel;
-use tokio::sync::mpsc::unbounded_channel as sink_channel_pair;
 
 use async_trait::async_trait;
 use gait_codemode::{CapabilityHost, HostError};
@@ -26,18 +22,6 @@ use crate::run_log::WorkflowRunLog;
 use crate::state::{JournalEntry, JournalState, ScriptJournal};
 use crate::step::{ConfigOpts, ShellOpts, TurnOpts};
 use crate::turn_exec::{TurnExecutor, TurnRequest};
-
-/// Render a display value (typically an error) into a `String` without
-/// calling `to_string`/`format!` on the error itself. This is the single
-/// conversion point in this module: call-site strings that must be plain
-/// `String`s (e.g. `HostError::Failed(String)`) go through here.
-pub(crate) fn error_text(e: &dyn std::fmt::Display) -> String {
-    let mut s = String::new();
-    if std::fmt::Write::write_fmt(&mut s, format_args!("{e}")).is_err() {
-        // Writing to a `String` never fails.
-    }
-    s
-}
 
 /// A step-level failure, rendered with the exact message text the JS layer
 /// has always seen (tests assert on these messages).
@@ -59,10 +43,7 @@ enum StepError {
     StepCap { cap: usize, id: String },
     #[error("step '{id}': retry/onFail/hooks are not supported yet")]
     RetryUnsupported { id: String },
-    #[error(
-        "step '{id}' changed kind in the script (logged as {old}, now {new}); \
-         the workflow script no longer matches its run log"
-    )]
+    #[error("workflow script changed (step {id}): logged as {old}, now {new}")]
     KindChanged {
         id: String,
         old: String,
@@ -152,12 +133,10 @@ pub struct StepEngine<'a> {
     /// The turn executor (real or scripted) for prompt steps.
     turns: Arc<dyn TurnExecutor>,
     /// The journal folded from the run log's existing events (empty for a
-    /// fresh run). Used by replay (next task).
-    #[allow(dead_code)]
+    /// fresh run).
     journal: ScriptJournal,
     /// Step ids the caller accepted re-running despite being open in the
-    /// journal. Used by replay (next task).
-    #[allow(dead_code)]
+    /// journal.
     force_rerun: Vec<String>,
     /// The lifecycle observer, notified after every log write.
     observer: RefCell<&'a mut dyn WorkflowObserver>,
@@ -218,7 +197,7 @@ impl<'a> StepEngine<'a> {
     ) -> Self {
         let run_dir = run_dir.into();
         let run_worktree = run_dir.join("worktree");
-        let (sink_tx, _sink_rx) = sink_channel_pair();
+        let (sink_tx, _sink_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             run_id: run_id.into(),
             gait_dir: gait_dir.into(),
@@ -260,16 +239,16 @@ impl<'a> StepEngine<'a> {
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         match req_method {
-            "config" => self.handle_config(args).await.map_err(|e| error_text(&e)),
-            "turn" => self.handle_turn(args).await.map_err(|e| error_text(&e)),
-            "shell" => self.handle_shell(args).await.map_err(|e| error_text(&e)),
+            "config" => self.handle_config(args).await.map_err(|e| e.to_string()),
+            "turn" => self.handle_turn(args).await.map_err(|e| e.to_string()),
+            "shell" => self.handle_shell(args).await.map_err(|e| e.to_string()),
             "now" => self
                 .handle_now_random("now", args)
-                .map_err(|e| error_text(&e)),
+                .map_err(|e| e.to_string()),
             "random" => self
                 .handle_now_random("random", args)
-                .map_err(|e| error_text(&e)),
-            other => Err(error_text(&StepError::UnknownMethod(other.to_string()))),
+                .map_err(|e| e.to_string()),
+            other => Err(StepError::UnknownMethod(other.to_string()).to_string()),
         }
     }
 
@@ -564,10 +543,10 @@ impl<'a> StepEngine<'a> {
             Err(e) => {
                 let ev = self
                     .run_log
-                    .node_error(&id, &error_text(&e), 1)
+                    .node_error(&id, &e.to_string(), 1)
                     .map_err(StepError::LogWrite)?;
                 self.observer.borrow_mut().on_event(&ev);
-                Err(StepError::TurnFailure(error_text(&e)))
+                Err(StepError::TurnFailure(e.to_string()))
             }
         }
     }
@@ -675,10 +654,10 @@ impl<'a> StepEngine<'a> {
             Err(e) => {
                 let ev = self
                     .run_log
-                    .node_error(&id, &error_text(&e), 1)
+                    .node_error(&id, &e.to_string(), 1)
                     .map_err(StepError::LogWrite)?;
                 self.observer.borrow_mut().on_event(&ev);
-                Err(StepError::ShellFailure(error_text(&e)))
+                Err(StepError::ShellFailure(e.to_string()))
             }
         }
     }
@@ -901,13 +880,13 @@ impl CapabilityHost for WorkflowHost {
         };
 
         if self.tx.send(request).await.is_err() {
-            return Err(HostError::Failed(error_text(&NOT_ACCEPTING)));
+            return Err(HostError::Failed(NOT_ACCEPTING.to_string()));
         }
 
         match reply_rx.await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(message)) => Err(HostError::Failed(message)),
-            Err(_) => Err(HostError::Failed(error_text(&NOT_ACCEPTING))),
+            Err(_) => Err(HostError::Failed(NOT_ACCEPTING.to_string())),
         }
     }
 }
@@ -1415,7 +1394,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.contains("step 's1' changed kind in the script (logged as shell, now turn)"),
+            err.contains("workflow script changed (step s1): logged as shell, now turn"),
             "got: {err}"
         );
         assert!(
