@@ -27,6 +27,10 @@ pub struct ConfigOpts {
     pub allow: Vec<String>,
     #[serde(default)]
     pub record: Option<RecordOpts>,
+    /// Cap on executed steps for one run (`maxSteps`). `None` means the host
+    /// default applies.
+    #[serde(default)]
+    pub max_steps: Option<usize>,
 }
 
 /// Evidence-record commands, declared at workflow level.

@@ -208,6 +208,31 @@ impl WorkflowRunLog {
         }))
     }
 
+    /// Append a workflow start event for a script (JS) workflow. The workflow
+    /// has no YAML definition and no path: the script's path, sha256, and full
+    /// source text are recorded instead.
+    pub fn script_workflow_start(
+        &self,
+        run_id: &str,
+        workflow: &str,
+        script_path: &str,
+        script_sha256: &str,
+        script_source: &str,
+        args: &[String],
+    ) -> anyhow::Result<WorkflowEvent> {
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::WorkflowStart(WorkflowStart {
+            run_id: run_id.to_string(),
+            workflow: workflow.to_string(),
+            yaml_path: String::new(),
+            args: args.to_vec(),
+            def: None,
+            script_path: script_path.to_string(),
+            script_sha256: script_sha256.to_string(),
+            script_source: script_source.to_string(),
+        }))
+    }
+
     /// Append a node start event.
     pub fn node_start(
         &self,
@@ -399,6 +424,37 @@ fn legacy_version(text: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn script_workflow_start_writes_and_reads_back_script_fields() {
+        let dir = TempDir::new().unwrap();
+        let log = WorkflowRunLog::create(dir.path(), "run-script").unwrap();
+        let args = vec!["--flag".to_string(), "x".to_string()];
+        log.script_workflow_start(
+            "run-script",
+            "my-script-wf",
+            "scripts/wf.js",
+            "deadbeef",
+            "export default async () => {}",
+            &args,
+        )
+        .unwrap();
+
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        let events = log.read_events().unwrap();
+        assert_eq!(events.len(), 1);
+        let Kind::WorkflowStart(start) = &events[0].kind.as_ref().unwrap() else {
+            panic!("expected a WorkflowStart event");
+        };
+        assert_eq!(start.run_id, "run-script");
+        assert_eq!(start.workflow, "my-script-wf");
+        assert_eq!(start.yaml_path, "", "a script workflow has no yaml path");
+        assert!(start.def.is_none(), "a script workflow has no yaml def");
+        assert_eq!(start.script_path, "scripts/wf.js");
+        assert_eq!(start.script_sha256, "deadbeef");
+        assert_eq!(start.script_source, "export default async () => {}");
+        assert_eq!(start.args, args);
+    }
 
     #[test]
     fn log_roundtrips_workflow_start() {

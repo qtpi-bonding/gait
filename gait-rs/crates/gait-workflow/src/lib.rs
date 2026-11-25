@@ -7,6 +7,7 @@ pub mod exec_gate;
 pub mod exec_prompt;
 pub mod exec_shell;
 pub mod hooks;
+pub mod host;
 pub mod runner;
 pub mod schema;
 pub mod state;
@@ -18,11 +19,14 @@ pub mod observer;
 pub mod output;
 pub mod record;
 pub mod run_log;
+pub mod script;
 pub mod step;
 pub mod turn_exec;
 
 pub mod status;
 
 pub use runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
+
+pub use script::{run_script, ScriptRunOpts};
 
 pub use status::workflow_status_block;

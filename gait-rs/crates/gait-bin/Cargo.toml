@@ -46,7 +46,7 @@ telemetry = ["dep:concord-telemetry", "dep:tracing", "gait-core/telemetry"]
 # `gait workflow` / REPL `/workflow` (real YAML DAG runs). Forwards into
 # `gait-cli`'s and `gait-repl`'s own `workflow` features, which gate
 # `dep:gait-workflow` there.
-workflow = ["dep:gait-workflow", "gait-cli/workflow", "gait-repl/workflow"]
+workflow = ["dep:gait-workflow", "gait-core/code-mode", "gait-cli/workflow", "gait-repl/workflow"]
 # The themed full-`gait` terminal REPL renderer (markdown, syntax
 # highlighting, background-color detection). See gait-repl/Cargo.toml.
 rich-tui = ["gait-repl/rich-tui"]

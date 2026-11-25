@@ -40,7 +40,7 @@ dev-harness = []
 # `cli::workflow` does. Default-on so today's full `gait` binary (which builds
 # gait-cli with default features) is unaffected; a future minimal build can
 # opt out.
-workflow = ["dep:gait-workflow"]
+workflow = ["dep:gait-workflow", "gait-core/code-mode"]
 
 [dependencies.gait-local]
 path = "../gait-local"

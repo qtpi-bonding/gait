@@ -11,6 +11,7 @@ autotests = false
 
 [dependencies]
 gait-core        = { path = "../.." }
+gait-codemode    = { path = "../gait-codemode" }
 gait-proto       = { path = "../gait-proto" }
 gait-turn-runner = { path = "../gait-turn-runner" }
 git2       = "0.20"

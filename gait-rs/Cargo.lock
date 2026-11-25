@@ -2215,6 +2215,7 @@ dependencies = [
  "async-trait",
  "coded-error",
  "futures-util",
+ "gait-codemode",
  "gait-core",
  "gait-proto",
  "gait-turn-runner",

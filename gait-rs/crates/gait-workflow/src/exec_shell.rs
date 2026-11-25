@@ -96,6 +96,21 @@ pub async fn exec_shell_opts(
     ctx: &NodeContext<'_>,
     passthrough: &[String],
 ) -> anyhow::Result<StepResult> {
+    exec_shell_opts_with_host_env(opts, ctx, passthrough, &BTreeMap::new()).await
+}
+
+/// Like [`exec_shell_opts`], but additionally applies `host_env` entries to
+/// the child AFTER the cleared environment, the allowlist/passthrough, the
+/// user `env`, and AFTER `build_shell_env`'s reserved-name check on
+/// `opts.env`. Only `host_env` may carry `GAIT_`-prefixed names (e.g.
+/// `GAIT_ARG_<n>`); a user env key starting with `GAIT_` is still rejected
+/// with the existing reserved-key error.
+pub async fn exec_shell_opts_with_host_env(
+    opts: &ShellOpts,
+    ctx: &NodeContext<'_>,
+    passthrough: &[String],
+    host_env: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<StepResult> {
     opts.validate()?;
     let timeout_ms: u64 = opts.timeout.unwrap_or(120_000);
 
@@ -130,6 +145,7 @@ pub async fn exec_shell_opts(
     };
     cmd.env_clear()
         .envs(env)
+        .envs(host_env)
         .current_dir(ctx.run_worktree)
         .kill_on_drop(true);
 
@@ -286,5 +302,85 @@ mod tests {
                 failed_node: None,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn host_env_reaches_the_child_and_user_gait_keys_are_still_rejected() {
+        let dir = TempDir::new().unwrap();
+        let ws: &'static std::path::Path = Box::leak(Box::new(dir.path().to_path_buf()));
+        let tx: &'static _ = Box::leak(Box::new(
+            tokio::sync::mpsc::unbounded_channel::<SinkFrame>().0,
+        ));
+        let ctx = NodeContext {
+            workflow_id: "wf1",
+            session_id: "run1",
+            node_session: "",
+            gait_dir: ws,
+            codebase: ws,
+            run_worktree: ws,
+            workflow_tx: tx,
+            sandbox_on: None,
+            cascade_group_arg: None,
+            cascade: None,
+            profile: None,
+            fs_delegate: None,
+            allow_intree: false,
+            env_passthrough: Vec::new(),
+            vars: crate::vars::VarContext {
+                workflow_id: "wf1".into(),
+                session_id: "run1".into(),
+                gait_dir: ws.to_path_buf(),
+                codebase: ws.to_path_buf(),
+                args: String::new(),
+                node_id: "sh1".into(),
+                node_outputs: Default::default(),
+                node_exit: None,
+                failed_node: None,
+            },
+        };
+
+        // A host-provided GAIT_ARG_<n> entry must reach the child.
+        let opts = ShellOpts {
+            id: "sh1".into(),
+            argv: None,
+            script: Some(r#"printf %s "$GAIT_ARG_0""#.into()),
+            env: BTreeMap::new(),
+            timeout: None,
+            output_schema: None,
+            retry: None,
+            on_fail: None,
+            hooks: None,
+        };
+        let host_env: BTreeMap<String, String> = [("GAIT_ARG_0".to_string(), "v".to_string())]
+            .into_iter()
+            .collect();
+        let res = exec_shell_opts_with_host_env(&opts, &ctx, &[], &host_env)
+            .await
+            .unwrap();
+        assert_eq!(res.output, "v", "host_env GAIT_ARG_0 must reach the child");
+
+        // A user-supplied GAIT_-prefixed env key is still rejected even when
+        // host_env is supplied.
+        let bad = ShellOpts {
+            id: "sh1".into(),
+            argv: None,
+            script: Some("true".into()),
+            env: [("GAIT_X".to_string(), "1".to_string())]
+                .into_iter()
+                .collect(),
+            timeout: None,
+            output_schema: None,
+            retry: None,
+            on_fail: None,
+            hooks: None,
+        };
+        let err = exec_shell_opts_with_host_env(&bad, &ctx, &[], &host_env)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("GAIT_X"),
+            "user GAIT_X env key must still be rejected, got: {err}"
+        );
     }
 }
