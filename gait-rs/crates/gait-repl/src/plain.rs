@@ -499,7 +499,7 @@ impl PlainSource {
     /// plain-text reply per item. Returns the event body to append and
     /// whether the turn should respawn (fold the reply and continue), or
     /// `None` if there was nothing pending.
-    fn run_interaction(&mut self) -> Option<(event::Body, bool)> {
+    fn run_interaction(&mut self) -> Option<(Option<event::Body>, bool)> {
         let pending = std::mem::replace(&mut self.shared.borrow_mut().pending, Pending::None);
         match pending {
             Pending::None => None,
@@ -517,7 +517,7 @@ impl PlainSource {
                         reasoning: None,
                     });
                 }
-                Some((events::clarify_reply(&replies), true))
+                Some((Some(events::clarify_reply(&replies)), true))
             }
             Pending::Inform(items) => {
                 let mut replies = Vec::new();
@@ -534,10 +534,10 @@ impl PlainSource {
                         content,
                     });
                 }
-                Some((events::inform_reply(&replies), true))
+                Some((Some(events::inform_reply(&replies)), true))
             }
             Pending::Permission(items) => {
-                let mut reply_items = Vec::new();
+                let mut choices = Vec::new();
                 let mut cancelled = false;
                 for item in &items {
                     self.eprintln(&format!("permission: {}", item.cmd));
@@ -563,70 +563,20 @@ impl PlainSource {
                             }
                         }
                     };
-                    if let Err(e) = gait_core::permissions::save_choice(
-                        &choice,
-                        &self.gait_dir,
-                        &self.session_id,
-                        gait_ops::permission::resolve_active_mode_name(
-                            &self.gait_dir,
-                            &self.session_id,
-                        )
-                        .as_deref(),
-                    ) {
-                        self.eprintln(&format!("[gait] warning: could not save permission: {e}"));
-                    }
-                    reply_items.push(match &choice {
-                        gait_core::permissions::PermissionChoice::Once(p) => {
-                            pb::PermissionsReplyItem {
-                                id: item.id.clone(),
-                                decision: pb::Decision::Allow as i32,
-                                text: Some(p.clone()),
-                                scope: pb::Scope::Once as i32,
-                            }
-                        }
-                        gait_core::permissions::PermissionChoice::Session(p) => {
-                            pb::PermissionsReplyItem {
-                                id: item.id.clone(),
-                                decision: pb::Decision::Allow as i32,
-                                text: Some(p.clone()),
-                                scope: pb::Scope::Session as i32,
-                            }
-                        }
-                        gait_core::permissions::PermissionChoice::Mode(p) => {
-                            pb::PermissionsReplyItem {
-                                id: item.id.clone(),
-                                decision: pb::Decision::Allow as i32,
-                                text: Some(p.clone()),
-                                scope: pb::Scope::Mode as i32,
-                            }
-                        }
-                        gait_core::permissions::PermissionChoice::Global(p) => {
-                            pb::PermissionsReplyItem {
-                                id: item.id.clone(),
-                                decision: pb::Decision::Allow as i32,
-                                text: Some(p.clone()),
-                                scope: pb::Scope::Global as i32,
-                            }
-                        }
-                        gait_core::permissions::PermissionChoice::Deny => {
-                            pb::PermissionsReplyItem {
-                                id: item.id.clone(),
-                                decision: pb::Decision::Deny as i32,
-                                text: None,
-                                scope: pb::Scope::Unspecified as i32,
-                            }
-                        }
-                        gait_core::permissions::PermissionChoice::DenySession(p) => {
-                            pb::PermissionsReplyItem {
-                                id: item.id.clone(),
-                                decision: pb::Decision::Deny as i32,
-                                text: Some(p.clone()),
-                                scope: pb::Scope::Session as i32,
-                            }
-                        }
-                    });
+                    choices.push(choice);
                 }
-                Some((events::permissions_reply(&reply_items), !cancelled))
+                match crate::ui::permission::reply_through_door(
+                    &self.gait_dir,
+                    &self.session_id,
+                    &items,
+                    &choices,
+                ) {
+                    Ok(_) => Some((None, !cancelled)),
+                    Err(e) => {
+                        self.eprintln(&permission_failure_line(&e));
+                        None
+                    }
+                }
             }
         }
     }
@@ -640,15 +590,31 @@ impl PlainSource {
     }
 }
 
+/// One-line error message for a failed permission reply: the door saves grants
+/// before writing the log, so when this fires nothing was logged and no grant
+/// was recorded. Kept out of the `Err(e)` arm to keep the lint ratchet happy.
+fn permission_failure_line(err: &anyhow::Error) -> String {
+    format!("[gait] could not record the permission reply: {err}")
+}
+
 #[async_trait::async_trait(?Send)]
 impl TurnSource for PlainSource {
     async fn next(&mut self) -> Option<TurnStart> {
         if self.ran_turn {
             if let Some((body, respawn)) = self.run_interaction() {
-                if let Ok(ev) = wire::append(&self.log_path(), body) {
-                    crate::ui::permission::emit_decision(&ev, &self.session_id);
-                    if respawn {
-                        return Some(TurnStart::Resume);
+                match body {
+                    Some(body) => {
+                        if let Ok(ev) = wire::append(&self.log_path(), body) {
+                            crate::ui::permission::emit_decision(&ev, &self.session_id);
+                            if respawn {
+                                return Some(TurnStart::Resume);
+                            }
+                        }
+                    }
+                    None => {
+                        if respawn {
+                            return Some(TurnStart::Resume);
+                        }
                     }
                 }
             }
@@ -1258,6 +1224,72 @@ mod tests {
             assert_eq!(e.decision, ev::PermissionDecision::Allow as i32);
             assert_eq!(e.scope, ev::GrantScope::Mode as i32);
             assert!(e.persisted);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_mode_save_appends_no_permissions_reply() {
+        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let reader = Rc::new(RefCell::new(
+            Box::new(crate::repl::ScriptedReader::lines(&["m"])) as Box<dyn LineReader>,
+        ));
+        let tmp = tempfile::tempdir().unwrap();
+        let sid = format!("plainfsm-{}", std::process::id());
+
+        // Seed the session log with an active "plan" mode.
+        let log = gait_core::session::live::log_path(tmp.path(), &sid);
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        wire::append(&log, events::mode("plan", vec![], vec![], "", "", None)).unwrap();
+        assert_eq!(
+            gait_ops::permission::resolve_active_mode_name(tmp.path(), &sid).as_deref(),
+            Some("plan"),
+            "setup: mode 'plan' must be active before the prompt"
+        );
+
+        // Sabotage the mode save: `gait_dir/modes` as a regular file makes
+        // `create_dir_all(gait_dir/modes/plan)` fail.
+        std::fs::write(tmp.path().join("modes"), b"not a directory").unwrap();
+
+        let shared: Shared = Rc::new(RefCell::new(PlainState {
+            control: None,
+            sandbox_on: true,
+            pending: Pending::Permission(vec![pb::PermissionItem {
+                id: "p1".into(),
+                cmd: "ls".into(),
+                patterns: vec!["ls".into()],
+                tool_name: "shell".into(),
+                ..Default::default()
+            }]),
+            turn_text: String::new(),
+        }));
+        let mut source = PlainSource {
+            shared,
+            reader,
+            err: Box::new(SharedBuf(buf)),
+            gait_dir: tmp.path().to_path_buf(),
+            codebase: tmp.path().to_path_buf(),
+            session_id: sid.clone(),
+            agent_path: None,
+            repos: gait_core::git::Repos::production(),
+            model_override: None,
+            ran_turn: true,
+        };
+
+        let outcome = source.next().await;
+        assert!(
+            !matches!(outcome, Some(TurnStart::Resume)),
+            "a failed mode save must not resume the turn"
+        );
+
+        // No PermissionsReply may have been appended to the session log.
+        let events = gait_core::session::log::read_events(&log).unwrap();
+        for ev in &events {
+            if let Some(event::Body::Payload(p)) = &ev.body {
+                assert!(
+                    !matches!(p.kind, Some(payload::Kind::PermissionsReply(_))),
+                    "no PermissionsReply event may be recorded when the save failed"
+                );
+            }
         }
     }
 }

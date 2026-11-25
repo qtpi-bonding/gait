@@ -328,10 +328,21 @@ impl TurnSource for ReplSource {
             };
             match interaction {
                 Some(Ok(outcome)) => {
-                    if let Ok(ev) = wire::append(&self.log_path(), outcome.event_body) {
-                        crate::ui::permission::emit_decision(&ev, &self.session_id);
-                        if outcome.respawn {
-                            return Some(TurnStart::Resume); // fold the appended reply (no re-append)
+                    match outcome.event_body {
+                        Some(body) => {
+                            if let Ok(ev) = wire::append(&self.log_path(), body) {
+                                crate::ui::permission::emit_decision(&ev, &self.session_id);
+                                if outcome.respawn {
+                                    return Some(TurnStart::Resume); // fold the appended reply (no re-append)
+                                }
+                            }
+                        }
+                        // Permission reply was already written to the log by
+                        // the door; only the fold decision remains.
+                        None => {
+                            if outcome.respawn {
+                                return Some(TurnStart::Resume);
+                            }
                         }
                     }
                     self.shared.borrow_mut().builder.write_raw("\r\n");

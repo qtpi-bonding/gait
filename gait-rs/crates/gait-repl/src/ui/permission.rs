@@ -97,6 +97,85 @@ pub(crate) fn emit_decision(appended: &gait_core::proto::gait::log::v1::Event, s
     }
 }
 
+/// Translate a REPL-side [`gait_core::permissions::PermissionChoice`] into the
+/// ops-door [`gait_ops::permission::ItemChoice`] shape (same `pb::Decision`
+/// enum). Deny carries no pattern and is scoped `Once` (scope is ignored for
+/// Deny); DenySession mirrors Session on the deny side.
+fn item_choice(
+    id: &str,
+    choice: &gait_core::permissions::PermissionChoice,
+) -> gait_ops::permission::ItemChoice {
+    use gait_core::permissions::PermissionChoice;
+    use gait_core::proto::gait::log::v1::Decision;
+    use gait_ops::permission::GrantScope;
+    match choice {
+        PermissionChoice::Once(p) => gait_ops::permission::ItemChoice {
+            id: id.to_string(),
+            decision: Decision::Allow,
+            scope: GrantScope::Once,
+            pattern: Some(p.clone()),
+        },
+        PermissionChoice::Session(p) => gait_ops::permission::ItemChoice {
+            id: id.to_string(),
+            decision: Decision::Allow,
+            scope: GrantScope::Session,
+            pattern: Some(p.clone()),
+        },
+        PermissionChoice::Mode(p) => gait_ops::permission::ItemChoice {
+            id: id.to_string(),
+            decision: Decision::Allow,
+            scope: GrantScope::Mode,
+            pattern: Some(p.clone()),
+        },
+        PermissionChoice::Global(p) => gait_ops::permission::ItemChoice {
+            id: id.to_string(),
+            decision: Decision::Allow,
+            scope: GrantScope::Global,
+            pattern: Some(p.clone()),
+        },
+        PermissionChoice::Deny => gait_ops::permission::ItemChoice {
+            id: id.to_string(),
+            decision: Decision::Deny,
+            scope: GrantScope::Once,
+            pattern: None,
+        },
+        PermissionChoice::DenySession(p) => gait_ops::permission::ItemChoice {
+            id: id.to_string(),
+            decision: Decision::Deny,
+            scope: GrantScope::Session,
+            pattern: Some(p.clone()),
+        },
+    }
+}
+
+/// Answer a pending permission batch through the shared ops door
+/// ([`gait_ops::permission::reply_for_items`]). `items` and `choices`
+/// correspond by index (one choice per item); a length mismatch is a caller
+/// bug and errors. No other logic lives here: the door validates the choices,
+/// saves each grant, writes the `PermissionsReply` to the session log and
+/// emits `PermissionDecided` — because the door saves a grant *before* it
+/// writes the log, a grant is only ever logged after its save succeeded.
+pub(crate) fn reply_through_door(
+    gait_dir: &std::path::Path,
+    session_id: &str,
+    items: &[gait_core::proto::gait::log::v1::PermissionItem],
+    choices: &[gait_core::permissions::PermissionChoice],
+) -> anyhow::Result<gait_ops::permission::ReplyOutcome> {
+    if items.len() != choices.len() {
+        return Err(anyhow::anyhow!(
+            "permission reply mismatch: {} items but {} choices",
+            items.len(),
+            choices.len()
+        ));
+    }
+    let item_choices = items
+        .iter()
+        .zip(choices)
+        .map(|(item, choice)| item_choice(&item.id, choice))
+        .collect();
+    gait_ops::permission::reply_for_items(gait_dir, session_id, items.to_vec(), item_choices)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +275,164 @@ mod tests {
     fn preview_block_empty_for_none_or_empty() {
         assert_eq!(preview_block(None), Vec::<String>::new());
         assert_eq!(preview_block(Some("")), Vec::<String>::new());
+    }
+
+    // -- reply_through_door --
+
+    use gait_core::permissions::PermissionChoice;
+    use gait_core::proto::gait::log::v1 as pb;
+    use gait_ops::permission::{GrantScope, ItemChoice as DoorChoice, ReplyOutcome};
+    use tempfile::TempDir;
+
+    /// Fresh workspace: minimal `gait.jsonc` (Global grants append to it) plus
+    /// the parent dir of the session log for `session_id`.
+    fn fresh_ws(session_id: &str) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("gait.jsonc"),
+            r#"{ "allow": [], "sandbox": { "on": true, "readable": [], "writable": [], "network": false } }"#,
+        )
+        .unwrap();
+        let log = gait_core::session::live::log_path(dir.path(), session_id);
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        (dir, log)
+    }
+
+    fn item() -> pb::PermissionItem {
+        pb::PermissionItem {
+            id: "p1".into(),
+            cmd: "ls".into(),
+            patterns: vec!["ls".into()],
+            tool_name: "shell".into(),
+            reason: String::new(),
+            preview: None,
+            tool_args: None,
+        }
+    }
+
+    fn has_permissions_reply(log: &std::path::Path) -> bool {
+        let events = gait_core::session::log::read_events(log).unwrap_or_default();
+        events.iter().any(|e| {
+            matches!(
+                &e.body,
+                Some(pb::event::Body::Payload(p))
+                    if matches!(p.kind, Some(pb::payload::Kind::PermissionsReply(_)))
+            )
+        })
+    }
+
+    #[test]
+    fn reply_through_door_equals_reply_for_items_for_every_kind() {
+        use gait_core::permissions::PermissionChoice::DenySession;
+        let kinds: Vec<PermissionChoice> = vec![
+            Once("ls".into()),
+            Session("ls".into()),
+            Mode("ls".into()),
+            PermissionChoice::Global("ls".into()),
+            Deny,
+            DenySession("ls".into()),
+        ];
+        for (i, choice) in kinds.iter().enumerate() {
+            let sid = format!("rdoor001-{i}");
+            let (dir_a, _log_a) = fresh_ws(&sid);
+            let (dir_b, _log_b) = fresh_ws(&format!("{sid}-twin"));
+
+            let a = reply_through_door(dir_a.path(), &sid, &[item()], std::slice::from_ref(choice))
+                .unwrap();
+            let b = gait_ops::permission::reply_for_items(
+                dir_b.path(),
+                &format!("{sid}-twin"),
+                vec![item()],
+                vec![DoorChoice {
+                    // Hand-written for each kind, exactly what the kind implies.
+                    id: "p1".into(),
+                    decision: if matches!(choice, Deny | DenySession(_)) {
+                        pb::Decision::Deny
+                    } else {
+                        pb::Decision::Allow
+                    },
+                    scope: match choice {
+                        Once(_) => GrantScope::Once,
+                        Session(_) => GrantScope::Session,
+                        Mode(_) => GrantScope::Mode,
+                        PermissionChoice::Global(_) => GrantScope::Global,
+                        Deny => GrantScope::Once,
+                        DenySession(_) => GrantScope::Session,
+                    },
+                    pattern: match choice {
+                        Deny => None,
+                        _ => Some("ls".into()),
+                    },
+                }],
+            )
+            .unwrap();
+            assert_eq!(a.reply_items, b.reply_items, "kind {choice:?}");
+
+            // Literal expected decision/scope/text per kind.
+            let (d, s, t) = match choice {
+                Once(_) | Session(_) | Mode(_) | PermissionChoice::Global(_) => (
+                    pb::Decision::Allow as i32,
+                    match choice {
+                        Once(_) => pb::Scope::Once as i32,
+                        Session(_) => pb::Scope::Session as i32,
+                        Mode(_) => pb::Scope::Mode as i32,
+                        _ => pb::Scope::Global as i32,
+                    },
+                    Some("ls".to_string()),
+                ),
+                Deny => (
+                    pb::Decision::Deny as i32,
+                    pb::Scope::Unspecified as i32,
+                    None,
+                ),
+                DenySession(_) => (
+                    pb::Decision::Deny as i32,
+                    pb::Scope::Session as i32,
+                    Some("ls".to_string()),
+                ),
+            };
+            let ReplyOutcome { reply_items } = a;
+            assert_eq!(reply_items.len(), 1);
+            assert_eq!(reply_items[0].id, "p1");
+            assert_eq!(reply_items[0].decision, d, "kind {choice:?}");
+            assert_eq!(reply_items[0].scope, s, "kind {choice:?}");
+            assert_eq!(reply_items[0].text, t, "kind {choice:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_save_is_an_error_and_logs_no_reply() {
+        use gait_core::permissions::PermissionChoice::Global;
+        // Make the Global grant's save impossible: gait.jsonc is a directory.
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("gait.jsonc")).unwrap();
+        let log = gait_core::session::live::log_path(dir.path(), "rdoor001-fail");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+
+        let err = reply_through_door(
+            dir.path(),
+            "rdoor001-fail",
+            &[item()],
+            &[Global("ls".into())],
+        );
+        assert!(err.is_err(), "a failed grant save must be an error");
+        // No PermissionsReply was logged — the reply is written only after the
+        // save succeeded.
+        assert!(!has_permissions_reply(&log));
+    }
+
+    #[test]
+    fn mismatched_item_and_choice_counts_are_an_error() {
+        let (dir, _log) = fresh_ws("rdoor001-mismatch");
+        let err = reply_through_door(
+            dir.path(),
+            "rdoor001-mismatch",
+            &[item()],
+            &[Once("ls".into()), Session("ls".into())],
+        );
+        assert!(
+            err.is_err(),
+            "2 items/1 choices (or 1/2) must be a caller error"
+        );
     }
 }
