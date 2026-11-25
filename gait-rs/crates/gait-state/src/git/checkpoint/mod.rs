@@ -67,6 +67,33 @@ pub trait CheckpointRepo: Send + Sync {
 
 pub struct GitCheckpointRepo;
 
+/// True when `rel` (relative to `codebase`) is itself a nested git repo, i.e.
+/// it contains a `.git` entry directly.
+fn is_nested_repo(codebase: &Path, rel: &Path) -> bool {
+    codebase.join(rel).join(".git").exists()
+}
+
+/// True when `rel` lies inside some nested git repo (an ancestor below
+/// `codebase` contains a `.git` entry).
+fn is_in_nested_repo(codebase: &Path, rel: &Path) -> bool {
+    for ancestor in rel.ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        if is_nested_repo(codebase, ancestor) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Normalize a status entry path: trim a trailing slash so directory entries
+/// resolve through `.join(".git")` correctly.
+fn normalized_rel(rel: &str) -> &Path {
+    let trimmed = rel.trim_end_matches('/');
+    Path::new(trimmed)
+}
+
 impl CheckpointRepo for GitCheckpointRepo {
     fn init(&self, gait_dir: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()> {
         let cb = Repository::open(codebase).ok(); // None for non-git — shadow still created
@@ -133,7 +160,7 @@ impl CheckpointRepo for GitCheckpointRepo {
             ["."].iter(),
             IndexAddOption::DEFAULT,
             Some(&mut |path: &std::path::Path, _: &[u8]| -> i32 {
-                if codebase.join(path).join(".git").exists() {
+                if is_nested_repo(codebase, path) {
                     1
                 } else {
                     0
@@ -184,6 +211,10 @@ impl CheckpointRepo for GitCheckpointRepo {
         for e in statuses.iter() {
             if e.status().contains(Status::WT_NEW) {
                 if let Some(rel) = e.path() {
+                    let rel_path = normalized_rel(rel);
+                    if is_nested_repo(codebase, rel_path) || is_in_nested_repo(codebase, rel_path) {
+                        continue;
+                    }
                     let abs = codebase.join(rel);
                     if abs.is_dir() {
                         let _ = std::fs::remove_dir_all(&abs);
