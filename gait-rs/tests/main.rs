@@ -32,5 +32,6 @@ mod spine_persistence;
 mod spine_relay_arms;
 mod spine_smoke;
 mod spine_terminal_failure;
+mod test_binaries;
 mod unlock_grants_one_reader;
 mod workflow_runner_removed;

@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# Only the tests listed in the [[test]] targets at the end of this file are
+# built.
+autotests = false
 
 [dependencies]
 gait-core = { path = "../.." }
@@ -101,6 +104,12 @@ telemetry = ["gait-ops/telemetry"]
 name = "mock_brain"
 path = "src/bin/mock_brain.rs"
 required-features = ["dev-harness"]
+
+# The integration tests that share no process-global state are modules of this
+# one program (tests/main.rs): one binary instead of many means one link.
+[[test]]
+name = "tests"
+path = "tests/main.rs"
 
 # This test captures the real stderr file descriptor, so the default libtest
 # output capture must be disabled.

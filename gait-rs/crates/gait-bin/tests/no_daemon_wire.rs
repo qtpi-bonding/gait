@@ -16,6 +16,8 @@ const SKIP_DIRS: [&str; 4] = ["target", ".git", "node_modules", "vendor"];
 // `retired.rs` is the one place that names the retired event kinds, so that
 // logs holding them fail with a clear error.
 const SKIP_FILES: [&str; 3] = ["Cargo.lock", "no_daemon_wire.rs", "retired.rs"];
+// These main.rs files only list test modules, so they merely name modules.
+const SKIP_MODULE_LISTS: [&str; 2] = ["gait-bin/tests/main.rs", "gait-workflow/tests/main.rs"];
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -28,9 +30,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             if !SKIP_DIRS.contains(&name.as_str()) {
                 collect(&path, out);
             }
-        } else if path.ends_with("gait-bin/tests/main.rs") {
-            // Skip tests/main.rs: it only declares this test crate's modules,
-            // so it merely names the module `no_daemon_wire`.
+        } else if SKIP_MODULE_LISTS.iter().any(|entry| path.ends_with(entry)) {
         } else if !SKIP_FILES.contains(&name.as_str()) {
             out.push(path);
         }
