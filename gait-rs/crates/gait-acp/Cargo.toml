@@ -3,6 +3,9 @@ name = "gait-acp"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
+# Only the tests listed in the [[test]] targets at the end of this file are
+# built.
+autotests = false
 
 [dependencies]
 gait-core = { path = "../..", features = ["mcp", "code-mode", "telemetry"] }
@@ -43,3 +46,64 @@ pbjson-types = "0.7"
 prost = "0.13"
 identity-crypto = { workspace = true, features = ["testkit"] }
 identity-keyfile = { workspace = true, features = ["testkit"] }
+
+# All gait-acp integration tests that share no process-global state are
+# modules of this one program (tests/main.rs): one binary instead of many
+# means one dependency compile and one link.
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+# Separate: sets the process-global env vars GAIT_BRAIN_EXE and GAIT_HOME
+# via set_var.
+[[test]]
+name = "cancel"
+path = "tests/cancel.rs"
+
+# Separate: sets the process-global env vars GAIT_BRAIN_EXE and GAIT_HOME
+# via set_var.
+[[test]]
+name = "clarify_inform_unlock"
+path = "tests/clarify_inform_unlock.rs"
+
+# Separate: sets the process-global env vars GAIT_BRAIN_EXE and GAIT_HOME
+# via set_var.
+[[test]]
+name = "fs_delegate"
+path = "tests/fs_delegate.rs"
+
+# Separate: sets the process-global env vars GAIT_BRAIN_EXE and GAIT_HOME
+# via set_var.
+[[test]]
+name = "permission"
+path = "tests/permission.rs"
+
+# Separate: sets the process-global env vars GAIT_HOME and GAIT_BRAIN_EXE
+# via set_var.
+[[test]]
+name = "prompt"
+path = "tests/prompt.rs"
+
+# Separate: sets the process-global env vars GAIT_BRAIN_EXE and GAIT_HOME
+# via set_var.
+[[test]]
+name = "prompt_idempotency"
+path = "tests/prompt_idempotency.rs"
+
+# Separate: sets the process-global env vars GAIT_HOME and GAIT_BRAIN_EXE
+# via set_var.
+[[test]]
+name = "prompt_provenance"
+path = "tests/prompt_provenance.rs"
+
+# Separate: sets the process-global env vars GAIT_HOME and GAIT_BRAIN_EXE
+# via set_var.
+[[test]]
+name = "trace"
+path = "tests/trace.rs"
+
+# Separate: sets the process-global env vars GAIT_BRAIN_EXE and GAIT_HOME
+# and sets/removes BAGGAGE via set_var.
+[[test]]
+name = "trace_carrier"
+path = "tests/trace_carrier.rs"
