@@ -1087,6 +1087,28 @@ mod tests {
             vec!["**/.env*".to_string(), "~/.ssh/**".to_string()]
         );
     }
+
+    #[test]
+    fn split_deny_patterns_with_home_expands_tilde_and_codebase() {
+        let patterns = vec![
+            "~/.ssh/**".to_string(),
+            "$CODEBASE/secret".to_string(),
+            "/abs/x".to_string(),
+        ];
+        let split = super::ceiling::split_deny_patterns_with_home(
+            &patterns,
+            std::path::Path::new("/h"),
+            std::path::Path::new("/c"),
+        );
+        assert_eq!(split.globs, vec!["/h/.ssh/**".to_string()]);
+        assert_eq!(
+            split.subpaths,
+            vec![
+                std::path::PathBuf::from("/c/secret"),
+                std::path::PathBuf::from("/abs/x"),
+            ]
+        );
+    }
 }
 
 pub(crate) mod sbpl {
@@ -1421,6 +1443,32 @@ pub mod ceiling {
             }
         }
         DenyPolicy { subpaths, globs }
+    }
+
+    /// [`split_deny_patterns`] after expanding each pattern through the same
+    /// `expand_path_vars` used for the sandbox's readable/writable entries
+    /// (`~/` -> home, `$CODEBASE` -> codebase). One expansion door for all
+    /// path config; no second expander.
+    pub fn split_deny_patterns_with_home(
+        patterns: &[String],
+        home: &Path,
+        codebase: &Path,
+    ) -> DenyPolicy {
+        let expanded: Vec<String> = patterns
+            .iter()
+            .map(|p| {
+                expand_path_vars(p, home, codebase)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        split_deny_patterns(&expanded)
+    }
+
+    /// The native platform's home directory, for callers that need to expand
+    /// `~/` outside of scope computation.
+    pub fn native_home() -> Result<PathBuf, ScopePathError> {
+        platform_home(&NativePlatform)
     }
 
     /// Return the `ToolAccess` declared by the named builtin tool.
