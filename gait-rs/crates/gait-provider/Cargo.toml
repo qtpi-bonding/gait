@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# Only the tests listed in the [[test]] targets at the end of this file are
+# built.
+autotests = false
 
 [features]
 telemetry = ["dep:concord-telemetry", "dep:gait-events", "dep:tracing"]
@@ -37,3 +40,38 @@ gait-llama-cpp    = { path = "../gait-llama-cpp", optional = true }
 concord-telemetry = { workspace = true, features = ["testing"] }
 gait-events = { path = "../gait-events" }
 tokio             = { version = "1", features = ["test-util"] }
+
+# All gait-provider integration tests that share no process-global state are
+# modules of this one program (tests/main.rs): one binary instead of many
+# means one dependency compile and one link.
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+# Separate: sets the process-global env var LMSTUDIO_BASE_URL via set_var,
+# and its own static env mutex would not guard against the other files;
+# it is also #![cfg(feature = "telemetry")] and uses the process-global
+# concord_telemetry capture.
+[[test]]
+name = "openai_call_span"
+path = "tests/openai_call_span.rs"
+
+# Separate: sets the process-global env var LMSTUDIO_BASE_URL via set_var,
+# and its own static env mutex would not guard against the other files.
+[[test]]
+name = "openai_stream_usage"
+path = "tests/openai_stream_usage.rs"
+
+# Separate: sets the process-global env var LMSTUDIO_BASE_URL via set_var,
+# and its own static env mutex would not guard against the other files.
+[[test]]
+name = "openai_wire_params"
+path = "tests/openai_wire_params.rs"
+
+# Separate: sets the process-global env var LMSTUDIO_BASE_URL via set_var
+# with a variable env name, and its own static env mutex would not guard
+# against the other files; it is also #![cfg(feature = "telemetry")] and
+# uses the process-global concord_telemetry capture.
+[[test]]
+name = "wire_call_spans"
+path = "tests/wire_call_spans.rs"

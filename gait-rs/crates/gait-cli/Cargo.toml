@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# Only the tests listed in the [[test]] targets at the end of this file are
+# built.
+autotests = false
 
 [dependencies]
 gait-core    = { path = "../.." }
@@ -51,6 +54,19 @@ optional = true
 name = "mock_brain"
 path = "../../src/bin/mock_brain.rs"
 required-features = ["dev-harness"]
+
+# All gait-cli integration tests that share no process-global state are
+# modules of this one program (tests/main.rs): one binary instead of many
+# means one dependency compile and one link.
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+# Separate: sets the process-global env vars ANTHROPIC_API_KEY and GAIT_HOME
+# via set_var and reads the cwd.
+[[test]]
+name = "exec_no_gait_dir"
+path = "tests/exec_no_gait_dir.rs"
 
 [dev-dependencies]
 serial_test = "3"

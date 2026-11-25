@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# Only the tests listed in the [[test]] targets at the end of this file are
+# built.
+autotests = false
 
 [dependencies]
 gait-core        = { path = "../.." }
@@ -32,3 +35,10 @@ coded-error = { workspace = true, features = ["anyhow"] }
 [dev-dependencies]
 tempfile = "3"
 tokio    = { version = "1", features = ["full", "test-util"] }
+
+# All gait-workflow integration tests that share no process-global state are
+# modules of this one program (tests/main.rs): one binary instead of many
+# means one dependency compile and one link.
+[[test]]
+name = "tests"
+path = "tests/main.rs"
