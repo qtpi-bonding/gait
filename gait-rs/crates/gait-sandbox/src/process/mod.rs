@@ -378,6 +378,7 @@ mod linux {
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     /// Per-process counter making cgroup directory names unique per owner
     /// containment. Without this, two concurrent turns in one process (e.g.
@@ -405,11 +406,111 @@ mod linux {
                 // Verify cgroup.procs is writable.
                 let procs = p.join("cgroup.procs");
                 if procs.exists() {
-                    return Some(p);
+                    // Kernel rule: a writer needs write access to the
+                    // cgroup.procs file of the NEAREST COMMON ANCESTOR of the
+                    // source cgroup (where the process lives now) and the
+                    // destination cgroup. So before claiming this candidate,
+                    // check that we could migrate ourselves into it.
+                    let own = own_cgroup_path();
+                    let dest = candidate
+                        .strip_prefix("/sys/fs/cgroup")
+                        .unwrap_or(candidate)
+                        .to_string();
+                    let writable = |ancestor: &str| -> bool {
+                        let base = if ancestor == "/" {
+                            "/sys/fs/cgroup/cgroup.procs".to_string()
+                        } else {
+                            format!("/sys/fs/cgroup{ancestor}/cgroup.procs")
+                        };
+                        let c = match std::ffi::CString::new(base) {
+                            Ok(c) => c,
+                            Err(_) => return false,
+                        };
+                        // SAFETY: access takes a NUL-terminated path and only
+                        // queries permissions; it touches no memory we do not own.
+                        unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+                    };
+                    let migratable = match own.as_deref() {
+                        Some(own) => migration_allowed(own, &dest, writable),
+                        None => false,
+                    };
+                    if migratable {
+                        return Some(p);
+                    }
+                    // Not migratable: undo the directory we just created and
+                    // try the next candidate. Failure to rmdir is harmless.
+                    if std::fs::remove_dir(&p).is_err() {
+                        // Best-effort: failure (e.g. EBUSY) is harmless.
+                    }
                 }
             }
         }
         None
+    }
+
+    /// Return the cgroup v2 path of THIS process from /proc/self/cgroup —
+    /// the path on the `0::<path>` line — or `None` if it cannot be read
+    /// (e.g. no cgroup v2, or a non-Linux-shaped /proc).
+    fn own_cgroup_path() -> Option<String> {
+        let content = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+        for line in content.lines() {
+            if let Some(rest) = line.strip_prefix("0::") {
+                return Some(rest.to_string());
+            }
+        }
+        None
+    }
+
+    /// Deepest directory that `own` and `dest` share, compared per path
+    /// component. Both inputs are absolute cgroup v2 paths with a leading
+    /// `/`; returns `/` when they share nothing but the root.
+    fn common_cgroup_ancestor(own: &str, dest: &str) -> String {
+        let mut ancestor = String::new();
+        let mut own_parts = own.split('/').filter(|s| !s.is_empty()).peekable();
+        let mut dest_parts = dest.split('/').filter(|s| !s.is_empty()).peekable();
+        while let (Some(a), Some(b)) = (own_parts.peek(), dest_parts.peek()) {
+            if a != b {
+                break;
+            }
+            ancestor.push('/');
+            ancestor.push_str(a);
+            own_parts.next();
+            dest_parts.next();
+        }
+        if ancestor.is_empty() {
+            "/".to_string()
+        } else {
+            ancestor
+        }
+    }
+
+    /// Whether migrating a process from `own` to `dest` is allowed. Delegates
+    /// the decision to `writable`, called with the nearest common ancestor of
+    /// the two cgroups — that is the file whose write permission the kernel
+    /// requires for the move.
+    fn migration_allowed(own: &str, dest: &str, writable: impl Fn(&str) -> bool) -> bool {
+        let ancestor = common_cgroup_ancestor(own, dest);
+        writable(&ancestor)
+    }
+
+    /// Try to rmdir `dir` up to `attempts` times, sleeping `pause` between
+    /// failed attempts. A directory that is already gone (`NotFound`) counts
+    /// as success. Returns true once the directory is removed.
+    fn remove_cgroup_dir_with_retry(
+        dir: &std::path::Path,
+        attempts: u32,
+        pause: std::time::Duration,
+    ) -> bool {
+        for _ in 0..attempts {
+            match std::fs::remove_dir(dir) {
+                Ok(()) => return true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+                Err(_) => {
+                    std::thread::sleep(pause);
+                }
+            }
+        }
+        false
     }
 
     // ── CgroupContainment ──────────────────────────────────────────────────────
@@ -485,17 +586,19 @@ mod linux {
                 // Best-effort cleanup of this turn's cgroup dirs. rmdir fails
                 // harmlessly while processes remain inside; ignore all errors.
                 if let Some(ref dir) = self.cgroup_dir {
-                    // A non-empty cgroup cannot be removed; leave it, the
-                    // next owner uses a fresh name.
-                    if std::fs::remove_dir(dir).is_err() {
+                    // A freshly killed cgroup is still draining: the first
+                    // rmdir fails with EBUSY until the kernel empties it, so
+                    // retry briefly. Give up after ~1 s; leftover dirs are
+                    // harmless, the next owner uses a fresh name.
+                    if !remove_cgroup_dir_with_retry(dir, 20, Duration::from_millis(50)) {
                         // Best-effort: failure (e.g. EBUSY) is harmless.
                     }
                 }
                 if let Ok(guard) = self.detached_dir.lock() {
                     if let Some(ref dir) = *guard {
-                        // A non-empty cgroup cannot be removed; leave it, the
-                        // next owner uses a fresh name.
-                        if std::fs::remove_dir(dir).is_err() {
+                        // Same draining caveat as above: retry briefly, then
+                        // give up. Failure is harmless.
+                        if !remove_cgroup_dir_with_retry(dir, 20, Duration::from_millis(50)) {
                             // Best-effort: failure (e.g. EBUSY) is harmless.
                         }
                     }
@@ -884,6 +987,106 @@ mod linux {
             assert_ne!(
                 dir_a, dir_b,
                 "two owner containments in one process must get distinct cgroup dirs"
+            );
+        }
+
+        // ── cgroup ancestor / migration / removal helpers (pending impl) ──────
+
+        #[test]
+        fn common_ancestor_of_session_scope_and_user_service_dir_is_the_user_slice() {
+            let own = "/user.slice/user-1001.slice/session-3.scope";
+            let dest = "/user.slice/user-1001.slice/user@1001.service/gait-1-0";
+            assert_eq!(
+                common_cgroup_ancestor(own, dest),
+                "/user.slice/user-1001.slice"
+            );
+        }
+
+        #[test]
+        fn common_ancestor_in_the_same_subtree_is_the_deepest_shared_dir() {
+            assert_eq!(common_cgroup_ancestor("/a/b/c", "/a/b/d/e"), "/a/b");
+            assert_eq!(common_cgroup_ancestor("/a/b", "/a/b/c"), "/a/b");
+        }
+
+        #[test]
+        fn common_ancestor_of_unrelated_paths_is_the_root() {
+            assert_eq!(common_cgroup_ancestor("/a/b", "/c/d"), "/");
+            // Comparison is per component: "bc" != "b".
+            assert_eq!(common_cgroup_ancestor("/a/bc", "/a/b"), "/a");
+        }
+
+        #[test]
+        fn migration_allowed_asks_the_closure_about_the_common_ancestor() {
+            use std::cell::RefCell;
+
+            let own = "/user.slice/user-1001.slice/session-3.scope";
+            let dest = "/user.slice/user-1001.slice/user@1001.service/gait-1-0";
+
+            let seen = RefCell::new(String::new());
+            let allowed = migration_allowed(own, dest, |path| {
+                *seen.borrow_mut() = path.to_string();
+                false
+            });
+            assert!(!allowed);
+            assert_eq!(
+                seen.into_inner(),
+                "/user.slice/user-1001.slice",
+                "writable must be consulted with the common ancestor"
+            );
+
+            assert!(migration_allowed(own, dest, |_| true));
+        }
+
+        #[test]
+        fn remove_cgroup_dir_retries_then_gives_up() {
+            let dir = std::env::temp_dir().join(format!(
+                "gait-sandbox-retry-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            // A file inside makes remove_dir fail every time.
+            std::fs::write(dir.join("occupied"), b"no").expect("write blocker");
+
+            let start = std::time::Instant::now();
+            let removed =
+                remove_cgroup_dir_with_retry(&dir, 3, std::time::Duration::from_millis(5));
+            let elapsed = start.elapsed();
+
+            assert!(
+                !removed,
+                "remove_dir must fail while the blocker file exists"
+            );
+            assert!(
+                elapsed >= std::time::Duration::from_millis(10),
+                "two inter-attempt pauses (>= 10ms) expected, took {elapsed:?}"
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn remove_cgroup_dir_succeeds_on_an_empty_dir_and_when_already_gone() {
+            let dir = std::env::temp_dir().join(format!(
+                "gait-sandbox-ok-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+
+            assert!(
+                remove_cgroup_dir_with_retry(&dir, 3, std::time::Duration::from_millis(5)),
+                "empty dir must be removed on the first attempt"
+            );
+            assert!(
+                remove_cgroup_dir_with_retry(&dir, 3, std::time::Duration::from_millis(5)),
+                "an already-removed dir counts as success"
             );
         }
     }
