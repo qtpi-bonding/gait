@@ -1004,10 +1004,8 @@ fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
         let verdict = match classify_one(gait_dir, &id) {
             Ok(v) => v,
             Err(e) => {
-                skipped.push((
-                    id,
-                    format!("unreadable: {}", coded_error::facts_anyhow(&e).code),
-                ));
+                let code = coded_error::facts_anyhow(&e).code;
+                skipped.push((id, format!("unreadable: {code}")));
                 continue;
             }
         };
