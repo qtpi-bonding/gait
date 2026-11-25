@@ -256,6 +256,14 @@ pub fn normalize_lexical(path: &std::path::Path) -> std::path::PathBuf {
     out
 }
 
+/// Join `target` onto `base` and return the lexically normalized result. An
+/// absolute `target` replaces `base` entirely (as `Path::join` does), so
+/// callers get one shared, cleaned path for both relative and absolute
+/// delegated targets.
+pub fn clean_target(base: &std::path::Path, target: &std::path::Path) -> std::path::PathBuf {
+    normalize_lexical(&base.join(target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +294,17 @@ mod tests {
     fn normalize_lexical_no_change_needed() {
         let result = normalize_lexical(std::path::Path::new("/a/b/c"));
         assert_eq!(result, PathBuf::from("/a/b/c"));
+    }
+
+    #[test]
+    fn clean_target_handles_absolute_and_relative() {
+        let base = std::path::Path::new("/ws/codebase");
+        // An absolute target replaces base; `..` is resolved lexically.
+        let abs = clean_target(base, std::path::Path::new("/ws/codebase/src/../lib.rs"));
+        assert_eq!(abs, PathBuf::from("/ws/codebase/lib.rs"));
+        // A relative target is joined onto base, then cleaned.
+        let rel = clean_target(base, std::path::Path::new("src/../main.rs"));
+        assert_eq!(rel, PathBuf::from("/ws/codebase/main.rs"));
     }
 
     #[test]

@@ -767,7 +767,7 @@ fn check_own_tool_scope(
     let mut items = vec![];
     for (path, dim) in targets {
         // Normalize target lexically — no filesystem access, works for non-existent paths.
-        let target = normalize_lexical(&path);
+        let target = crate::sandbox::clean_target(&codebase_norm, &path);
         let in_scope = match dim {
             Dimension::Write => ceiling
                 .writable

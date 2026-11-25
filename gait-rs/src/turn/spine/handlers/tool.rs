@@ -702,8 +702,9 @@ pub fn scope_to_proto(s: &SandboxScope) -> Scope {
 }
 
 /// If `tool` is one of the five delegating fs tools and its args carry a
-/// `file_path`, return the path resolved as the tools resolve it (absolute as-is,
-/// else `codebase.join(file_path)`) and then **lexically normalized**. Otherwise
+/// `file_path`, return the path resolved as the tools resolve it — via the
+/// shared [`crate::sandbox::clean_target`] (absolute replaces the codebase root,
+/// else joined onto it), then **lexically normalized**. Otherwise
 /// `None`. The normalized path is authoritative for delegated ops: it is what the
 /// spine scope-checks, ships in `Prefetch.path`, and hands to the delegate.
 pub fn delegated_target(
@@ -733,11 +734,7 @@ pub fn delegated_target(
             _ => None,
         })?;
     let p = std::path::Path::new(&fp);
-    if p.is_absolute() {
-        Some(p.to_path_buf())
-    } else {
-        Some(crate::sandbox::normalize_lexical(&codebase.join(&fp)))
-    }
+    Some(crate::sandbox::clean_target(codebase, p))
 }
 
 #[cfg(test)]
