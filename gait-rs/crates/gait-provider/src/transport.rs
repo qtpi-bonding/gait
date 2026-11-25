@@ -579,6 +579,7 @@ fn retry_diagnostic(attempt: u32, max_attempts: u8, error: &ProviderError) -> St
 mod tests {
     use super::*;
     use crate::provider::{ProviderError, TimeoutPhase};
+    use coded_error::CodedError;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1153,5 +1154,110 @@ mod tests {
                 other.is_ok()
             ),
         }
+    }
+
+    // A peer that accepts, reads the request, and drops the connection before
+    // writing ANY response bytes produces a reqwest error ("connection closed
+    // before message completed") that `ProviderError::from_reqwest` maps to
+    // `ProviderError::Other` — terminal, Infrastructure (exit 69). It must be
+    // retryable like `Connect`, so one dropped connection cannot kill a long run.
+    async fn dropped_connection_stub(
+        drops: usize,
+        expected_requests: usize,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub server");
+        let address = listener.local_addr().expect("stub server address");
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&count);
+        let task = tokio::spawn(async move {
+            for request_index in 0..expected_requests {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                read_request(&mut socket).await;
+                observed.fetch_add(1, Ordering::SeqCst);
+                if request_index < drops {
+                    drop(socket);
+                    continue;
+                }
+                let response = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: hello\r\n\r\n";
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+                drop(socket);
+            }
+        });
+        (format!("http://{address}"), count, task)
+    }
+
+    #[tokio::test]
+    async fn dropped_connection_before_any_response_is_retried_then_succeeds() {
+        let (url, count, server) = dropped_connection_stub(2, 3).await;
+        let cfg = TransportConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(2),
+            ..TransportConfig::default()
+        };
+        let mut stream = match ProviderTransport::new(cfg)
+            .expect("transport")
+            .stream(SseRequest::new(
+                url,
+                HeaderMap::new(),
+                serde_json::json!({}),
+            ))
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) => panic!("dropped connections must be retried, got {error:?}"),
+        };
+        match stream.next().await {
+            Some(Ok(event)) => assert_eq!(event.data, "hello"),
+            other => panic!("expected first event with data 'hello', got {other:?}"),
+        }
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("stub finished")
+            .expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn dropped_connection_every_time_exhausts_retries_as_transient() {
+        let (url, count, server) = dropped_connection_stub(3, 3).await;
+        let cfg = TransportConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(2),
+            ..TransportConfig::default()
+        };
+        let error = match ProviderTransport::new(cfg)
+            .expect("transport")
+            .stream(SseRequest::new(
+                url,
+                HeaderMap::new(),
+                serde_json::json!({}),
+            ))
+            .await
+        {
+            Ok(_) => panic!("exhausted drops must be an Err"),
+            Err(error) => error,
+        };
+        assert!(error.is_retryable(), "error must be retryable: {error:?}");
+        assert_eq!(
+            error.class(),
+            coded_error::ErrorClass::Transient,
+            "error must be classified Transient: {error:?}"
+        );
+        assert!(
+            !matches!(error, ProviderError::Other(_)),
+            "dropped connection must not map to Other: {error:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("stub finished")
+            .expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 }

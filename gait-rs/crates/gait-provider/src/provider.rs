@@ -140,6 +140,10 @@ impl ProviderError {
             }
         } else if e.is_connect() {
             ProviderError::Connect(e.to_string())
+        } else if e.is_request() && !e.is_body() && !e.is_decode() && is_dropped_connection(&e) {
+            // The request failed to send and no response bytes were received,
+            // so a dropped connection is as retryable as a failed connect.
+            ProviderError::Connect(e.to_string())
         } else {
             ProviderError::Other(e.to_string())
         }
@@ -147,6 +151,14 @@ impl ProviderError {
 
     /// Whether the caller should attempt another connection. Phase-1 only —
     /// mid-stream failures (StreamIncomplete, Overloaded, Sse) are always terminal.
+    /// This includes reqwest send failures where the peer dropped the connection
+    /// before any response bytes arrived (classified as `Connect` by
+    /// [`ProviderError::from_reqwest`]). The server may already have received
+    /// and started processing such a request; what is certain is that no
+    /// response was received, so the caller cannot have consumed any output.
+    /// Replaying the identical POST is therefore safe — for a
+    /// chat/completions request it is at worst a duplicated generation, with
+    /// no side effect the client observed.
     pub fn is_retryable(&self) -> bool {
         match self {
             ProviderError::Connect(_) => true,
@@ -167,6 +179,38 @@ impl ProviderError {
             None
         }
     }
+}
+
+/// Whether the reqwest error chain shows the peer dropped the connection
+/// before any response bytes arrived. Phase 1 only: the request was sent
+/// without any response bytes having been received. The server may have
+/// received and started the request, but since no response came back the
+/// caller cannot have consumed any output; replaying the identical POST is
+/// safe — at worst a duplicated generation with no side effect the client
+/// observed.
+fn is_dropped_connection(e: &reqwest::Error) -> bool {
+    let mut source = std::error::Error::source(e);
+    while let Some(err) = source {
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            ) {
+                return true;
+            }
+        }
+        if err
+            .to_string()
+            .contains("connection closed before message completed")
+        {
+            return true;
+        }
+        source = err.source();
+    }
+    false
 }
 
 // The core trait every LLM provider implements
