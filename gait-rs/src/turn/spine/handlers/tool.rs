@@ -1059,6 +1059,133 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn delegated_read_and_write_scope_check_survives_uncleaned_absolute_paths() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Fake {
+            read_called: Arc<AtomicBool>,
+            write_called: Arc<AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl crate::embed::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                self.read_called.store(true, Ordering::SeqCst);
+                Ok(None)
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                self.write_called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        async fn run_case(
+            ws: &Path,
+            tool: &str,
+            file_path: &str,
+            session: &str,
+        ) -> (String, Arc<AtomicBool>, Arc<AtomicBool>) {
+            let read_called = Arc::new(AtomicBool::new(false));
+            let write_called = Arc::new(AtomicBool::new(false));
+            let fake = Fake {
+                read_called: read_called.clone(),
+                write_called: write_called.clone(),
+            };
+
+            std::fs::create_dir_all(crate::session::live::worktree_dir(ws, session)).unwrap();
+            let mut s = pbjson_types::Struct::default();
+            s.fields.insert(
+                "file_path".into(),
+                pbjson_types::Value {
+                    kind: Some(pbjson_types::value::Kind::StringValue(
+                        file_path.to_string(),
+                    )),
+                },
+            );
+            let impulse = gait_proto::gait::sandbox::v1::Impulse {
+                tool: tool.to_string(),
+                args: Some(s),
+                requested: None,
+                prefetch: None,
+                shell_whitelist_patterns: vec![],
+                output_capture_mode: ProtoOutputCaptureMode::Returned as i32,
+                output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                    as i32,
+            };
+            let group = crate::process::establish(None);
+            let feedback = run_tool_as_spine(
+                impulse,
+                &crate::config::SandboxConfig::default(),
+                ws,
+                ws,
+                session,
+                true, // sandbox ON → spine enforces scope
+                Path::new("/nonexistent-exe"),
+                group,
+                Some(Arc::new(fake) as Arc<dyn crate::embed::FsDelegate>),
+            )
+            .await;
+            let rendered = serde_json::to_string(&feedback.result).unwrap();
+            (rendered, read_called, write_called)
+        }
+
+        for tool in ["read", "write"] {
+            let ws = tempfile::TempDir::new().unwrap();
+            let ws_str = format!("{}", ws.path().display());
+
+            // Direct `..` escape: refused, delegate untouched.
+            let direct = format!("{}/../x", ws_str);
+            let (rendered, read_called, write_called) =
+                run_case(ws.path(), tool, &direct, &format!("sess-{tool}-direct")).await;
+            assert!(
+                rendered.to_lowercase().contains("out of scope"),
+                "[{tool} direct] expected scope rejection: {rendered}"
+            );
+            assert!(
+                !read_called.load(Ordering::SeqCst),
+                "[{tool} direct] read delegate must not run"
+            );
+            assert!(
+                !write_called.load(Ordering::SeqCst),
+                "[{tool} direct] write delegate must not run"
+            );
+
+            // Nested `..` escape: refused, delegate untouched.
+            let nested = format!("{}/sub/../../x", ws_str);
+            let (rendered, read_called, write_called) =
+                run_case(ws.path(), tool, &nested, &format!("sess-{tool}-nested")).await;
+            assert!(
+                rendered.to_lowercase().contains("out of scope"),
+                "[{tool} nested] expected scope rejection: {rendered}"
+            );
+            assert!(
+                !read_called.load(Ordering::SeqCst),
+                "[{tool} nested] read delegate must not run"
+            );
+            assert!(
+                !write_called.load(Ordering::SeqCst),
+                "[{tool} nested] write delegate must not run"
+            );
+
+            // In-scope path with an interior `..`: allowed; the read delegate runs.
+            std::fs::create_dir_all(ws.path().join("sub")).unwrap();
+            std::fs::write(ws.path().join("ok"), "hello").unwrap();
+            let inside = format!("{}/sub/../ok", ws_str);
+            let (rendered, read_called, write_called) =
+                run_case(ws.path(), tool, &inside, &format!("sess-{tool}-inside")).await;
+            assert!(
+                !rendered.to_lowercase().contains("out of scope"),
+                "[{tool} inside] must not be a scope rejection: {rendered}"
+            );
+            assert!(
+                read_called.load(Ordering::SeqCst),
+                "[{tool} inside] read delegate must have run: {rendered}"
+            );
+            let _ = write_called;
+        }
+    }
+
     fn env_of(
         pairs: &'static [(&'static str, &'static str)],
     ) -> impl Fn(&str) -> Option<std::ffi::OsString> {
