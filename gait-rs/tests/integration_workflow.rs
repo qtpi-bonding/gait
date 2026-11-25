@@ -273,6 +273,7 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
 
     {
         let ctx = NodeContext {
+            env_passthrough: Vec::new(),
             workflow_id: "wf1",
             session_id,
             node_session: session_id,

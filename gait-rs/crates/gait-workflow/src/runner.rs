@@ -366,7 +366,7 @@ async fn run_single_node(
     // Before-hook: runs exactly once, before any attempt — not re-run on retries.
     if let Some(hooks) = &params.node.hooks {
         if let Some(cmd) = &hooks.before {
-            let (exit, _) = run_hook(cmd, &params.env, timeout_ms).await;
+            let (exit, _) = run_hook(cmd, &params.env, timeout_ms, None).await;
             hook_results.push(HookRunResult {
                 phase: "before",
                 cmd: cmd.clone(),
@@ -382,6 +382,7 @@ async fn run_single_node(
         }
 
         let ctx = NodeContext {
+            env_passthrough: Vec::new(),
             workflow_id: params.workflow_id.as_str(),
             session_id: params.session_id.as_str(),
             node_session: params.node_session.as_str(),
@@ -411,7 +412,7 @@ async fn run_single_node(
                 // After-hook: only on a successful (Done) outcome.
                 if let Some(hooks) = &params.node.hooks {
                     if let Some(cmd) = &hooks.after {
-                        let (exit, _) = run_hook(cmd, &params.env, timeout_ms).await;
+                        let (exit, _) = run_hook(cmd, &params.env, timeout_ms, None).await;
                         hook_results.push(HookRunResult {
                             phase: "after",
                             cmd: cmd.clone(),
@@ -429,7 +430,7 @@ async fn run_single_node(
                 // regardless of which on_error routing applies below.
                 if let Some(hooks) = &params.node.hooks {
                     if let Some(cmd) = &hooks.error {
-                        let (exit, _) = run_hook(cmd, &params.env, timeout_ms).await;
+                        let (exit, _) = run_hook(cmd, &params.env, timeout_ms, None).await;
                         hook_results.push(HookRunResult {
                             phase: "error",
                             cmd: cmd.clone(),
@@ -596,6 +597,7 @@ async fn handle_open_node(
             failed_node: state.failed_node.clone(),
         };
         let ctx = crate::exec_shell::NodeContext {
+            env_passthrough: Vec::new(),
             workflow_id,
             session_id,
             node_session: &node_session,

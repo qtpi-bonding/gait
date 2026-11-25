@@ -1,6 +1,8 @@
+use crate::step::{build_shell_env, ShellOpts, StepResult};
 use crate::vars::{substitute_shell, NodeOutput, VarContext};
 use gait_core::embed::SinkFrame;
 use gait_core::proto::gait::workflow::v1::ShellNode;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub struct NodeContext<'a> {
@@ -33,6 +35,9 @@ pub struct NodeContext<'a> {
     /// Launcher-set override for the in-tree safety guard (design §7), sourced
     /// from the CLI's `--allow-intree` flag. `false` for every real workflow node.
     pub allow_intree: bool,
+    /// Extra env var names forwarded from gait's environment to shell steps and
+    /// hooks (config supplied). Empty for every YAML node.
+    pub env_passthrough: Vec<String>,
 }
 
 pub async fn exec_shell_node(
@@ -81,6 +86,76 @@ pub async fn exec_shell_node(
         json,
         routed_to: None,
         session_id: String::new(),
+    })
+}
+
+/// Run a typed shell step (`argv` directly, or `script` via `sh -c`) with the
+/// env-cleared environment built by `step::build_shell_env`.
+pub async fn exec_shell_opts(
+    opts: &ShellOpts,
+    ctx: &NodeContext<'_>,
+    passthrough: &[String],
+) -> anyhow::Result<StepResult> {
+    opts.validate()?;
+    let timeout_ms: u64 = opts.timeout.unwrap_or(120_000);
+
+    let well_known: BTreeMap<String, String> = [
+        ("WORKFLOW_ID".to_string(), ctx.workflow_id.to_string()),
+        ("SESSION_ID".to_string(), ctx.session_id.to_string()),
+        ("NODE_ID".to_string(), ctx.vars.node_id.clone()),
+        ("CODEBASE".to_string(), ctx.codebase.display().to_string()),
+        ("WORKSPACE".to_string(), ctx.gait_dir.display().to_string()),
+        ("ARGS".to_string(), ctx.vars.args.clone()),
+    ]
+    .into_iter()
+    .collect();
+    let env =
+        build_shell_env(&well_known, &opts.env, passthrough).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let mut cmd = match (&opts.argv, &opts.script) {
+        (Some(argv), _) => {
+            let (program, rest) = argv
+                .split_first()
+                .ok_or_else(|| anyhow::anyhow!("shell step '{}': argv is empty", opts.id))?;
+            let mut c = tokio::process::Command::new(program);
+            c.args(rest);
+            c
+        }
+        (None, Some(script)) => {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(script);
+            c
+        }
+        (None, None) => unreachable!("validate() rejects neither argv nor script"),
+    };
+    cmd.env_clear()
+        .envs(env)
+        .current_dir(ctx.run_worktree)
+        .kill_on_drop(true);
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("shell timed out after {}ms", timeout_ms))?
+        .map_err(|e| anyhow::anyhow!("shell exec error: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    let json = match &opts.output_schema {
+        None => None,
+        Some(_) => Some(serde_json::from_str(stdout.trim()).map_err(|e| {
+            anyhow::anyhow!(
+                "node output_schema requires JSON stdout, but shell stdout was invalid JSON: {e}"
+            )
+        })?),
+    };
+    let combined = format!("{stdout}{stderr}");
+
+    Ok(StepResult {
+        output: combined.trim_end().to_string(),
+        exit: result.status.code(),
+        json,
+        session_id: None,
+        error: None,
     })
 }
 
@@ -198,6 +273,7 @@ mod tests {
             profile: None,
             fs_delegate: None,
             allow_intree: false,
+            env_passthrough: Vec::new(),
             vars: crate::vars::VarContext {
                 workflow_id: "wf1".into(),
                 session_id: "s1".into(),
