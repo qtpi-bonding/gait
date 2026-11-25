@@ -370,6 +370,160 @@ impl Tool for WebfetchTool {
 mod tests {
     use super::*;
 
+    /// A tiny local HTTP stub. Binds to 127.0.0.1:0 and serves a fixed raw
+    /// response for every connection. `hits` counts accepted connections so
+    /// tests can assert a stub was never contacted.
+    async fn spawn_stub(
+        response: &'static str,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub");
+        let port = listener.local_addr().expect("local addr").port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let resp = response;
+                tokio::spawn(async move {
+                    // Read until end of request headers (\r\n\r\n), then reply.
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        match tokio::io::AsyncReadExt::read(&mut sock, &mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                buf.extend_from_slice(&chunk[..n]);
+                                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let _ = tokio::io::AsyncWriteExt::write_all(&mut sock, resp.as_bytes()).await;
+                    let _ = tokio::io::AsyncWriteExt::shutdown(&mut sock).await;
+                });
+            }
+        });
+        port
+    }
+
+    fn hits_counter() -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    fn serve_200(body: &'static str) -> &'static str {
+        // Leaked strings let us build the fixed raw response per call.
+        Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    fn serve_redirect_to(location: String) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    /// Guard: when an allowlist is set, a redirect to a non-listed host must
+    /// not be followed. The target stub must never receive a request.
+    #[tokio::test]
+    async fn allowlist_blocks_redirect_to_unlisted_host() {
+        let target_hits = hits_counter();
+        let target_port = spawn_stub(serve_200("secret"), target_hits.clone()).await;
+
+        let origin_hits = hits_counter();
+        let origin_port = spawn_stub(
+            serve_redirect_to(format!("http://localhost:{target_port}/")),
+            origin_hits.clone(),
+        )
+        .await;
+
+        let tool = WebfetchTool::new().with_network_allowlist(vec!["127.0.0.1".to_string()]);
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": format!("http://127.0.0.1:{origin_port}/") }),
+                &crate::Recorder::detached(),
+            )
+            .await;
+
+        let err = result.expect_err("redirect to unlisted host must be denied");
+        assert!(
+            err.to_string()
+                .contains("egress denied: host 'localhost' not in sandbox.network allowlist"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            target_hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "target stub must never be contacted"
+        );
+    }
+
+    /// Guard: a redirect to a host that IS in the allowlist (same IP, here
+    /// reached as 127.0.0.1) may be followed and must return the target body.
+    #[tokio::test]
+    async fn allowlist_permits_redirect_to_listed_host() {
+        let target_hits = hits_counter();
+        let target_port = spawn_stub(serve_200("ok-body"), target_hits.clone()).await;
+
+        let origin_hits = hits_counter();
+        let origin_port = spawn_stub(
+            serve_redirect_to(format!("http://127.0.0.1:{target_port}/")),
+            origin_hits.clone(),
+        )
+        .await;
+
+        let tool = WebfetchTool::new().with_network_allowlist(vec!["127.0.0.1".to_string()]);
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": format!("http://127.0.0.1:{origin_port}/") }),
+                &crate::Recorder::detached(),
+            )
+            .await
+            .expect("redirect to allowed host should succeed");
+
+        let out = result.as_str().expect("string output");
+        assert!(out.contains("ok-body"), "got: {out}");
+    }
+
+    /// Guard: without an allowlist, redirects to any host are followed.
+    #[tokio::test]
+    async fn no_allowlist_follows_redirect() {
+        let target_hits = hits_counter();
+        let target_port = spawn_stub(serve_200("ok-body"), target_hits.clone()).await;
+
+        let origin_hits = hits_counter();
+        let origin_port = spawn_stub(
+            serve_redirect_to(format!("http://localhost:{target_port}/")),
+            origin_hits.clone(),
+        )
+        .await;
+
+        let tool = WebfetchTool::new();
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": format!("http://127.0.0.1:{origin_port}/") }),
+                &crate::Recorder::detached(),
+            )
+            .await
+            .expect("no allowlist: redirect should be followed");
+
+        let out = result.as_str().expect("string output");
+        assert!(out.contains("ok-body"), "got: {out}");
+    }
+
     #[test]
     fn strip_html_removes_tags() {
         let html = "<p>Hello <b>world</b>!</p>";
