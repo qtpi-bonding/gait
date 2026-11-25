@@ -20,7 +20,6 @@ mod integration_openai;
 mod integration_run_loop;
 mod integration_tools;
 mod integration_turn;
-mod merge_guard;
 mod min_no_extensions;
 mod provider_key_names_one_table;
 mod run_output_split;

@@ -6,7 +6,6 @@
 
 mod lifecycle;
 mod load;
-mod merge_guard;
 mod mode;
 mod role_dispatch_identity;
 mod run_tool_hand;
