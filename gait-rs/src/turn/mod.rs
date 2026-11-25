@@ -701,7 +701,8 @@ pub async fn run_turn(
                     // by a prior unlock reply (once or session scope).
                     for item in items {
                         let path = std::path::PathBuf::from(&item.resource);
-                        let already_granted = active_unlock.grants(&path);
+                        let already_granted = crate::types::Dimension::parse(&item.dimension)
+                            .is_some_and(|dimension| active_unlock.grants(&path, dimension));
                         if !already_granted {
                             pending_unlocks.push(item);
                         }

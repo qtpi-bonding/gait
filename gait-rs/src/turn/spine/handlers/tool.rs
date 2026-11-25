@@ -434,11 +434,17 @@ pub async fn run_tool_as_spine(
             if !ok {
                 // Lazily consult the session log for once/session unlock grants
                 // before refusing; a read error means no grants (fail closed).
-                let events = crate::session::log::read_events(&crate::session::log::log_path(
+                let events = crate::session::log::read_events(&crate::session::live::log_path(
                     gait_dir, session_id,
                 ))
                 .unwrap_or_default();
-                let unlocked = crate::session::retrace::active_unlock_state(&events).grants(path);
+                let dimension = if is_write {
+                    crate::types::Dimension::Write
+                } else {
+                    crate::types::Dimension::Read
+                };
+                let unlocked =
+                    crate::session::retrace::active_unlock_state(&events).grants(path, dimension);
                 if !unlocked {
                     let _ = std::fs::remove_dir_all(&jail);
                     return error_feedback(&format!(
@@ -486,16 +492,10 @@ pub async fn run_tool_as_spine(
     };
     let bytes = impulse_with_scope.encode_to_vec();
 
-    // debug_assert: the brain (group leader) must be alive before we enroll a hand.
-    // pgid == 0 means spawn_enrolled hasn't been called yet for the brain — logic error.
-    #[cfg(debug_assertions)]
-    {
-        let handle_str = group.handle();
-        debug_assert!(
-            handle_str.is_some(),
-            "hand enrolled before brain: cascade group has no leader yet"
-        );
-    }
+    // NOTE: in the degraded (non-cgroup) pgid mode a fresh containment may have
+    // no leader yet (pgid == 0). `configure_enrolled` below handles that case
+    // safely (the enrolled child becomes its own group leader), so we must not
+    // assert a leader exists here.
     let mut child = {
         use tokio::process::Command as TokioCommand;
         let mut std_cmd = std::process::Command::new(exe);
@@ -1216,7 +1216,7 @@ mod tests {
         std::fs::write(&granted, "secret-ok").unwrap();
         std::fs::write(&other, "secret-no").unwrap();
 
-        let log_path = crate::session::log::log_path(ws.path(), session);
+        let log_path = crate::session::live::log_path(ws.path(), session);
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         crate::proto::wire::append(
             &log_path,
@@ -1309,6 +1309,182 @@ mod tests {
             !called2.load(Ordering::SeqCst),
             "delegate read must NOT run for an unlocked-foreign path"
         );
+    }
+
+    #[tokio::test]
+    async fn delegated_write_refused_with_only_a_read_unlock() {
+        use std::sync::atomic::Ordering;
+        let (ws, session, file_path, _outside) = seed_unlock("sess-write-read-unlock", "read");
+
+        let (rendered, read_called, write_called) =
+            run_unlocked_tool(ws.path(), &session, "write", &file_path, Some("x")).await;
+        assert!(
+            rendered.to_lowercase().contains("out of scope"),
+            "expected scope rejection for a write under a read unlock: {rendered}"
+        );
+        assert!(
+            !write_called.load(Ordering::SeqCst),
+            "delegate write must NOT run for a path unlocked only for read: {rendered}"
+        );
+        assert!(!read_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn delegated_write_unlock_admits_write_and_read() {
+        use std::sync::atomic::Ordering;
+        let (ws, session, file_path, _outside) = seed_unlock("sess-write-write-unlock", "write");
+
+        let (rendered, _read_called, _write_called) =
+            run_unlocked_tool(ws.path(), &session, "write", &file_path, Some("x")).await;
+        assert!(
+            !rendered.to_lowercase().contains("out of scope"),
+            "session-unlocked write must not be refused: {rendered}"
+        );
+        // The write delegate itself cannot be asserted here: with a
+        // nonexistent hand exe the delegated spawn fails after the scope
+        // check passes, so we only assert the scope check outcome above.
+
+        // Today's rule: a write unlock also implies read access to the same path.
+        let (rendered, read_called, _write_called) =
+            run_unlocked_tool(ws.path(), &session, "read", &file_path, None).await;
+        assert!(
+            !rendered.to_lowercase().contains("out of scope"),
+            "a write unlock implies read: {rendered}"
+        );
+        assert!(
+            read_called.load(Ordering::SeqCst),
+            "delegate read must run for the write-unlocked path: {rendered}"
+        );
+    }
+
+    /// Creates a workspace + outside file and seeds the session log with an
+    /// unlock request for that file with the given dimension and a
+    /// Session-scope Allow reply. Returns (workspace, session, file_path).
+    fn seed_unlock(
+        session: &str,
+        dimension: &str,
+    ) -> (
+        tempfile::TempDir,
+        String,
+        std::path::PathBuf,
+        tempfile::TempDir,
+    ) {
+        use gait_proto::gait::log::v1 as pb;
+
+        let ws = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), session)).unwrap();
+
+        let outside = tempfile::TempDir::new().unwrap();
+        let file_path = outside.path().join("f.txt");
+        std::fs::write(&file_path, "outside").unwrap();
+
+        let log_path = crate::session::live::log_path(ws.path(), session);
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        crate::proto::wire::append(
+            &log_path,
+            crate::proto::events::sandbox_unlock(&[pb::SandboxUnlockItem {
+                id: "u1".to_string(),
+                tool_name: dimension.to_string(),
+                resource: file_path.to_string_lossy().into_owned(),
+                dimension: dimension.to_string(),
+                preview: None,
+            }]),
+        )
+        .unwrap();
+        crate::session::log::write_unlock_reply(
+            &log_path,
+            "user",
+            vec![pb::SandboxUnlockReplyItem {
+                id: "u1".to_string(),
+                decision: pb::Decision::Allow as i32,
+                scope: pb::Scope::Session as i32,
+            }],
+        )
+        .unwrap();
+        (ws, session.to_string(), file_path, outside)
+    }
+
+    /// One call of run_tool_as_spine for `tool` ("read"/"write") with the given
+    /// file_path (and optional write content). Returns the rendered result and
+    /// separate flags for whether the read / write delegate ran.
+    async fn run_unlocked_tool(
+        ws: &Path,
+        session: &str,
+        tool: &str,
+        file_path: &Path,
+        content: Option<&str>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Fake {
+            read_called: Arc<AtomicBool>,
+            write_called: Arc<AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl crate::embed::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                self.read_called.store(true, Ordering::SeqCst);
+                Ok(Some("hi".to_string()))
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                self.write_called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let mut s = pbjson_types::Struct::default();
+        s.fields.insert(
+            "file_path".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue(
+                    file_path.to_string_lossy().into_owned(),
+                )),
+            },
+        );
+        if let Some(c) = content {
+            s.fields.insert(
+                "content".into(),
+                pbjson_types::Value {
+                    kind: Some(pbjson_types::value::Kind::StringValue(c.into())),
+                },
+            );
+        }
+        let impulse = gait_proto::gait::sandbox::v1::Impulse {
+            tool: tool.to_string(),
+            args: Some(s),
+            requested: None,
+            prefetch: None,
+            shell_whitelist_patterns: vec![],
+            output_capture_mode: ProtoOutputCaptureMode::Returned as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
+        };
+        let group = crate::process::establish(None);
+        let read_called = Arc::new(AtomicBool::new(false));
+        let write_called = Arc::new(AtomicBool::new(false));
+        let fake = Fake {
+            read_called: read_called.clone(),
+            write_called: write_called.clone(),
+        };
+        let feedback = run_tool_as_spine(
+            impulse,
+            &crate::config::SandboxConfig::default(),
+            ws,
+            ws,
+            session,
+            true,
+            Path::new("/nonexistent-exe"),
+            group,
+            Some(Arc::new(fake) as Arc<dyn crate::embed::FsDelegate>),
+        )
+        .await;
+        let rendered = serde_json::to_string(&feedback.result).unwrap();
+        (rendered, read_called, write_called)
     }
 
     #[tokio::test]

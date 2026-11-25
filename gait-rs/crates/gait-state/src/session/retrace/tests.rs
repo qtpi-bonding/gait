@@ -1979,8 +1979,6 @@ fn outgoing_for_step_appends_newly_folded_message_in_log_order() {
 
 #[test]
 fn active_unlock_folds_once_grants_and_clears_on_run_complete() {
-    use std::path::PathBuf;
-
     let unlock_item = pb::SandboxUnlockItem {
         id: "u1".to_string(),
         tool_name: "write".to_string(),
@@ -2001,18 +1999,16 @@ fn active_unlock_folds_once_grants_and_clears_on_run_complete() {
 
     let result = active_unlock_state(&evs);
     assert!(
-        result
-            .once
-            .contains(&PathBuf::from("/external/path/foo.txt")),
-        "once grant should be in active_unlock.once"
+        result.grants(
+            std::path::Path::new("/external/path/foo.txt"),
+            gait_types::types::Dimension::Write
+        ),
+        "once grant should be recognized via grants()"
     );
-    assert!(result.session.is_empty());
 }
 
 #[test]
 fn active_unlock_session_grant_survives_run_complete() {
-    use std::path::PathBuf;
-
     let unlock_item = pb::SandboxUnlockItem {
         id: "u2".to_string(),
         tool_name: "write".to_string(),
@@ -2033,9 +2029,180 @@ fn active_unlock_session_grant_survives_run_complete() {
 
     let result = active_unlock_state(&evs);
     // session grant survives RunComplete
-    assert!(result.session.contains(&PathBuf::from("/external/dir")));
+    assert!(result.grants(
+        std::path::Path::new("/external/dir"),
+        gait_types::types::Dimension::Write
+    ));
     // once was cleared by RunComplete
-    assert!(result.once.is_empty());
+    assert!(!result.grants(
+        std::path::Path::new("/external/path/foo.txt"),
+        gait_types::types::Dimension::Write
+    ));
+}
+
+#[test]
+fn active_unlock_read_grant_admits_read_but_not_write() {
+    let unlock_item = pb::SandboxUnlockItem {
+        id: "r1".to_string(),
+        tool_name: "read".to_string(),
+        resource: "/x/f.txt".to_string(),
+        dimension: "read".to_string(),
+        preview: None,
+    };
+    let reply_item = pb::SandboxUnlockReplyItem {
+        id: "r1".to_string(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Session as i32,
+    };
+    let evs = mint_events(vec![
+        events::sandbox_unlock(&[unlock_item]),
+        events::sandbox_unlock_reply(&[reply_item]),
+    ]);
+
+    let result = active_unlock_state(&evs);
+    assert!(
+        result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Read
+        ),
+        "read grant should admit a read"
+    );
+    assert!(
+        !result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Write
+        ),
+        "read grant must not admit a write"
+    );
+}
+
+#[test]
+fn active_unlock_write_once_grant_admits_read_and_clears_on_run_complete() {
+    let unlock_item = pb::SandboxUnlockItem {
+        id: "w1".to_string(),
+        tool_name: "write".to_string(),
+        resource: "/x/f.txt".to_string(),
+        dimension: "write".to_string(),
+        preview: None,
+    };
+    let reply_item = pb::SandboxUnlockReplyItem {
+        id: "w1".to_string(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Once as i32,
+    };
+    let pre = mint_events(vec![
+        events::sandbox_unlock(std::slice::from_ref(&unlock_item)),
+        events::sandbox_unlock_reply(std::slice::from_ref(&reply_item)),
+    ]);
+
+    let result = active_unlock_state(&pre);
+    assert!(
+        result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Write
+        ),
+        "write grant should admit a write"
+    );
+    assert!(
+        result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Read
+        ),
+        "write grant should admit a read (write implies read)"
+    );
+
+    let post = mint_events(vec![
+        events::sandbox_unlock(&[unlock_item]),
+        events::sandbox_unlock_reply(&[reply_item]),
+        events::run_complete(pb::RunComplete::default()),
+    ]);
+    let result = active_unlock_state(&post);
+    assert!(
+        !result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Write
+        ),
+        "once write grant should clear after RunComplete"
+    );
+    assert!(
+        !result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Read
+        ),
+        "once write grant should no longer admit a read after RunComplete"
+    );
+}
+
+#[test]
+fn active_unlock_deny_grants_nothing() {
+    let unlock_item = pb::SandboxUnlockItem {
+        id: "d1".to_string(),
+        tool_name: "write".to_string(),
+        resource: "/x/f.txt".to_string(),
+        dimension: "write".to_string(),
+        preview: None,
+    };
+    let reply_item = pb::SandboxUnlockReplyItem {
+        id: "d1".to_string(),
+        decision: pb::Decision::Deny as i32,
+        scope: pb::Scope::Session as i32,
+    };
+    let evs = mint_events(vec![
+        events::sandbox_unlock(&[unlock_item]),
+        events::sandbox_unlock_reply(&[reply_item]),
+    ]);
+
+    let result = active_unlock_state(&evs);
+    assert!(
+        !result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Read
+        ),
+        "a Deny decision must grant nothing"
+    );
+    assert!(
+        !result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Write
+        ),
+        "a Deny decision must grant nothing"
+    );
+}
+
+#[test]
+fn active_unlock_unparseable_dimension_grants_nothing() {
+    let unlock_item = pb::SandboxUnlockItem {
+        id: "b1".to_string(),
+        tool_name: "write".to_string(),
+        resource: "/x/f.txt".to_string(),
+        dimension: "bogus".to_string(),
+        preview: None,
+    };
+    let reply_item = pb::SandboxUnlockReplyItem {
+        id: "b1".to_string(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Session as i32,
+    };
+    let evs = mint_events(vec![
+        events::sandbox_unlock(&[unlock_item]),
+        events::sandbox_unlock_reply(&[reply_item]),
+    ]);
+
+    let result = active_unlock_state(&evs);
+    assert!(
+        !result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Read
+        ),
+        "an unparseable dimension must grant nothing (fail closed)"
+    );
+    assert!(
+        !result.grants(
+            std::path::Path::new("/x/f.txt"),
+            gait_types::types::Dimension::Write
+        ),
+        "an unparseable dimension must grant nothing (fail closed)"
+    );
 }
 
 #[test]

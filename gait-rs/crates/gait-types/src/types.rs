@@ -385,7 +385,7 @@ pub trait Hook: Send + Sync {
 
 /// The filesystem dimension a tool operates on for a specific path argument.
 /// Used by `Tool::scope_targets` to declare what kind of access each target needs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dimension {
     Read,
     Write,
@@ -397,6 +397,16 @@ impl Dimension {
         match self {
             Dimension::Read => "read",
             Dimension::Write => "write",
+        }
+    }
+
+    /// Inverse of [`as_str`]: parses the dimension string used in
+    /// `SandboxUnlockItem.dimension`. Returns `None` for unrecognized strings.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Dimension::Read),
+            "write" => Some(Dimension::Write),
+            _ => None,
         }
     }
 }

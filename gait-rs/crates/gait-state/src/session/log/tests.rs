@@ -385,18 +385,29 @@ fn unlock_once_grant_round_trip_no_config_change() {
     let evs = read_events(&tx_path).unwrap();
     let unlock_state = active_unlock_state(&evs);
     assert!(
-        unlock_state.once.contains(&PathBuf::from(resource_path)),
-        "once grant should be in active_unlock.once; got: {:?}",
-        unlock_state.once
+        unlock_state.grants(
+            &PathBuf::from(resource_path),
+            gait_types::types::Dimension::Write
+        ),
+        "once write grant should be recognized by grants()"
     );
-    assert!(unlock_state.session.is_empty());
+    assert!(
+        !unlock_state.grants(
+            &PathBuf::from("definitely-not-granted"),
+            gait_types::types::Dimension::Write
+        ),
+        "no session grant should exist for an unrelated path"
+    );
 
     // Step 7: Assert that after a RunComplete, the once grant is cleared
     wire::append(&tx_path, events::run_complete(pb::RunComplete::default())).unwrap();
     let evs_after = read_events(&tx_path).unwrap();
     let unlock_state_after = active_unlock_state(&evs_after);
     assert!(
-        unlock_state_after.once.is_empty(),
+        !unlock_state_after.grants(
+            &PathBuf::from(resource_path),
+            gait_types::types::Dimension::Write
+        ),
         "once grant should clear after RunComplete"
     );
 }

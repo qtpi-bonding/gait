@@ -1360,20 +1360,39 @@ impl Projection for ActivePermissions {
     }
 }
 
-/// State for active sandbox unlock grants: paths granted this session or once.
+/// State for active sandbox unlock grants: (path, dimension) grants this
+/// session or once. A write grant admits a read of the same path; a read
+/// grant never admits a write.
 #[derive(Default)]
 pub struct ActiveUnlockState {
-    /// Paths granted for the entire session (survive `RunComplete`).
-    pub session: std::collections::HashSet<std::path::PathBuf>,
-    /// Paths granted for a single run (cleared on `RunComplete`).
-    pub once: std::collections::HashSet<std::path::PathBuf>,
+    /// (path, dimension) grants for the entire session (survive `RunComplete`).
+    session: std::collections::HashSet<(std::path::PathBuf, gait_types::types::Dimension)>,
+    /// (path, dimension) grants for a single run (cleared on `RunComplete`).
+    once: std::collections::HashSet<(std::path::PathBuf, gait_types::types::Dimension)>,
 }
 
 impl ActiveUnlockState {
-    /// The single reader of the granted set: returns whether `path` is
-    /// covered by an active once- or session-scope unlock grant.
-    pub fn grants(&self, path: &std::path::Path) -> bool {
-        self.once.contains(path) || self.session.contains(path)
+    /// The single reader of the granted sets: returns whether `(path,
+    /// dimension)` is covered by an active once- or session-scope unlock
+    /// grant. A `Write` grant on the same path also admits a `Read` request
+    /// (write implies read); a `Read` grant never implies `Write`.
+    pub fn grants(&self, path: &std::path::Path, dimension: gait_types::types::Dimension) -> bool {
+        let key = |d| (path.to_path_buf(), d);
+        match dimension {
+            gait_types::types::Dimension::Read => {
+                self.once.contains(&key(dimension))
+                    || self.session.contains(&key(dimension))
+                    || self
+                        .once
+                        .contains(&key(gait_types::types::Dimension::Write))
+                    || self
+                        .session
+                        .contains(&key(gait_types::types::Dimension::Write))
+            }
+            gait_types::types::Dimension::Write => {
+                self.once.contains(&key(dimension)) || self.session.contains(&key(dimension))
+            }
+        }
     }
 }
 
@@ -1383,11 +1402,20 @@ impl ActiveUnlockState {
 /// the session. `global`/`agent` grants are config-backed and not tracked here.
 pub fn active_unlock_state(events: &[Event]) -> ActiveUnlockState {
     // Build a map: unlock_item_id → resource from SandboxUnlock events
-    let mut id_to_resource: std::collections::HashMap<String, String> = Default::default();
+    let mut id_to_resource: std::collections::HashMap<
+        String,
+        (String, Option<gait_types::types::Dimension>),
+    > = Default::default();
     for e in events {
         if let Some(payload::Kind::SandboxUnlock(u)) = crate::proto::event_kind(e) {
             for item in &u.items {
-                id_to_resource.insert(item.id.clone(), item.resource.clone());
+                id_to_resource.insert(
+                    item.id.clone(),
+                    (
+                        item.resource.clone(),
+                        gait_types::types::Dimension::parse(&item.dimension),
+                    ),
+                );
             }
         }
     }
@@ -1406,16 +1434,21 @@ pub fn active_unlock_state(events: &[Event]) -> ActiveUnlockState {
                     if decision != pb::Decision::Allow {
                         continue;
                     }
-                    let Some(resource) = id_to_resource.get(&item.id) else {
+                    let Some((resource, dimension)) = id_to_resource.get(&item.id) else {
+                        continue;
+                    };
+                    // Fail closed: an unlock item whose dimension does not
+                    // parse grants nothing.
+                    let Some(dimension) = dimension else {
                         continue;
                     };
                     let path = std::path::PathBuf::from(resource);
                     match scope {
                         pb::Scope::Once => {
-                            state.once.insert(path);
+                            state.once.insert((path, *dimension));
                         }
                         pb::Scope::Session => {
-                            state.session.insert(path);
+                            state.session.insert((path, *dimension));
                         }
                         // global/agent: config-backed, not tracked here
                         _ => {}

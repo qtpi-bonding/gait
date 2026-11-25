@@ -2174,6 +2174,151 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
     );
 }
 
+/// A session-scope unlock granted for a `read` access to a resource must NOT
+/// admit a subsequent `write` to that same resource. The seeded log contains a
+/// Shared body for the session-unlock write admission tests. Seeds a
+/// session-scope unlock grant of the given dimension in the LIVE session log,
+/// then runs a supervised turn whose model attempts a write to the outside
+/// target. Returns (turn result, target path, codebase temp dir, outside
+/// temp dir) — the TempDirs must be kept alive by the caller.
+async fn run_unlocked_write(
+    session_id: &str,
+    tool_call_id: &str,
+    unlock_dimension: &str,
+) -> (TurnResult, std::path::PathBuf, TempDir, TempDir) {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    let outside = TempDir::new().unwrap();
+    let target = outside.path().join("f.txt");
+
+    // Seed the LIVE session log with a session-scope grant of the given
+    // dimension for the target resource.
+    crate::git::Repos::production()
+        .traces
+        .create_session_worktree(ws.path(), session_id)
+        .unwrap();
+    let log = crate::session::live::log_path(ws.path(), session_id);
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    use crate::proto::gait::log::v1 as pb;
+    crate::proto::wire::append(
+        &log,
+        crate::proto::events::sandbox_unlock(&[pb::SandboxUnlockItem {
+            id: "u1".into(),
+            tool_name: unlock_dimension.into(),
+            resource: target.to_string_lossy().to_string(),
+            dimension: unlock_dimension.into(),
+            preview: None,
+        }]),
+    )
+    .unwrap();
+    crate::session::log::write_unlock_reply(
+        &log,
+        "user",
+        vec![pb::SandboxUnlockReplyItem {
+            id: "u1".into(),
+            decision: pb::Decision::Allow as i32,
+            scope: pb::Scope::Session as i32,
+        }],
+    )
+    .unwrap();
+
+    // The model issues a write to the outside path.
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: tool_call_id.into(),
+                tool_name: "write".into(),
+                args: serde_json::json!({
+                    "file_path": target.to_string_lossy().to_string(),
+                    "content": "should not be written"
+                }),
+            },
+            StreamChunk::Done,
+        ]]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
+    });
+
+    let write_tool = crate::tools::WriteTool::new(crate::tools::ToolCtx::new(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "test".into(),
+    ));
+
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        session_id.into(),
+        provider,
+        vec![write_tool.arced()],
+        vec!["write".into()],
+        vec![],
+        TurnInput {
+            auto: false,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            processes: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    (result, target, ws, outside)
+}
+
+/// A read-only session unlock (SandboxUnlock + SandboxUnlockReply(Allow,
+/// Session) for dimension "read") must NOT admit a write: the turn pauses
+/// with a TurnResult::SandboxUnlock naming the "write" dimension.
+#[tokio::test]
+async fn read_only_session_unlock_does_not_admit_a_write() {
+    let (result, target, _ws, _outside) =
+        run_unlocked_write("ug-write-01", "tc-ug-write", "read").await;
+
+    // The read-dimension session grant must NOT admit the write: the turn
+    // must pause with an unlock asking for the write dimension.
+    match &result {
+        TurnResult::SandboxUnlock { items } => {
+            assert_eq!(items.len(), 1, "expected one unlock item, got {items:?}");
+            let item = &items[0];
+            assert_eq!(
+                item.dimension, "write",
+                "unlock item must be for the write dimension, got: {item:?}"
+            );
+            assert_eq!(item.tool_name, "write", "tool_name should be write");
+        }
+        other => panic!("expected TurnResult::SandboxUnlock, got: {other:?}"),
+    }
+
+    // The file must NOT have been written.
+    assert!(
+        !target.exists(),
+        "target must not be created by the read-only unlock grant"
+    );
+}
+
+/// The write-dimension session grant DOES admit the write: the turn must not
+/// pause with an unlock, and the target file must exist afterwards.
+#[tokio::test]
+async fn write_session_unlock_admits_a_write() {
+    let (result, target, _ws, _outside) =
+        run_unlocked_write("ug-write-02", "tc-ug-write2", "write").await;
+
+    if let TurnResult::SandboxUnlock { .. } = &result {
+        panic!("write-dimension session grant must admit the write, got unlock: {result:?}");
+    }
+
+    assert!(
+        target.exists(),
+        "target must exist after the admitted write, result: {result:?}"
+    );
+}
+
 /// Regression test for I1 (canonicalization mismatch): a supervised write to a
 /// relative in-codebase path (e.g. `"foo.txt"`) must NOT trigger an Unlock pause.
 ///
