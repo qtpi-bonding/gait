@@ -1369,6 +1369,14 @@ pub struct ActiveUnlockState {
     pub once: std::collections::HashSet<std::path::PathBuf>,
 }
 
+impl ActiveUnlockState {
+    /// The single reader of the granted set: returns whether `path` is
+    /// covered by an active once- or session-scope unlock grant.
+    pub fn grants(&self, path: &std::path::Path) -> bool {
+        self.once.contains(path) || self.session.contains(path)
+    }
+}
+
 /// Fold all `SandboxUnlockReply` events, cross-referencing `SandboxUnlock`
 /// events to resolve resource paths, into an `ActiveUnlockState`. `once`
 /// grants are cleared on each `RunComplete`; `session` grants persist for
