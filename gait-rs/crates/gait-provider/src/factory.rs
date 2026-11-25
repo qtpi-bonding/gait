@@ -332,6 +332,7 @@ mod tests {
     fn load_opencode_with_explicit_key() {
         // OpenCode Go rides the OpenAI wire with a Bearer key against the
         // zen/go base URL — no subscription required, no custom adapter.
+        std::env::remove_var("OPENCODE_API_KEY");
         let p = load_provider("opencode/kimi-k2.6", Some("sk-test".into()))
             .expect("opencode loads with an explicit API key");
         assert_eq!(p.model_id(), "kimi-k2.6");
@@ -339,6 +340,7 @@ mod tests {
 
     #[test]
     fn load_opencode_missing_key_errors_with_env_var_name() {
+        std::env::remove_var("OPENCODE_API_KEY");
         let err = load_provider("opencode/kimi-k2.6", None).err().unwrap();
         let msg = format!("{err}");
         assert!(
