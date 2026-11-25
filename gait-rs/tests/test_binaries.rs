@@ -373,3 +373,77 @@ fn workspace_test_binaries_are_merged_and_listed() {
 
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
 }
+
+/// Every mock brain binary in the workspace must join the cascade group named
+/// by its `--cascade-group` argument, exactly like the real brain does, so
+/// that `cgroup.kill` on the cascade group actually reaches the mock brain
+/// process. A mock brain may do this directly, or it may delegate to the
+/// shared implementation in gait-testkit, which does it.
+#[test]
+fn every_mock_brain_joins_the_cascade_group() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Walk the root crate's src/bin and every workspace member's src/bin.
+    let mut bin_dirs = vec![root.join("src/bin")];
+    let root_manifest = fs::read_to_string(root.join("Cargo.toml")).expect("workspace manifest");
+    for member in workspace_members(&root_manifest) {
+        let dir = root.join(&member).join("src/bin");
+        if dir.is_dir() {
+            bin_dirs.push(dir);
+        }
+    }
+
+    let mut mock_brains: Vec<std::path::PathBuf> = Vec::new();
+    for bin_dir in &bin_dirs {
+        let Ok(entries) = fs::read_dir(bin_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with("mock_brain") && name.ends_with(".rs") {
+                mock_brains.push(path);
+            }
+        }
+    }
+
+    // Guard against a silent empty walk: if the layout changed and we find
+    // nothing, that is a problem with the walk itself, not a pass.
+    assert!(
+        mock_brains.len() >= 5,
+        "expected at least 5 mock_brain*.rs sources under the workspace's \
+         src/bin directories, found {}",
+        mock_brains.len()
+    );
+
+    let testkit_mock_brain = root.join("crates/gait-testkit/src/mock_brain.rs");
+    let testkit_source = fs::read_to_string(&testkit_mock_brain)
+        .expect("gait-testkit shared mock brain implementation");
+    let testkit_joins = testkit_source.contains("join_cascade_group");
+
+    let mut problems: Vec<String> = Vec::new();
+    for path in &mock_brains {
+        let source = fs::read_to_string(path)
+            .unwrap_or_else(|err| panic!("cannot read {}: {}", path.display(), err));
+        let joins_directly = source.contains("join_cascade_group");
+        let delegates =
+            source.contains("mock_brain::run(") || source.contains("implementation::run(");
+        if joins_directly || (delegates && testkit_joins) {
+            continue;
+        }
+        problems.push(format!(
+            "{} neither joins the cascade group itself nor delegates to the \
+             shared implementation that does: it must call join_cascade_group \
+             for the group named by its --cascade-group argument, like the \
+             real brain, so that cgroup.kill reaches it",
+            path.display()
+        ));
+    }
+
+    assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+}

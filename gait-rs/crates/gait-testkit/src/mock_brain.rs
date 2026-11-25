@@ -12,6 +12,22 @@ fn arg_value(flag: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
+/// Scan argv for `--cascade-group <path>` / `--cascade-group=<path>`.
+///
+/// cgroup mode: the spine does not enroll the mock brain, so
+/// cgroup.kill would miss it otherwise. A miss is ignored, as in the
+/// real brain (`gait-cli/src/cli/run.rs`).
+fn cascade_group_arg() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter()
+        .position(|a| a == "--cascade-group")
+        .and_then(|i| args.get(i + 1).cloned())
+        .or_else(|| {
+            args.iter()
+                .find_map(|a| a.strip_prefix("--cascade-group=").map(|v| v.to_string()))
+        })
+}
+
 fn read_one_frame(stdin: &mut impl Read) -> Option<Signal> {
     // [version u8][len u32 BE][len bytes].
     let mut hdr = [0u8; 5];
@@ -41,6 +57,13 @@ fn current_scope(init: Option<BrainInit>) -> (u32, u32) {
 }
 
 pub fn run() {
+    // Join the spine's cascade group before anything else (cgroup mode:
+    // the spine does not enroll the brain, so cgroup.kill misses it otherwise).
+    if let Some(path) = cascade_group_arg() {
+        // A miss is harmless: the parent still reaps this process.
+        if gait_core::process::join_cascade_group(&path).is_err() {}
+    }
+
     let dir = arg_value("--gait-dir").expect("mock_brain: --gait-dir required");
     let dir = std::path::PathBuf::from(dir);
 
