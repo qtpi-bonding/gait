@@ -1576,7 +1576,7 @@ pub mod ceiling {
     /// and must never run in a hand. This is the spine's authoritative source for scope
     /// computation; the brain's claimed scope is ignored.
     pub fn access_for_tool(tool_name: &str, cfg: &SandboxConfig) -> ToolAccess {
-        let mut access = match tool_name {
+        let access = match tool_name {
             "read" | "grep" | "glob" | "ls" => ToolAccess {
                 reads: true,
                 ..Default::default()
@@ -1598,18 +1598,44 @@ pub mod ceiling {
             },
             _ => ToolAccess::default(),
         };
+        apply_tool_override(tool_name, cfg, access, false)
+    }
+
+    /// The single reader of the `cfg.tools` per-tool override map: applies the
+    /// four `Option<bool>` override fields (`reads`, `writes`, `network`,
+    /// `local_bind`; `spawns` has no override and is always preserved) on top of
+    /// the built-in default `access` and returns the result.
+    ///
+    /// In replace mode (`narrow_only == false`, used by `access_for_tool`), each
+    /// `Some(v)` sets the field to `v`. In narrow-only mode (`narrow_only == true`),
+    /// only `Some(false)` clears a field; `Some(true)` and `None` leave it
+    /// unchanged, so a tool can never be widened.
+    pub fn apply_tool_override(
+        tool_name: &str,
+        cfg: &SandboxConfig,
+        mut access: ToolAccess,
+        narrow_only: bool,
+    ) -> ToolAccess {
         if let Some(o) = cfg.tools.get(tool_name) {
             if let Some(reads) = o.reads {
-                access.reads = reads;
+                if !narrow_only || !reads {
+                    access.reads = reads;
+                }
             }
             if let Some(writes) = o.writes {
-                access.writes = writes;
+                if !narrow_only || !writes {
+                    access.writes = writes;
+                }
             }
             if let Some(network) = o.network {
-                access.network = network;
+                if !narrow_only || !network {
+                    access.network = network;
+                }
             }
             if let Some(local_bind) = o.local_bind {
-                access.local_bind = local_bind;
+                if !narrow_only || !local_bind {
+                    access.local_bind = local_bind;
+                }
             }
         }
         access
