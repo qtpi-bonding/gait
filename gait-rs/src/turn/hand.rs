@@ -53,6 +53,18 @@ fn err_outcome(msg: impl Into<String>) -> hand_response::Outcome {
     })
 }
 
+/// Failure message when a `~` deny entry cannot be expanded: the tool call
+/// was not run and the hand fails closed.
+fn deny_home_unresolved_message(
+    err: &gait_sandbox::sandbox::ceiling::DenyHomeUnresolved,
+) -> String {
+    format!(
+        "error[deny_home_unresolved]: {}. This tool call was not run. \
+         Do not retry it; tell the user to set HOME to an absolute path.",
+        err
+    )
+}
+
 // ── sigterm guard ─────────────────────────────────────────────────────────────
 
 /// On a teardown SIGTERM (sent by the spine's `kill_all` before its 300ms→SIGKILL
@@ -142,7 +154,10 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     // finding out when the kernel seal later rejects the subprocess spawn.
     // Pure/side-effect-free (only reads `impulse`) — safe to compute this early;
     // the seal itself still applies at the same point as before, below.
-    let seal_scope = build_scope_from_impulse(&impulse, &config.gait_dir, &config.codebase);
+    let seal_scope = match build_scope_from_impulse(&impulse, &config.gait_dir, &config.codebase) {
+        Ok(scope) => scope,
+        Err(e) => return err_outcome(deny_home_unresolved_message(&e)),
+    };
 
     let ctx = {
         let mut ctx = ToolCtx::new(
@@ -458,8 +473,16 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
 fn local_deny_policy(
     gait_dir: &Path,
     codebase: &Path,
-) -> (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy) {
-    local_deny_policy_with(gait_dir, codebase, |k| std::env::var_os(k))
+) -> Result<
+    (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy),
+    gait_sandbox::sandbox::ceiling::DenyHomeUnresolved,
+> {
+    local_deny_policy_with(
+        gait_dir,
+        codebase,
+        |k| std::env::var_os(k),
+        || gait_sandbox::sandbox::ceiling::native_home().ok(),
+    )
 }
 
 /// [`local_deny_policy`] with the environment supplied by `var`. The deny
@@ -469,22 +492,28 @@ fn local_deny_policy_with(
     gait_dir: &Path,
     codebase: &Path,
     var: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy) {
+    native_home: impl Fn() -> Option<PathBuf>,
+) -> Result<
+    (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy),
+    gait_sandbox::sandbox::ceiling::DenyHomeUnresolved,
+> {
     let cfg = gait_types::config::load_config(gait_dir);
     let home = var("HOME")
         .and_then(|v| v.into_string().ok())
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| gait_sandbox::sandbox::ceiling::native_home().ok());
-    let split = |patterns: &[String]| match &home {
-        Some(home) => {
-            gait_sandbox::sandbox::ceiling::split_deny_patterns_with_home(patterns, home, codebase)
-        }
-        None => gait_sandbox::sandbox::ceiling::split_deny_patterns(patterns),
-    };
+        .or_else(native_home);
     let (mut read, mut write) = (
-        split(&cfg.sandbox.deny.read),
-        split(&cfg.sandbox.deny.write),
+        gait_sandbox::sandbox::ceiling::split_deny_patterns_with_home(
+            &cfg.sandbox.deny.read,
+            home.as_deref(),
+            codebase,
+        )?,
+        gait_sandbox::sandbox::ceiling::split_deny_patterns_with_home(
+            &cfg.sandbox.deny.write,
+            home.as_deref(),
+            codebase,
+        )?,
     );
     // The agent's identity folders: the device key must never reach the model.
     // The spine names them; the minted default beside gait_dir is always covered.
@@ -503,7 +532,7 @@ fn local_deny_policy_with(
         read.subpaths.push(path.clone());
         write.subpaths.push(path);
     }
-    (read, write)
+    Ok((read, write))
 }
 
 /// Whether the hand's own local config demands a working kernel seal. Like the
@@ -648,15 +677,15 @@ pub fn build_scope_from_impulse(
     impulse: &Impulse,
     gait_dir: &Path,
     codebase: &Path,
-) -> SandboxScope {
-    let (read_deny, write_deny) = local_deny_policy(gait_dir, codebase);
+) -> Result<SandboxScope, gait_sandbox::sandbox::ceiling::DenyHomeUnresolved> {
+    let (read_deny, write_deny) = local_deny_policy(gait_dir, codebase)?;
 
     let Some(s) = impulse.requested.as_ref() else {
-        return SandboxScope {
+        return Ok(SandboxScope {
             read_deny,
             write_deny,
             ..SandboxScope::default()
-        };
+        });
     };
 
     let network = s
@@ -673,7 +702,7 @@ pub fn build_scope_from_impulse(
     // ships it in Impulse. Honor whatever the brain sends.
     let read_all = s.read_all;
 
-    SandboxScope {
+    Ok(SandboxScope {
         readable: s.readable.iter().map(PathBuf::from).collect(),
         writable: s.writable.iter().map(PathBuf::from).collect(),
         read_all,
@@ -681,7 +710,7 @@ pub fn build_scope_from_impulse(
         local_bind: s.local_bind,
         read_deny,
         write_deny,
-    }
+    })
 }
 
 /// Build the coaching hint for a network-denied shell command: if it's
@@ -786,7 +815,8 @@ mod tests {
             &gait_proto::gait::sandbox::v1::Impulse::default(),
             other.path(),
             other.path(),
-        );
+        )
+        .unwrap();
         assert!(!local_sandbox_require(other.path()));
     }
 
@@ -955,7 +985,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         gait_ops::workspace::run_init(dir.path()).unwrap();
 
-        let scope = build_scope_from_impulse(&impulse, dir.path(), Path::new("/codebase"));
+        let scope = build_scope_from_impulse(&impulse, dir.path(), Path::new("/codebase")).unwrap();
 
         // The hand must have sourced read_deny/write_deny from its OWN local
         // SandboxConfig (loaded independently, not from `impulse`), not from the
@@ -971,7 +1001,7 @@ mod tests {
     fn identity_folders_are_denied_to_read_and_write() {
         let dir = tempfile::TempDir::new().unwrap();
         gait_ops::workspace::run_init(dir.path()).unwrap();
-        let (read, write) = local_deny_policy(dir.path(), Path::new("/codebase"));
+        let (read, write) = local_deny_policy(dir.path(), Path::new("/codebase")).unwrap();
         let key = dir.path().join("identity").join("device.jwk.json");
         assert!(classify_denial_by_path(&key, &read).is_some());
         assert!(classify_denial_by_path(&key, &write).is_some());
@@ -989,7 +1019,10 @@ mod tests {
         let var = move |k: &str| {
             (k == "MACHINE_IDENTITY_DIR").then(|| machine_path.clone().into_os_string())
         };
-        let (read, write) = local_deny_policy_with(dir.path(), Path::new("/codebase"), var);
+        let (read, write) = local_deny_policy_with(dir.path(), Path::new("/codebase"), var, || {
+            gait_sandbox::sandbox::ceiling::native_home().ok()
+        })
+        .unwrap();
         let key = machine.path().join("services").join("some.jwk.json");
         assert!(
             classify_denial_by_path(&key, &read).is_some(),
@@ -1011,7 +1044,10 @@ mod tests {
         let ws = tempfile::TempDir::new().unwrap();
         let home_path = home.path().to_path_buf();
         let var = move |k: &str| (k == "HOME").then(|| home_path.clone().into_os_string());
-        let (read_deny, write_deny) = local_deny_policy_with(gait.path(), ws.path(), var);
+        let (read_deny, write_deny) = local_deny_policy_with(gait.path(), ws.path(), var, || {
+            gait_sandbox::sandbox::ceiling::native_home().ok()
+        })
+        .unwrap();
         let machine = home.path().join(".local/share/machine-identity");
         assert!(!machine.exists());
         assert!(read_deny.subpaths.contains(&machine));
@@ -1046,7 +1082,10 @@ mod tests {
         gait_ops::workspace::run_init(dir.path()).unwrap();
         let var =
             |k: &str| (k == gait_identity::DENY_PATHS_ENV).then(|| "/spine/a:/spine/m".into());
-        let (read, _) = local_deny_policy_with(dir.path(), Path::new("/codebase"), var);
+        let (read, _) = local_deny_policy_with(dir.path(), Path::new("/codebase"), var, || {
+            gait_sandbox::sandbox::ceiling::native_home().ok()
+        })
+        .unwrap();
         assert!(classify_denial_by_path(Path::new("/spine/m/x"), &read).is_some());
     }
 
@@ -1057,7 +1096,11 @@ mod tests {
         let home = tempfile::TempDir::new().unwrap();
         let home_path = home.path().to_path_buf();
         let var = move |k: &str| (k == "HOME").then(|| home_path.clone().into_os_string());
-        let (read, write) = local_deny_policy_with(gait.path(), Path::new("/codebase"), var);
+        let (read, write) =
+            local_deny_policy_with(gait.path(), Path::new("/codebase"), var, || {
+                gait_sandbox::sandbox::ceiling::native_home().ok()
+            })
+            .unwrap();
         let denied = [
             home.path().join(".ssh/x"),
             home.path().join(".aws/credentials"),
@@ -1085,6 +1128,51 @@ mod tests {
             classify_denial_by_path(&plain, &write).is_none(),
             "write of {} must not be denied",
             plain.display()
+        );
+    }
+
+    #[test]
+    fn tilde_deny_entry_without_home_is_an_error_not_dropped() {
+        // With no HOME and no platform home, a `~` deny entry must make the
+        // policy build fail closed (Err naming the entry) instead of
+        // silently matching nothing.
+        let gait = tempfile::TempDir::new().unwrap();
+        gait_ops::workspace::run_init(gait.path()).unwrap();
+        let result = local_deny_policy_with(gait.path(), Path::new("/codebase"), |_| None, || None);
+        let err = result.expect_err("unresolved home with `~` deny entries must be an error");
+        assert!(
+            err.to_string().contains("~/"),
+            "error must name the offending `~` entry, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deny_home_unresolved_message_names_entry_and_refuses_the_call() {
+        let err = gait_sandbox::sandbox::ceiling::DenyHomeUnresolved {
+            entry: "~/.ssh/**".into(),
+        };
+        let msg = deny_home_unresolved_message(&err);
+        assert!(msg.contains("error[deny_home_unresolved]"), "got: {msg}");
+        assert!(msg.contains("~/.ssh/**"), "got: {msg}");
+        assert!(msg.contains("was not run"), "got: {msg}");
+        assert!(msg.contains("HOME"), "got: {msg}");
+    }
+
+    #[test]
+    fn deny_entries_without_tilde_are_unaffected_without_home() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("gait.jsonc"),
+            r#"{ "sandbox": { "deny": { "read": ["$CODEBASE/secret", "/abs/x"], "write": [] } } }"#,
+        )
+        .unwrap();
+        let (read, write) =
+            local_deny_policy_with(dir.path(), Path::new("/codebase"), |_| None, || None).unwrap();
+        assert!(classify_denial_by_path(Path::new("/codebase/secret/k"), &read).is_some());
+        assert!(classify_denial_by_path(Path::new("/codebase/other"), &read).is_none());
+        assert!(
+            classify_denial_by_path(Path::new("/codebase/secret/k"), &write).is_none(),
+            "write deny list is empty, nothing must be denied for write"
         );
     }
 

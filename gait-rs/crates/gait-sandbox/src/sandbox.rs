@@ -1116,9 +1116,10 @@ mod tests {
         ];
         let split = super::ceiling::split_deny_patterns_with_home(
             &patterns,
-            std::path::Path::new("/h"),
+            Some(std::path::Path::new("/h")),
             std::path::Path::new("/c"),
-        );
+        )
+        .unwrap();
         assert_eq!(split.globs, vec!["/h/.ssh/**".to_string()]);
         assert_eq!(
             split.subpaths,
@@ -1127,6 +1128,64 @@ mod tests {
                 std::path::PathBuf::from("/abs/x"),
             ]
         );
+    }
+
+    #[test]
+    fn split_deny_patterns_with_home_none_rejects_tilde_entry() {
+        let patterns = vec![
+            "/abs/x".to_string(),
+            "~/.ssh/**".to_string(),
+            "$CODEBASE/s".to_string(),
+        ];
+        let err = super::ceiling::split_deny_patterns_with_home(
+            &patterns,
+            None,
+            std::path::Path::new("/c"),
+        )
+        .unwrap_err();
+        assert_eq!(err.entry, "~/.ssh/**");
+    }
+
+    #[test]
+    fn split_deny_patterns_with_home_none_keeps_non_tilde_entries() {
+        let patterns = vec![
+            "/abs/x".to_string(),
+            "$CODEBASE/s".to_string(),
+            "**/*.pem".to_string(),
+        ];
+        let split = super::ceiling::split_deny_patterns_with_home(
+            &patterns,
+            None,
+            std::path::Path::new("/c"),
+        )
+        .unwrap();
+        assert_eq!(
+            split.subpaths,
+            vec![
+                std::path::PathBuf::from("/abs/x"),
+                std::path::PathBuf::from("/c/s"),
+            ]
+        );
+        assert_eq!(split.globs, vec!["**/*.pem".to_string()]);
+    }
+
+    #[test]
+    fn split_deny_patterns_with_home_none_rejects_bare_tilde_and_tilde_glob() {
+        let err = super::ceiling::split_deny_patterns_with_home(
+            &["~".to_string()],
+            None,
+            std::path::Path::new("/c"),
+        )
+        .unwrap_err();
+        assert_eq!(err.entry, "~");
+
+        let err = super::ceiling::split_deny_patterns_with_home(
+            &["~/x/*".to_string()],
+            None,
+            std::path::Path::new("/c"),
+        )
+        .unwrap_err();
+        assert_eq!(err.entry, "~/x/*");
     }
 }
 
@@ -1468,20 +1527,42 @@ pub mod ceiling {
     /// `expand_path_vars` used for the sandbox's readable/writable entries
     /// (`~/` -> home, `$CODEBASE` -> codebase). One expansion door for all
     /// path config; no second expander.
+    ///
+    /// With `Some(home)` the behaviour is exactly as before. With `None` the
+    /// `$CODEBASE` expansion still happens, but a `~` entry (one that
+    /// `expand_path_vars` would expand with the home) cannot be resolved, so
+    /// the call is an error ([`DenyHomeUnresolved`] naming the first such
+    /// entry) — fail closed instead of silently narrowing the policy.
     pub fn split_deny_patterns_with_home(
         patterns: &[String],
-        home: &Path,
+        home: Option<&Path>,
         codebase: &Path,
-    ) -> DenyPolicy {
+    ) -> Result<DenyPolicy, DenyHomeUnresolved> {
+        if home.is_none() {
+            for p in patterns {
+                if p == "~" || p.starts_with("~/") {
+                    return Err(DenyHomeUnresolved { entry: p.clone() });
+                }
+            }
+        }
         let expanded: Vec<String> = patterns
             .iter()
             .map(|p| {
-                expand_path_vars(p, home, codebase)
+                expand_path_vars(p, home.unwrap_or(Path::new("")), codebase)
                     .to_string_lossy()
                     .into_owned()
             })
             .collect();
-        split_deny_patterns(&expanded)
+        Ok(split_deny_patterns(&expanded))
+    }
+
+    /// A deny entry begins with `~` but the home directory could not be
+    /// resolved: the entry would match nothing if used unexpanded, so the
+    /// policy must fail closed instead of silently narrowing.
+    #[derive(Debug, thiserror::Error)]
+    #[error("deny entry {entry:?} starts with '~' but the home directory cannot be resolved (HOME is unset or not absolute and the platform has no home)")]
+    pub struct DenyHomeUnresolved {
+        pub entry: String,
     }
 
     /// The native platform's home directory, for callers that need to expand
