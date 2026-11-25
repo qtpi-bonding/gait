@@ -64,11 +64,13 @@ mod tests {
     #[test]
     fn apply_writable_persists_to_config() {
         let tmp = tempfile::tempdir().unwrap();
-        SandboxGrant::Writable.apply(tmp.path(), "src/").unwrap();
+        SandboxGrant::Writable
+            .apply(tmp.path(), "$CODEBASE/src/")
+            .unwrap();
         let sb = load_sandbox(tmp.path());
         // writable is Vec<String> (config/mod.rs:177); &String == &str compares fine.
         assert!(
-            sb.writable.iter().any(|p| p == "src/"),
+            sb.writable.iter().any(|p| p == "$CODEBASE/src/"),
             "applied writable grant must appear in sandbox.writable"
         );
     }
@@ -76,12 +78,14 @@ mod tests {
     #[test]
     fn apply_readable_and_network_persist_to_config() {
         let tmp = tempfile::tempdir().unwrap();
-        SandboxGrant::Readable.apply(tmp.path(), "docs/").unwrap();
+        SandboxGrant::Readable
+            .apply(tmp.path(), "$CODEBASE/docs/")
+            .unwrap();
         SandboxGrant::NetworkHost
             .apply(tmp.path(), "api.example.com")
             .unwrap();
         let sb = load_sandbox(tmp.path());
-        assert!(sb.readable.iter().any(|p| p == "docs/"));
+        assert!(sb.readable.iter().any(|p| p == "$CODEBASE/docs/"));
         // network is enum NetworkConfig::{Off, All, Hosts(Vec<String>)} (config/mod.rs).
         assert!(
             matches!(&sb.network, crate::config::NetworkConfig::Hosts(h)

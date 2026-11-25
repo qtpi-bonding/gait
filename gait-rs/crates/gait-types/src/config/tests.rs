@@ -653,6 +653,105 @@ fn strict_load_of_broken_jsonc_is_a_coded_invalid() {
 }
 
 #[test]
+fn strict_load_rejects_relative_sandbox_readable_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"model":"m","sandbox":{"readable":["src/"]}}"#,
+    )
+    .unwrap();
+    let err = load_config_with(dir.path(), ConfigLoadPolicy::Strict).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("src/"),
+        "error message should name the offending entry: {msg}"
+    );
+    assert!(msg.contains("sandbox.readable"), "{msg}");
+}
+
+#[test]
+fn strict_load_rejects_relative_sandbox_writable_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"model":"m","sandbox":{"writable":["build/"]}}"#,
+    )
+    .unwrap();
+    let err = load_config_with(dir.path(), ConfigLoadPolicy::Strict);
+    assert!(err.is_err());
+}
+
+#[test]
+fn strict_load_accepts_absolute_home_and_codebase_entries() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"model":"m","sandbox":{
+            "readable":["$CODEBASE/src","~/x","/abs","*"],
+            "writable":["/abs"]
+        }}"#,
+    )
+    .unwrap();
+    let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Strict)
+        .expect("absolute/~/$CODEBASE/* entries must load in Strict");
+    assert_eq!(
+        cfg.sandbox.readable,
+        vec!["$CODEBASE/src", "~/x", "/abs", "*"]
+    );
+}
+
+#[test]
+fn lenient_load_still_returns_config_with_relative_sandbox_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"model":"m","sandbox":{"readable":["src/"]}}"#,
+    )
+    .unwrap();
+    let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Lenient)
+        .expect("Lenient must NOT error on a relative sandbox entry");
+    assert_eq!(cfg.sandbox.readable, vec!["src/"]);
+}
+
+#[test]
+fn append_sandbox_readable_rejects_relative_entry_and_writes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let err = super::append_sandbox_readable(dir.path(), "docs/").unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("docs/"), "{msg}");
+    assert!(
+        !dir.path().join("gait.jsonc").exists(),
+        "a rejected grant must not create gait.jsonc"
+    );
+}
+
+#[test]
+fn append_sandbox_writable_rejects_relative_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"model":"m","sandbox":{"writable":["/ok"]}}"#,
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    assert!(super::append_sandbox_writable(dir.path(), "out/").is_err());
+    let after = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    assert_eq!(before, after, "rejected append must not rewrite the file");
+}
+
+#[test]
+fn append_sandbox_writable_accepts_codebase_entry() {
+    let dir = TempDir::new().unwrap();
+    super::append_sandbox_writable(dir.path(), "$CODEBASE/target").unwrap();
+    let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        val["sandbox"]["writable"][0].as_str().unwrap(),
+        "$CODEBASE/target"
+    );
+}
+
+#[test]
 fn edit_of_non_object_config_is_a_coded_invalid() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("gait.jsonc"), "[]").unwrap();

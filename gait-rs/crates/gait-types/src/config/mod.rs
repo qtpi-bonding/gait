@@ -577,7 +577,18 @@ pub fn load_config_with(gait_dir: &Path, policy: ConfigLoadPolicy) -> anyhow::Re
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let stripped = strip_jsonc_comments(&raw);
     match serde_json::from_str::<GaitConfig>(&stripped) {
-        Ok(config) => Ok(config),
+        Ok(config) => match policy {
+            ConfigLoadPolicy::Strict => {
+                for entry in &config.sandbox.readable {
+                    check_sandbox_path_entry("sandbox.readable", entry)?;
+                }
+                for entry in &config.sandbox.writable {
+                    check_sandbox_path_entry("sandbox.writable", entry)?;
+                }
+                Ok(config)
+            }
+            ConfigLoadPolicy::Lenient => Ok(config),
+        },
         Err(e) => match policy {
             ConfigLoadPolicy::Strict => Err(invalid(format!(
                 "gait.jsonc parse error in {}: {e}",
@@ -585,6 +596,27 @@ pub fn load_config_with(gait_dir: &Path, policy: ConfigLoadPolicy) -> anyhow::Re
             ))),
             ConfigLoadPolicy::Lenient => Ok(GaitConfig::default()),
         },
+    }
+}
+
+/// Refuse sandbox path entries that could never match an absolute target:
+/// a relative entry like `src/` expands to a relative path and is silently
+/// dead at enforcement time. Accept absolute paths, `~/...`, `$CODEBASE/...`
+/// (and `*` for the readable allow-all).
+fn check_sandbox_path_entry(field: &str, entry: &str) -> anyhow::Result<()> {
+    let ok = entry.starts_with('/')
+        || entry == "~"
+        || entry.starts_with("~/")
+        || entry == "$CODEBASE"
+        || entry.starts_with("$CODEBASE/")
+        || (field == "sandbox.readable" && entry == "*");
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "{field} entry {entry:?} is relative and would never match an absolute path; \
+             use an absolute path, \"~/...\" or \"$CODEBASE/...\" instead"
+        )))
     }
 }
 
@@ -634,6 +666,12 @@ pub fn append_allow_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()
 /// sandbox block and/or array if absent. Strips JSONC comments (consistent
 /// with pre-existing behavior of `append_list_field`).
 fn append_sandbox_field(field: &str, value: &str, path: &Path) -> anyhow::Result<()> {
+    if field == "readable" {
+        check_sandbox_path_entry("sandbox.readable", value)?;
+    } else if field == "writable" {
+        check_sandbox_path_entry("sandbox.writable", value)?;
+    }
+
     let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
         let raw = std::fs::read_to_string(path)?;
         let stripped = strip_jsonc_comments(&raw);
