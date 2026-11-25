@@ -264,6 +264,96 @@ pub fn clean_target(base: &std::path::Path, target: &std::path::Path) -> std::pa
     normalize_lexical(&base.join(target))
 }
 
+/// Where `path` really lands: every symlink on the way is followed, including a
+/// dangling one. Components that exist come back with their on-disk case (which
+/// may differ from the requested case on case-insensitive filesystems such as
+/// macOS's default APFS); not-yet-existing components stay as written. `None`
+/// when that cannot be determined (relative path, link loop, unreadable
+/// component) — callers must treat `None` as out of scope.
+pub fn resolve_links(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut resolved = std::path::PathBuf::from("/");
+    let mut queue: Vec<std::ffi::OsString> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::RootDir | Component::Prefix(_) | Component::CurDir => None,
+            other => Some(other.as_os_str().to_os_string()),
+        })
+        .collect();
+    queue.reverse();
+    let mut hops = 0u32;
+    while let Some(name) = queue.pop() {
+        match name.to_str() {
+            Some("..") => {
+                resolved.pop();
+            }
+            Some(".") => {}
+            _ => {
+                let next = resolved.join(&name);
+                match std::fs::symlink_metadata(&next) {
+                    Ok(md) if md.file_type().is_symlink() => {
+                        hops += 1;
+                        if hops > 40 {
+                            return None;
+                        }
+                        let target = std::fs::read_link(&next).ok()?;
+                        if target.is_absolute() {
+                            resolved = std::path::PathBuf::from("/");
+                        }
+                        // `queue` is a stack: pop() takes the next component to
+                        // walk. The components still queued belong AFTER the
+                        // link target, so they stay in place; the target's
+                        // components are pushed on top of them in reverse
+                        // order, so the target's first component is popped
+                        // first.
+                        for comp in target.components().rev() {
+                            match comp {
+                                Component::RootDir | Component::Prefix(_) | Component::CurDir => {}
+                                other => queue.push(other.as_os_str().to_os_string()),
+                            }
+                        }
+                    }
+                    Ok(_) => resolved = next,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => resolved = next,
+                    Err(_) => return None,
+                }
+            }
+        }
+    }
+    repair_on_disk_case(resolved)
+}
+
+/// Replace the longest ancestor of `resolved` that exists (including
+/// `resolved` itself) with its `std::fs::canonicalize` form — which reports
+/// the true on-disk names — and append the remaining non-existing components
+/// unchanged. On case-insensitive filesystems (macOS) opening `Secrets/X` may
+/// actually open `secrets/x`; this makes the returned path match the disk
+/// without lowercasing anything. `None` when canonicalize of an existing
+/// ancestor fails.
+fn repair_on_disk_case(resolved: std::path::PathBuf) -> Option<std::path::PathBuf> {
+    let mut ancestor = resolved.clone();
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if std::fs::symlink_metadata(&ancestor).is_ok() {
+            let canonical = std::fs::canonicalize(&ancestor).ok()?;
+            let mut out = canonical;
+            for comp in missing.iter().rev() {
+                out.push(comp);
+            }
+            return Some(out);
+        }
+        let popped = ancestor
+            .components()
+            .next_back()
+            .map(|c| c.as_os_str().to_os_string())?;
+        ancestor.pop();
+        missing.push(popped);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +395,145 @@ mod tests {
         // A relative target is joined onto base, then cleaned.
         let rel = clean_target(base, std::path::Path::new("src/../main.rs"));
         assert_eq!(rel, PathBuf::from("/ws/codebase/main.rs"));
+    }
+
+    // ── resolve_links tests ──────────────────────────────────────────────────
+
+    #[cfg(unix)]
+    fn canonical(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.canonicalize().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_links_follows_a_directory_link() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("deep")).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
+
+        let resolved = resolve_links(&tmp.path().join("link/deep")).unwrap();
+        assert_eq!(
+            resolved,
+            canonical(&real).join("deep"),
+            "directory link must be followed: {resolved:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_links_follows_a_dangling_link() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing = tmp.path().join("missing");
+        std::os::unix::fs::symlink(&missing, tmp.path().join("dangling")).unwrap();
+
+        // The link target does not exist, but it must still be resolved as written.
+        let resolved = resolve_links(&tmp.path().join("dangling")).unwrap();
+        assert_eq!(resolved, canonical(tmp.path()).join("missing"));
+
+        // A file under the dangling link lands on the kept-as-written leaf.
+        let resolved = resolve_links(&tmp.path().join("dangling/f.txt")).unwrap();
+        assert_eq!(resolved, canonical(tmp.path()).join("missing/f.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_links_keeps_missing_components() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("exists")).unwrap();
+
+        let resolved = resolve_links(&tmp.path().join("exists/no/such/file.rs")).unwrap();
+        assert_eq!(
+            resolved,
+            canonical(tmp.path()).join("exists/no/such/file.rs"),
+            "components that do not exist yet are kept as written: {resolved:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_links_follows_a_relative_link_with_dotdot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = canonical(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("c")).unwrap();
+        std::fs::write(tmp.path().join("c/real.txt"), "x").unwrap();
+        // From a/b, ../../c reaches tmp/c.
+        std::os::unix::fs::symlink("../../c/real.txt", tmp.path().join("a/b/rel")).unwrap();
+
+        let resolved = resolve_links(&tmp.path().join("a/b/rel")).unwrap();
+        assert_eq!(resolved, base.join("c/real.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_links_keeps_order_after_a_link() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("a/b")).unwrap();
+        std::fs::write(real.join("a/b/f.txt"), "x").unwrap();
+        // Absolute target.
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
+        // Relative multi-component target.
+        std::os::unix::fs::symlink("real/a", tmp.path().join("rel")).unwrap();
+
+        let expected = canonical(&real).join("a/b/f.txt");
+        let resolved = resolve_links(&tmp.path().join("link/a/b/f.txt")).unwrap();
+        assert_eq!(
+            resolved, expected,
+            "components after an absolute link must keep their order: {resolved:?}"
+        );
+        let resolved = resolve_links(&tmp.path().join("rel/b/f.txt")).unwrap();
+        assert_eq!(
+            resolved, expected,
+            "components after a relative multi-component link must keep their order: {resolved:?}"
+        );
+    }
+
+    /// Probe whether the temp filesystem is case-insensitive; case-sensitivity
+    /// tests return early when it is not (nothing to test there).
+    #[cfg(unix)]
+    fn fs_is_case_insensitive(dir: &std::path::Path) -> bool {
+        let probe = dir.join("probe");
+        std::fs::write(&probe, b"").unwrap();
+        dir.join("PROBE").exists()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_links_returns_the_on_disk_case() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        if !fs_is_case_insensitive(tmp.path()) {
+            return;
+        }
+        let secrets = tmp.path().join("secrets");
+        std::fs::create_dir_all(&secrets).unwrap();
+        std::fs::write(secrets.join("x"), "s").unwrap();
+
+        // An existing path opened with the wrong case resolves to its on-disk form.
+        let resolved = resolve_links(&tmp.path().join("SECRETS/X")).unwrap();
+        assert_eq!(resolved, canonical(tmp.path()).join("secrets/x"));
+
+        // Not-yet-existing components stay as written (under the on-disk
+        // case of the existing ancestor).
+        let resolved = resolve_links(&tmp.path().join("Secrets/new-file")).unwrap();
+        assert_eq!(resolved, canonical(tmp.path()).join("secrets/new-file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_links_gives_none_for_a_loop_and_for_relative_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::os::unix::fs::symlink("loop", tmp.path().join("loop")).unwrap();
+        assert!(
+            resolve_links(&tmp.path().join("loop")).is_none(),
+            "a self-link loop must resolve to None"
+        );
+
+        assert!(
+            resolve_links(std::path::Path::new("relative/path")).is_none(),
+            "a relative path must resolve to None"
+        );
     }
 
     #[test]
