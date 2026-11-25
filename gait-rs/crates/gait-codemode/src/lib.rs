@@ -60,6 +60,40 @@ impl Default for Limits {
     }
 }
 
+/// Which limit set a `run_with` invocation enforces: the original Code Mode
+/// wall-clock/limits bundle, or the Workflow CPU-budget bundle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitsMode {
+    CodeMode(Limits),
+    Workflow(WorkflowLimits),
+}
+
+/// Limits for Workflow mode: CPU time is measured as guest execution time
+/// only (time spent awaiting host capabilities is excluded), while memory
+/// and output-size caps mirror Code Mode's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkflowLimits {
+    pub cpu_budget_ms: u64,
+    pub max_memory_bytes: usize,
+    pub max_output_bytes: usize,
+}
+
+/// Options for [`run_with`]: an optional prelude evaluated before the user
+/// script, and the limit mode to enforce.
+#[derive(Clone, Debug)]
+pub struct RunOptions {
+    pub prelude: Option<String>,
+    pub limits: LimitsMode,
+}
+
+/// The result of a [`run_with`] evaluation: the script's final value plus
+/// descriptions of promise rejections that were never handled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunReport {
+    pub value: Value,
+    pub unhandled_rejections: Vec<String>,
+}
+
 #[async_trait]
 // The must_use comes from the async_trait expansion (Pin<Box<dyn Future>> return).
 #[allow(clippy::double_must_use)]
@@ -103,7 +137,36 @@ pub async fn run(
     host: &dyn CapabilityHost,
     limits: Limits,
 ) -> Result<Value, CodeModeError> {
-    quickjs::eval(source, api, host, limits, GuestArtifact::embedded().bytes()).await
+    let opts = RunOptions {
+        prelude: None,
+        limits: LimitsMode::CodeMode(limits),
+    };
+    let report = run_with(source, api, host, opts).await?;
+    Ok(report.value)
+}
+
+/// Evaluate `source` inside the pinned QuickJS-WASI guest under the given
+/// [`RunOptions`], returning a [`RunReport`] with the final value and any
+/// unhandled promise rejections.
+///
+/// In `LimitsMode::Workflow` mode there is no wall-clock timeout and no
+/// host-call cap; instead a guest-CPU budget (excluding time spent awaiting
+/// host capabilities) is enforced and reports unhandled rejections at the
+/// end. In `LimitsMode::CodeMode` mode behaviour is identical to [`run`].
+pub async fn run_with(
+    source: &str,
+    api: ApiSurface,
+    host: &dyn CapabilityHost,
+    opts: RunOptions,
+) -> Result<RunReport, CodeModeError> {
+    quickjs::eval_with(
+        source,
+        api,
+        host,
+        opts,
+        GuestArtifact::embedded().bytes(),
+    )
+    .await
 }
 
 /// The pinned bytes are retained for ABI inspection and adapter development;

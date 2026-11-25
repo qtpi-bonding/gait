@@ -3,3 +3,4 @@
 
 mod reference;
 mod runtime;
+mod workflow_mode;

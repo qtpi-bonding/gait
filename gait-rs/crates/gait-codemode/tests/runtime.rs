@@ -78,7 +78,7 @@ impl CapabilityHost for FakeHost {
             "read" if method == "call" => {
                 Ok(json!({ "content": format!("file:{}", args["path"]) }))
             }
-            "echo" => Ok(args),
+            "echo" => Ok(args.clone()),
             "math" if method == "double" => {
                 let n = args["n"].as_i64().unwrap_or(0);
                 Ok(json!(n * 2))
