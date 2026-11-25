@@ -701,8 +701,7 @@ pub async fn run_turn(
                     // by a prior unlock reply (once or session scope).
                     for item in items {
                         let path = std::path::PathBuf::from(&item.resource);
-                        let already_granted = active_unlock.once.contains(&path)
-                            || active_unlock.session.contains(&path);
+                        let already_granted = active_unlock.grants(&path, |p| p.to_path_buf());
                         if !already_granted {
                             pending_unlocks.push(item);
                         }

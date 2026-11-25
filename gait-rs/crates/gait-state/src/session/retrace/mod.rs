@@ -1369,6 +1369,23 @@ pub struct ActiveUnlockState {
     pub once: std::collections::HashSet<std::path::PathBuf>,
 }
 
+impl ActiveUnlockState {
+    /// The single question "does an active once/session unlock cover this
+    /// path", shared by the hand pre-check and the spine. A grant covers the
+    /// path when the normalized path equals the normalized grant path.
+    pub fn grants(
+        &self,
+        path: &std::path::Path,
+        normalize: impl Fn(&std::path::Path) -> std::path::PathBuf,
+    ) -> bool {
+        let target = normalize(path);
+        self.once
+            .iter()
+            .chain(self.session.iter())
+            .any(|g| normalize(g) == target)
+    }
+}
+
 /// Fold all `SandboxUnlockReply` events, cross-referencing `SandboxUnlock`
 /// events to resolve resource paths, into an `ActiveUnlockState`. `once`
 /// grants are cleared on each `RunComplete`; `session` grants persist for

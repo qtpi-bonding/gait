@@ -449,12 +449,27 @@ pub async fn run_tool_as_spine(
                 scope.read_all || scope.readable.iter().any(|r| path.starts_with(r))
             };
             if !ok {
-                let _ = std::fs::remove_dir_all(&jail);
-                return error_feedback(&format!(
-                    "delegated {} out of scope: {}",
-                    if is_write { "write" } else { "read" },
-                    path.display()
-                ));
+                // The config-scope check ignores active once/session unlock
+                // grants. Consult the session log — the same source the hand
+                // pre-check uses — before refusing. A read error means no
+                // unlocks are visible from the spine.
+                let events = gait_state::session::log::read_events(
+                    &crate::session::live::log_path(gait_dir, session_id),
+                )
+                .unwrap_or_default();
+                let unlock = gait_state::session::retrace::active_unlock_state(&events);
+                // The unlock set does not carry its dimension, so it is only
+                // trusted for reads; delegated writes stay config-scoped.
+                let ok =
+                    !is_write && unlock.grants(path, |p| crate::sandbox::clean_target(codebase, p));
+                if !ok {
+                    let _ = std::fs::remove_dir_all(&jail);
+                    return error_feedback(&format!(
+                        "delegated {} out of scope: {}",
+                        if is_write { "write" } else { "read" },
+                        path.display()
+                    ));
+                }
             }
         }
         match del.read_text_file(path).await {
@@ -1321,6 +1336,168 @@ mod tests {
             );
             let _ = write_called;
         }
+    }
+
+    #[tokio::test]
+    async fn delegated_read_honors_once_and_session_unlocks_from_the_log() {
+        use gait_proto::gait::log::v1 as pb;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Fake {
+            read_called: Arc<AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl crate::embed::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                self.read_called.store(true, Ordering::SeqCst);
+                Ok(None)
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        async fn run_read(
+            ws: &Path,
+            tool: &str,
+            file_path: &str,
+            session: &str,
+        ) -> (String, Arc<AtomicBool>) {
+            let read_called = Arc::new(AtomicBool::new(false));
+            let fake = Fake {
+                read_called: read_called.clone(),
+            };
+            let mut s = pbjson_types::Struct::default();
+            s.fields.insert(
+                "file_path".into(),
+                pbjson_types::Value {
+                    kind: Some(pbjson_types::value::Kind::StringValue(
+                        file_path.to_string(),
+                    )),
+                },
+            );
+            let impulse = gait_proto::gait::sandbox::v1::Impulse {
+                tool: tool.into(),
+                args: Some(s),
+                requested: None,
+                prefetch: None,
+                shell_whitelist_patterns: vec![],
+                output_capture_mode: ProtoOutputCaptureMode::Returned as i32,
+                output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                    as i32,
+            };
+            let group = crate::process::establish(None);
+            let feedback = run_tool_as_spine(
+                impulse,
+                &crate::config::SandboxConfig::default(),
+                ws,
+                ws,
+                session,
+                true, // sandbox ON → spine enforces scope
+                Path::new("/nonexistent-exe"),
+                group,
+                Some(Arc::new(fake) as Arc<dyn crate::embed::FsDelegate>),
+            )
+            .await;
+            let rendered = serde_json::to_string(&feedback.result).unwrap();
+            (rendered, read_called)
+        }
+
+        // Seeds a live session log with a SandboxUnlock for `resource` plus a
+        // SandboxUnlockReply allowing it with the given scope.
+        fn seed_unlock(ws: &Path, session: &str, resource: &str, scope: pb::Scope) {
+            let tx_path = crate::session::live::log_path(ws, session);
+            std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
+            crate::proto::wire::append(
+                &tx_path,
+                crate::proto::events::sandbox_unlock(&[pb::SandboxUnlockItem {
+                    id: "u1".into(),
+                    tool_name: "read".into(),
+                    resource: resource.to_string(),
+                    dimension: "read".into(),
+                    preview: None,
+                }]),
+            )
+            .unwrap();
+            crate::session::log::write_unlock_reply(
+                &tx_path,
+                "user",
+                vec![pb::SandboxUnlockReplyItem {
+                    id: "u1".into(),
+                    decision: pb::Decision::Allow as i32,
+                    scope: scope as i32,
+                }],
+            )
+            .unwrap();
+        }
+
+        let outside = tempfile::TempDir::new().unwrap();
+        let ok_path = outside.path().join("ok.txt");
+        std::fs::write(&ok_path, "hi").unwrap();
+        let other_path = outside.path().join("other.txt");
+        let ok_str = ok_path.to_string_lossy().into_owned();
+        let other_str = other_path.to_string_lossy().into_owned();
+
+        for scope in [pb::Scope::Once, pb::Scope::Session] {
+            let ws = tempfile::TempDir::new().unwrap();
+            let session = format!(
+                "sess-unlock-{}",
+                if scope == pb::Scope::Once {
+                    "once"
+                } else {
+                    "session"
+                }
+            );
+            std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), &session))
+                .unwrap();
+            seed_unlock(ws.path(), &session, &ok_str, scope);
+
+            // (1) The unlocked absolute path is no longer refused.
+            let (rendered, read_called) = run_read(ws.path(), "read", &ok_str, &session).await;
+            assert!(
+                !rendered.to_lowercase().contains("out of scope"),
+                "[{session}] unlocked read must not be refused: {rendered}"
+            );
+            assert!(
+                read_called.load(Ordering::SeqCst),
+                "[{session}] read delegate must run for the unlocked path: {rendered}"
+            );
+
+            // (2) A different path in the same session is still refused.
+            let (rendered, read_called) = run_read(ws.path(), "read", &other_str, &session).await;
+            assert!(
+                rendered.to_lowercase().contains("out of scope"),
+                "[{session}] unlocked read must not extend to other paths: {rendered}"
+            );
+            assert!(
+                !read_called.load(Ordering::SeqCst),
+                "[{session}] read delegate must not run for a refused path"
+            );
+
+            // (2b) A delegated WRITE in the same session is still refused —
+            // the unlock set does not carry its dimension, so the session
+            // read unlock must never let a delegated write through.
+            let (rendered, _write_called) = run_read(ws.path(), "write", &ok_str, &session).await;
+            assert!(
+                rendered.to_lowercase().contains("out of scope"),
+                "[{session}] delegated write must be refused even for an unlocked read path: {rendered}"
+            );
+        }
+
+        // (3) A session with no unlock events still refuses the outside path.
+        let ws = tempfile::TempDir::new().unwrap();
+        let session = "sess-unlock-none";
+        std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), session)).unwrap();
+        let (rendered, read_called) = run_read(ws.path(), "read", &ok_str, session).await;
+        assert!(
+            rendered.to_lowercase().contains("out of scope"),
+            "[{session}] no unlock must refuse the outside read: {rendered}"
+        );
+        assert!(
+            !read_called.load(Ordering::SeqCst),
+            "[{session}] read delegate must not run without an unlock"
+        );
     }
 
     fn env_of(
