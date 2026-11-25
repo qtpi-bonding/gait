@@ -286,6 +286,7 @@ async fn caller_supplied_inference_override_satisfies_resolve_checked_with_no_di
         max_iter: None,
         result_schema: None,
         auto: None,
+        status_block: None,
     });
 
     let outcome = run_single_prompt(opts, Some("hello".to_string()), &mut sink)

@@ -442,7 +442,8 @@ async fn run_object_has_run_id_args_codebase_and_workspace_before_worktree_exist
     assert_eq!(run["runId"], "runobj-001");
     assert_eq!(run["args"], serde_json::json!(["a", "b"]));
     assert_eq!(
-        Path::new(run["codebase"].as_str().unwrap()),
+        std::fs::canonicalize(run["codebase"].as_str().unwrap())
+            .unwrap_or_else(|_| std::path::PathBuf::from(run["codebase"].as_str().unwrap())),
         tmp.path()
             .canonicalize()
             .unwrap_or_else(|_| tmp.path().to_path_buf())

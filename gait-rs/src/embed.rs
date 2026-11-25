@@ -120,6 +120,7 @@ impl BrainLaunch {
             allow_intree: false,
             profile_inputs: crate::turn::spine::ProfileInputs {
                 verified_goal: None,
+                status_block: None,
                 agent_name,
                 inference_override,
                 resolved_inference: None,
@@ -582,6 +583,7 @@ pub async fn run_one_off_turn(
 
     let profile_inputs = crate::turn::spine::ProfileInputs {
         verified_goal: None,
+        status_block: None,
         agent_name: None,
         inference_override: None,
         resolved_inference: Some(inference),

@@ -24,6 +24,7 @@ use gait_core::Session;
 /// `gait-workflow`.
 struct SealedTurnDriver {
     verified_goal: Option<String>,
+    status_block: Option<String>,
     codebase: PathBuf,
     /// Named inference selected for this turn.
     inference: String,
@@ -96,6 +97,7 @@ impl TurnDriver for SealedTurnDriver {
             self.result_schema.clone(),
         );
         bl.profile_inputs.verified_goal = self.verified_goal.clone();
+        bl.profile_inputs.status_block = self.status_block.clone();
         bl.fs_delegate = self.fs_delegate.clone();
         bl.allow_intree = self.allow_intree;
         bl
@@ -280,6 +282,12 @@ pub struct TurnProfileOverride {
     /// `Some(b)` forces `auto` to `b`; `None` falls back to the runner's own
     /// default (`false`).
     pub auto: Option<bool>,
+    /// Optional caller-supplied workflow-status block (e.g. from
+    /// `gait_workflow::workflow_status_block(&gait_dir.join("workflow-runs"))`).
+    /// Carried through to the brain turn's profile (via `ProfileInputs`) and
+    /// appended to the composed system prompt as the last `<workflows>` layer.
+    /// `None`/empty means no layer at all — the prompt is byte-identical.
+    pub status_block: Option<String>,
 }
 
 impl TurnProfileOverride {
@@ -517,6 +525,7 @@ async fn run_sealed_turn(
     let result_schema = ov.and_then(|p| p.result_schema.clone());
     let verified_goal =
         gait_ops::verified_goal::resolve(ov.and_then(|p| p.verified_goal.as_deref()));
+    let status_block = ov.and_then(|p| p.status_block.clone());
     let auto = TurnProfileOverride::resolve_auto(false, ov);
     let sandbox_on = sandbox_on.unwrap_or(true);
 
@@ -528,6 +537,7 @@ async fn run_sealed_turn(
 
     let mut driver = SealedTurnDriver {
         verified_goal,
+        status_block,
         codebase,
         inference,
         explicit_inference_override,
@@ -685,6 +695,7 @@ mod tests {
 
         let mut driver = SealedTurnDriver {
             verified_goal: None,
+            status_block: None,
             codebase: PathBuf::from("/tmp/cb"),
             inference: "test".into(),
             explicit_inference_override: false,
@@ -730,6 +741,7 @@ mod tests {
     fn sealed_turn_driver_holds_paths() {
         let driver = SealedTurnDriver {
             verified_goal: None,
+            status_block: None,
             codebase: PathBuf::from("/tmp/cb"),
             inference: "test".into(),
             explicit_inference_override: false,
@@ -769,6 +781,7 @@ mod tests {
 
         let driver = SealedTurnDriver {
             verified_goal: None,
+            status_block: None,
             codebase: std::path::PathBuf::from("/tmp/x"),
             inference: "test".into(),
             explicit_inference_override: false,
@@ -806,6 +819,7 @@ mod tests {
             max_iter: None,
             result_schema: None,
             auto: Some(true),
+            status_block: None,
         };
         let off = TurnProfileOverride {
             verified_goal: None,
@@ -818,6 +832,7 @@ mod tests {
             max_iter: None,
             result_schema: None,
             auto: None,
+            status_block: None,
         };
         // base = false — mirrors the degenerate CLI node's node/wf default.
         assert!(
@@ -850,6 +865,7 @@ mod tests {
             max_iter: None,
             result_schema: None,
             auto: None,
+            status_block: None,
         }
     }
 

@@ -209,6 +209,7 @@ impl<'a> RealTurnExecutor<'a> {
                 max_iter,
                 result_schema,
                 auto: Some(auto),
+                status_block: None,
             }),
             fs_delegate: self.ctx.fs_delegate.clone(),
             allow_intree: self.ctx.allow_intree,

@@ -7,6 +7,8 @@
 //! status-timer thread respects. See docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md.
 #![deny(clippy::print_stderr)]
 
+use std::path::Path;
+
 #[cfg(feature = "rich-tui")]
 pub mod chat;
 #[allow(clippy::print_stderr)]
@@ -34,3 +36,21 @@ pub mod turn_script;
 // harness in `plain.rs` that only needs `dev-harness` (for `mock_brain`).
 #[cfg(all(feature = "dev-harness", feature = "rich-tui"))]
 pub mod dev_harness;
+
+/// Shared workflow-status seam: re-derive the workflow status block from the
+/// gait-dir's `workflow-runs/` logs so it can be carried through the turn
+/// profile into the composed system prompt's trailing `<workflows>` layer.
+/// Only under the `workflow` feature; `None` otherwise (byte-identical prompt).
+pub(crate) fn workflow_status(gait_dir: &Path) -> Option<String> {
+    #[cfg(feature = "workflow")]
+    {
+        Some(gait_workflow::workflow_status_block(
+            &gait_dir.join("workflow-runs"),
+        ))
+    }
+    #[cfg(not(feature = "workflow"))]
+    {
+        let _ = gait_dir;
+        None
+    }
+}

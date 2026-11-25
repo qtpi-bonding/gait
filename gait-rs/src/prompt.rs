@@ -7,6 +7,10 @@
 //!   `<user>`     — `USER.md` (gait-dir root, gitignored)
 //! The dynamic per-turn `<status>` block is NOT here — it is a separate user
 //! message (see `turn::build_turn_context`) so it never busts prompt-caching.
+//! The optional `<workflows>` layer (workflow-run status text) is NOT here
+//! either — it is appended by the turn-profile builder
+//! (`turn::spine::lifecycle::build_turn_profile`) AFTER composition, always
+//! last, so the layers above stay byte-stable for prompt-caching.
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +53,19 @@ pub fn compose_system_prompt(
     }
 
     out
+}
+
+/// Append the `<workflows>` layer (workflow-run status text, e.g. from
+/// `gait_workflow::workflow_status_block`) to an already-composed system
+/// prompt. The turn-profile builder calls this AFTER composition — always
+/// last, so the earlier,
+/// file-backed layers stay byte-identical whether or not the block is set
+/// (prompt-caching intent). `None`/empty/whitespace-only appends nothing.
+pub(crate) fn append_workflows_layer(instructions: &mut String, status_block: Option<&str>) {
+    if let Some(body) = status_block.map(str::trim).filter(|b| !b.is_empty()) {
+        let hash = content_hash_short(body);
+        instructions.push_str(&wrap_layer("workflows", "workflow-runs", &hash, body));
+    }
 }
 
 /// Stable, human-findable key for a codebase: `<basename>-<short-hash-of-abspath>`.
@@ -265,6 +282,10 @@ mod tests {
             "non-empty USER.md emitted"
         );
         assert!(prompt.contains("I prefer terse output."));
+        assert!(
+            !prompt.contains("<workflows"),
+            "None status block -> no <workflows> layer at all: {prompt}"
+        );
         assert!(
             !prompt.contains("<project"),
             "empty PROJECT.md is skipped, not an empty tag"

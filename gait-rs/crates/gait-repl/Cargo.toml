@@ -54,13 +54,13 @@ default = ["workflow", "rich-tui"]
 # tree -p gait-repl --no-default-features`), and the plain REPL still needs a
 # real line editor.
 #
-# No longer implies `workflow` (it used to): `repl::driver` (the module this
-# feature gates) still references `gait_workflow::` unconditionally in
-# `run_named_workflow`/its `/workflow` dispatch site, with no
-# `#[cfg(feature = "workflow")]` of its own — so `rich-tui` on without
-# `workflow` is NOT a buildable combination yet, until a later task cfg-gates
-# `driver.rs` (or extracts `/workflow` support into a `rich-tui`-independent
-# module). Default features still enable both, so shipping compositions
+# No longer implies `workflow` (it used to): the one `gait_workflow::` touch
+# point in `repl::driver` (the module this feature gates) —
+# `run_named_workflow` and its `/workflow` dispatch site — is now
+# `#[cfg(feature = "workflow")]`-gated, and without the feature the
+# `/workflow` command prints a plain "this build has no workflow support"
+# message instead, so `rich-tui` on without `workflow` builds cleanly.
+# Default features still enable both, so shipping compositions
 # (`full` = both on, `min` = both off) are unaffected.
 rich-tui = ["dep:termimad", "dep:termbg", "dep:syntect", "dep:unicode-width", "dep:nu-ansi-term"]
 # The `mock_brain` binary (a canned brain process for scripted turn tests)
@@ -77,16 +77,17 @@ dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2",
 # `repl::driver::run_named_workflow` does. Default-on so today's full `gait`
 # binary is unaffected; a future minimal build can opt out.
 #
-# `repl::driver::run_named_workflow` and its `/workflow` command dispatch
-# site still reference `gait_workflow::` unconditionally — no
-# `#[cfg(feature = "workflow")]` on them directly. `repl::driver` (the
-# *entire* module — it holds a `ui::ReplBuilder` field and calls
-# `crate::theme::RESET` throughout) is gated on `rich-tui`, but `rich-tui` no
-# longer implies `workflow` (see its doc comment above), so `rich-tui` on
-# without `workflow` is not a buildable combination today — a later task must
-# cfg-gate `driver.rs` (or extract `/workflow` support into a
-# `rich-tui`-independent module) before that combination works. Default
-# features enable both, so today's full `gait` binary is unaffected. The gap
+# `repl::driver::run_named_workflow` and its `/workflow` command dispatch site
+# are both `#[cfg(feature = "workflow")]`-gated; without the feature, the
+# `/workflow` dispatch prints a plain "this build has no workflow support"
+# message (mirroring `plain.rs`'s unavailable-command handling). The other
+# `gait_workflow::` reference, `workflow_status` in `lib.rs` (the status block
+# for both REPL loops), is gated the same way. `repl::driver` (the *entire* module — it holds a
+# `ui::ReplBuilder` field and calls `crate::theme::RESET` throughout) is gated
+# on `rich-tui`, and `rich-tui` no longer implies `workflow`, so
+# `rich-tui` + no-`workflow` now builds: the command parses but reports itself
+# unavailable. Default features enable both, so today's full `gait` binary is
+# unaffected. The gap
 # this leaves: a `workflow`-on + `rich-tui`-off build (real `/workflow` REPL
 # support without the themed renderer) has no working `/workflow` command
 # today — `plain.rs`'s `MIN_REPL_COMMANDS` doesn't even list it. If a future

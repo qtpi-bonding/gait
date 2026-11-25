@@ -896,24 +896,35 @@ impl TurnSource for ReplSource {
                 args: rest,
             }) = parsed_command
             {
-                let mut parts = rest.split_whitespace();
-                match parts.next() {
-                    None => self
-                        .shared
+                #[cfg(feature = "workflow")]
+                {
+                    let mut parts = rest.split_whitespace();
+                    match parts.next() {
+                        None => self
+                            .shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw("[gait] usage: /workflow <name> [args...]\r\n"),
+                        Some(name) => {
+                            let args: Vec<String> = parts.map(String::from).collect();
+                            let result = run_named_workflow(
+                                name,
+                                args,
+                                self.gait_dir.clone(),
+                                self.codebase.clone(),
+                            )
+                            .await;
+                            println!("{result}");
+                        }
+                    }
+                }
+                #[cfg(not(feature = "workflow"))]
+                {
+                    let _ = rest;
+                    self.shared
                         .borrow_mut()
                         .builder
-                        .write_raw("[gait] usage: /workflow <name> [args...]\r\n"),
-                    Some(name) => {
-                        let args: Vec<String> = parts.map(String::from).collect();
-                        let result = run_named_workflow(
-                            name,
-                            args,
-                            self.gait_dir.clone(),
-                            self.codebase.clone(),
-                        )
-                        .await;
-                        println!("{result}");
-                    }
+                        .write_raw("[gait] this build has no workflow support\r\n");
                 }
                 continue;
             }
@@ -1313,20 +1324,15 @@ fn one_off_schema() -> serde_json::Value {
 /// Run a named workflow (`workflows/<name>.yaml`) for the REPL `/workflow`
 /// command — awaits `run_workflow` inline (spec-06 §5 Task 4.1).
 ///
-/// TODO(Task 5): `gait-workflow` is behind gait-repl's `workflow` Cargo
-/// feature (default-on) as of Task 3, but this function and its `/workflow`
-/// dispatch site still reference `gait_workflow::` unconditionally — no
-/// `#[cfg(feature = "workflow")]` here yet. Gating this needs the REPL
-/// command-table/capability infrastructure Task 4/5 introduces; until then
-/// `cargo build -p gait-repl --no-default-features` will not compile. The old
-/// `GaitWorkflowRunner` replacement spawned a detached `std::thread` + its own
-/// tokio runtime: an untracked resident thread, a daemonless-model violation
-/// (gait is 1 turn = 1 exit; no reapers/resident processes). Foreground is the
-/// existing convention for a bounded job — the prompt blocks until the run
-/// finishes or suspends at a gate/open node, deterministically, with no
-/// resident thread. (Backgrounding, if ever wanted, is `gait workflow run`
-/// launched through the existing tracked-detached-process path, not a new
-/// thread/subprocess mechanism here.)
+/// The old `GaitWorkflowRunner` replacement spawned a detached `std::thread` +
+/// its own tokio runtime: an untracked resident thread, a daemonless-model
+/// violation (gait is 1 turn = 1 exit; no reapers/resident processes).
+/// Foreground is the existing convention for a bounded job — the prompt blocks
+/// until the run finishes or suspends at a gate/open node, deterministically,
+/// with no resident thread. (Backgrounding, if ever wanted, is
+/// `gait workflow run` launched through the existing tracked-detached-process
+/// path, not a new thread/subprocess mechanism here.)
+#[cfg(feature = "workflow")]
 pub(crate) async fn run_named_workflow(
     name: &str,
     args: Vec<String>,
@@ -1345,7 +1351,7 @@ pub(crate) async fn run_named_workflow(
                 return format!(
                     "workflow error: invalid yaml at {}: {e}",
                     yaml_path.display()
-                )
+                );
             }
         };
     let workflow_def = gait_workflow::convert::to_proto(&workflow_def_serde);
@@ -1373,7 +1379,7 @@ pub(crate) async fn run_named_workflow(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod run_named_workflow_tests {
     use super::run_named_workflow;
 

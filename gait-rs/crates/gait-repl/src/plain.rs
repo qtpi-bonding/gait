@@ -293,6 +293,8 @@ async fn run_plain_loop(
             err: mk_err(),
         };
 
+        let status_block = crate::workflow_status(&gait_dir);
+
         let run_id = format!("chat-{}", session_id);
         let outcome = gait_turn_runner::run_turn_source(
             gait_turn_runner::TurnRunOpts {
@@ -316,6 +318,7 @@ async fn run_plain_loop(
                     max_iter: startup_max_iter,
                     result_schema: startup_result_schema.clone(),
                     auto: None,
+                    status_block: status_block.clone(),
                 }),
                 fs_delegate: None,
                 allow_intree: false,

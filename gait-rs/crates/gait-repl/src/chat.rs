@@ -268,6 +268,8 @@ pub async fn run_chat(
         // runner (Task 3) — no workflow concept involved. `continue_session`
         // is caller bookkeeping only now; `session_id` is what actually pins
         // the turn to the current session's log.
+        let status_block = crate::workflow_status(&gait_dir);
+
         let run_id = format!("chat-{}", session_id);
         let mut sink = crate::repl::ReplSink {
             shared: shared.clone(),
@@ -298,6 +300,7 @@ pub async fn run_chat(
                     max_iter: startup_max_iter,
                     result_schema: startup_result_schema.clone(),
                     auto: None,
+                    status_block: status_block.clone(),
                 }),
                 fs_delegate: None,
                 allow_intree: false,

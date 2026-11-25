@@ -369,6 +369,7 @@ pub async fn cmd_run(
         verified_goal: args.verified_goal.clone(),
         inference: args.inference.clone(),
         explicit_inference_override: args.inference.is_some(),
+        status_block: None,
         session_updates: if prompt.is_some() {
             inference_selection
                 .as_ref()

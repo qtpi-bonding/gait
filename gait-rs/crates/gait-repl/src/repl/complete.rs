@@ -27,16 +27,20 @@ impl Completer for GaitCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let head = &line[..pos];
 
-        // `/workflow <prefix>` → yaml names under <gait-dir>/workflows/
+        // `/workflow <prefix>` → workflow names under <gait-dir>/workflows/
+        // (both `.yaml` and `.js` script workflows; deduplicated by stem).
         if let Some(rest) = head.strip_prefix("/workflow ") {
             let start = pos - rest.len();
             let span = Span::new(start, pos);
-            let mut out = Vec::new();
+            let mut out: Vec<Suggestion> = Vec::new();
             if let Ok(rd) = std::fs::read_dir(self.gait_dir.join("workflows")) {
                 for e in rd.flatten() {
                     let name = e.file_name().to_string_lossy().to_string();
-                    if let Some(stem) = name.strip_suffix(".yaml") {
-                        if stem.starts_with(rest) {
+                    let stem = name
+                        .strip_suffix(".yaml")
+                        .or_else(|| name.strip_suffix(".js"));
+                    if let Some(stem) = stem {
+                        if stem.starts_with(rest) && !out.iter().any(|s| s.value == stem) {
                             out.push(suggestion(stem.to_string(), "workflow", span));
                         }
                     }
@@ -117,6 +121,44 @@ mod tests {
         let sugg = c.complete("/workflow de", 12);
         assert!(
             sugg.iter().any(|s| s.value == "deploy"),
+            "got {:?}",
+            sugg.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn repl_completion_lists_js_workflows() {
+        use tempfile::tempdir;
+        let d = tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("workflows")).unwrap();
+        std::fs::write(
+            d.path().join("workflows").join("deploy.js"),
+            "export default {};",
+        )
+        .unwrap();
+        // Same stem as an existing yaml — must not produce a duplicate.
+        std::fs::write(
+            d.path().join("workflows").join("deploy.yaml"),
+            "name: deploy",
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join("workflows").join("audit.js"),
+            "export default {};",
+        )
+        .unwrap();
+        let mut c = completer(d.path().to_path_buf());
+        let sugg = c.complete("/workflow d", 11);
+        let deploy: Vec<_> = sugg.iter().filter(|s| s.value == "deploy").collect();
+        assert_eq!(
+            deploy.len(),
+            1,
+            "got {:?}",
+            sugg.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+        let sugg = c.complete("/workflow ", 10);
+        assert!(
+            sugg.iter().any(|s| s.value == "audit"),
             "got {:?}",
             sugg.iter().map(|s| &s.value).collect::<Vec<_>>()
         );

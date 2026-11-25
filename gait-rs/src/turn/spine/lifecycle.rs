@@ -27,6 +27,11 @@ pub struct ProfileInputs {
     pub result_schema: Option<serde_json::Value>,
     /// Ephemeral one-off: brain registers only `structured_done` (no hands).
     pub hands_free: bool,
+    /// Optional caller-supplied workflow-status block (e.g. from
+    /// `gait_workflow::workflow_status_block`), appended to the composed
+    /// system prompt as the last `<workflows>` layer. `None`/empty appends
+    /// nothing — the prompt is byte-identical to a run without it.
+    pub status_block: Option<String>,
 }
 
 /// Selects whether a turn persists to the gait-dir. `Persistent` is every
@@ -127,6 +132,13 @@ pub fn build_turn_profile(
     };
     profile.hands_free = inputs.hands_free;
     profile.verified_goal = gait_ops::verified_goal::resolve(inputs.verified_goal.as_deref());
+    // The <workflows> layer goes last (after <result-schema> which
+    // `from_config_and_agent`/`from_resolved_inference` may have appended), so
+    // the file-backed layers above stay byte-stable for prompt-caching.
+    crate::prompt::append_workflows_layer(
+        &mut profile.instructions,
+        inputs.status_block.as_deref(),
+    );
     profile
 }
 
@@ -809,6 +821,7 @@ mod tests {
         let schema = serde_json::json!({"type":"object","required":["answer"]});
         let inputs = ProfileInputs {
             agent_name: None,
+            status_block: None,
             inference_override: None,
             resolved_inference: None,
             explicit_inference_override: false,
@@ -820,6 +833,61 @@ mod tests {
         };
         let p = build_turn_profile(ws.path(), ws.path(), &inputs);
         assert_eq!(p.result_schema, Some(schema));
+    }
+
+    /// The `<workflows>` layer (JS workflows slice 1): the status block must
+    /// be appended to the composed instructions as the LAST layer by
+    /// `build_turn_profile` itself — with `None`/whitespace-only the prompt is
+    /// byte-identical to no block at all.
+    #[test]
+    fn status_block_is_in_the_composed_prompt() {
+        let ws = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/mock/inference.textproto"),
+            "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
+        )
+        .unwrap();
+        std::fs::write(ws.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();
+        let block = "<workflow_status>\nactive:\n  - run-1: gate @ build\n</workflow_status>";
+        let inputs = |status_block: Option<String>| ProfileInputs {
+            agent_name: None,
+            status_block,
+            inference_override: None,
+            resolved_inference: None,
+            explicit_inference_override: false,
+            allow: vec![],
+            deny: vec![],
+            result_schema: None,
+            hands_free: false,
+            verified_goal: None,
+        };
+
+        let with_none = build_turn_profile(ws.path(), ws.path(), &inputs(None));
+        let with_ws = build_turn_profile(ws.path(), ws.path(), &inputs(Some("  \n".into())));
+        assert_eq!(
+            with_ws.instructions, with_none.instructions,
+            "whitespace-only status block must compose byte-identically to None"
+        );
+
+        let with_block = build_turn_profile(ws.path(), ws.path(), &inputs(Some(block.to_string())));
+        assert!(
+            with_block.instructions.starts_with(&with_none.instructions),
+            "prefix up to the new layer must be unchanged"
+        );
+        let rest = &with_block.instructions[with_none.instructions.len()..];
+        assert!(
+            rest.starts_with("<workflows "),
+            "appended layer must be a <workflows> tag: {rest}"
+        );
+        assert!(
+            rest.contains("run-1: gate @ build"),
+            "the given block must appear inside <workflows>: {rest}"
+        );
+        assert!(
+            rest.trim_end().ends_with("</workflows>"),
+            "<workflows> is the final layer: {rest}"
+        );
     }
 
     #[test]
@@ -835,6 +903,7 @@ mod tests {
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();
         let inputs = ProfileInputs {
             agent_name: None,
+            status_block: None,
             inference_override: None,
             resolved_inference: None,
             explicit_inference_override: false,
@@ -856,6 +925,7 @@ mod tests {
         // No gait.jsonc — load_config falls back to GaitConfig::default() which has model: None.
         let inputs = ProfileInputs {
             agent_name: None,
+            status_block: None,
             inference_override: None,
             resolved_inference: None,
             explicit_inference_override: false,
