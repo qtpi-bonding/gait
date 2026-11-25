@@ -314,6 +314,18 @@ impl CapabilityDispatcher {
                             tool: tool.clone(),
                         })
                     })?;
+                if let crate::types::ToolPermission::RequiresApproval(requests) =
+                    crate::permissions::mcp_permission(&server, &tool)
+                {
+                    if let Some(pattern) = requests.iter().find_map(|req| {
+                        crate::permissions::find_matched_deny_pattern(&tool, req, &self.deny)
+                    }) {
+                        return Err(coded_error::into_anyhow(CapabilityError::Denied {
+                            tool: tool.clone(),
+                            pattern,
+                        }));
+                    }
+                }
                 let schema = jsonschema::JSONSchema::compile(&def.schema).map_err(|e| {
                     coded_error::into_anyhow(CapabilityError::InvalidArguments {
                         address: format!("{server}.{tool}"),
@@ -864,13 +876,9 @@ mod tests {
         let err = invoke_mcp_ping(&dispatcher, "alpha", &rec)
             .await
             .unwrap_err();
-        let coded = err
-            .downcast_ref::<CapabilityError>()
-            .expect("expected CapabilityError");
-        assert!(
-            matches!(coded, CapabilityError::Denied { .. }),
-            "expected Denied, got: {coded}"
-        );
+        let msg = err.to_string();
+        assert!(msg.contains("permission denied"), "message: {msg}");
+        assert!(msg.contains("mcp:alpha"), "message: {msg}");
         let result = invoke_mcp_ping(&dispatcher, "beta", &rec).await.unwrap();
         assert_eq!(result, serde_json::json!("mcp-ran"));
     }
@@ -883,13 +891,9 @@ mod tests {
         let err = invoke_mcp_ping(&dispatcher, "alpha", &rec)
             .await
             .unwrap_err();
-        let coded = err
-            .downcast_ref::<CapabilityError>()
-            .expect("expected CapabilityError");
-        assert!(
-            matches!(coded, CapabilityError::Denied { .. }),
-            "expected Denied, got: {coded}"
-        );
+        let msg = err.to_string();
+        assert!(msg.contains("permission denied"), "message: {msg}");
+        assert!(msg.contains("mcp:alpha:ping"), "message: {msg}");
         let result = invoke_mcp_ping(&dispatcher, "beta", &rec).await.unwrap();
         assert_eq!(result, serde_json::json!("mcp-ran"));
     }
