@@ -11,6 +11,7 @@ pub struct OpenAIProvider {
     pub base_url: String,
     transport: crate::transport::ProviderTransport,
     prompt_cache_key: Option<String>,
+    session_header: Option<String>,
 }
 
 impl OpenAIProvider {
@@ -33,6 +34,7 @@ impl OpenAIProvider {
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
             transport,
             prompt_cache_key: None,
+            session_header: None,
         }
     }
 
@@ -47,6 +49,26 @@ impl OpenAIProvider {
         self.prompt_cache_key
             .clone()
             .filter(|k| !k.is_empty() && self.base_url.contains("api.openai.com"))
+    }
+
+    /// Send the gait session id as `x-opencode-session`. Only the `opencode`
+    /// provider (set via the factory) uses this; empty ids are not stored.
+    pub fn with_session_header(mut self, id: Option<String>) -> Self {
+        self.session_header = id.filter(|v| !v.is_empty());
+        self
+    }
+
+    fn session_headers(&self) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(id) = &self.session_header {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(id) {
+                headers.insert(
+                    reqwest::header::HeaderName::from_static("x-opencode-session"),
+                    value,
+                );
+            }
+        }
+        headers
     }
 }
 
@@ -421,6 +443,7 @@ impl Provider for OpenAIProvider {
             reqwest::header::CONTENT_TYPE,
             reqwest::header::HeaderValue::from_static("application/json"),
         );
+        headers.extend(self.session_headers());
         let request = crate::transport::SseRequest::new(url, headers, body_value);
         let mut call = crate::telemetry::ModelCall::begin(&crate::telemetry::RequestAttrs {
             temperature: params.temperature,
@@ -852,5 +875,117 @@ mod tests {
         )
         .with_prompt_cache_key(key);
         assert_eq!(other.cache_key_for_host(), None);
+    }
+
+    #[test]
+    fn session_header_is_sent_for_opencode_only_and_is_stable() {
+        let transport = || crate::transport::ProviderTransport::new(Default::default()).expect("t");
+        let named = |id: &str| {
+            OpenAIProvider::new("k".into(), "m".into(), None, transport())
+                .with_session_header(Some(id.to_string()))
+        };
+        let s1 = named("s1");
+        assert_eq!(
+            s1.session_headers()
+                .get("x-opencode-session")
+                .and_then(|v| v.to_str().ok()),
+            Some("s1")
+        );
+        assert_eq!(
+            s1.session_headers().get("x-opencode-session"),
+            s1.session_headers().get("x-opencode-session"),
+            "the header must be stable across requests"
+        );
+        assert_ne!(
+            s1.session_headers().get("x-opencode-session"),
+            named("s2").session_headers().get("x-opencode-session"),
+            "a different session id must yield a different header value"
+        );
+        assert!(
+            OpenAIProvider::new("k".into(), "m".into(), None, transport())
+                .session_headers()
+                .is_empty(),
+            "no session id must yield no header"
+        );
+        // Empty ids are never stored.
+        assert!(
+            OpenAIProvider::new("k".into(), "m".into(), None, transport())
+                .with_session_header(Some(String::new()))
+                .session_headers()
+                .is_empty()
+        );
+    }
+
+    /// Captures one request's header block over a local TCP stub, then answers
+    /// with a minimal SSE stream so the provider call completes.
+    async fn capture_request_head(listener: tokio::net::TcpListener) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            let n = sock.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "connection closed before the headers ended");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i;
+            }
+        };
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = sock.write_all(resp.as_bytes()).await;
+        String::from_utf8_lossy(&buf[..head_end]).to_lowercase()
+    }
+
+    async fn wire_session_header(session: Option<String>) -> Option<String> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request_head(listener));
+        let provider = OpenAIProvider::new(
+            "k".into(),
+            "m".into(),
+            Some(format!("http://{addr}/v1")),
+            crate::transport::ProviderTransport::new(Default::default()).expect("t"),
+        )
+        .with_session_header(session);
+        let msgs = vec![Message::User {
+            id: "m1".into(),
+            content: MessageContent::Text("hi".into()),
+            attribution: Vec::new(),
+        }];
+        let _ = Provider::stream(&provider, "sys", &msgs, &[], &Default::default(), None).await;
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("stub got a request")
+            .unwrap();
+        head.lines()
+            .find_map(|l| l.strip_prefix("x-opencode-session:").map(str::trim))
+            .map(String::from)
+    }
+
+    #[tokio::test]
+    async fn session_header_reaches_the_wire_only_when_set() {
+        assert_eq!(
+            wire_session_header(Some("sess-1".into())).await.as_deref(),
+            Some("sess-1")
+        );
+        assert_eq!(
+            wire_session_header(Some("sess-1".into())).await.as_deref(),
+            Some("sess-1"),
+            "same session id must produce the same header on every request"
+        );
+        assert_ne!(
+            wire_session_header(Some("sess-1".into())).await.as_deref(),
+            wire_session_header(Some("sess-2".into())).await.as_deref(),
+            "a second session id must differ"
+        );
+        assert_eq!(
+            wire_session_header(None).await,
+            None,
+            "the header must be absent without a session id"
+        );
     }
 }

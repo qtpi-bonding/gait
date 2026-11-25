@@ -14,6 +14,16 @@ pub(crate) fn transport_config_for(wire: Wire) -> crate::transport::TransportCon
     config
 }
 
+/// The `x-opencode-session` value for a provider: only the `opencode`
+/// provider carries the per-gait-session id; every other provider gets None.
+fn session_header_for(provider_id: &str, session_id: &Option<String>) -> Option<String> {
+    if provider_id == "opencode" {
+        session_id.clone()
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, thiserror::Error, coded_error::CodedError)]
 #[coded(namespace = "gait.provider.factory")]
 pub enum FactoryError {
@@ -128,7 +138,8 @@ pub fn load_provider_with_credential_params_and_gait_dir(
                 }
                 Wire::OpenAI => Box::new(
                     OpenAIProvider::new(key, model_id, base, transport)
-                        .with_prompt_cache_key(prompt_cache_key),
+                        .with_prompt_cache_key(prompt_cache_key.clone())
+                        .with_session_header(session_header_for(spec.id, &prompt_cache_key)),
                 ),
                 // CodexResponses always rides on Subscription auth; the table
                 // never pairs it with ApiKey. Guard against drift with a panic
@@ -321,7 +332,6 @@ mod tests {
     fn load_opencode_with_explicit_key() {
         // OpenCode Go rides the OpenAI wire with a Bearer key against the
         // zen/go base URL — no subscription required, no custom adapter.
-        std::env::remove_var("OPENCODE_API_KEY");
         let p = load_provider("opencode/kimi-k2.6", Some("sk-test".into()))
             .expect("opencode loads with an explicit API key");
         assert_eq!(p.model_id(), "kimi-k2.6");
@@ -329,7 +339,6 @@ mod tests {
 
     #[test]
     fn load_opencode_missing_key_errors_with_env_var_name() {
-        std::env::remove_var("OPENCODE_API_KEY");
         let err = load_provider("opencode/kimi-k2.6", None).err().unwrap();
         let msg = format!("{err}");
         assert!(
@@ -512,6 +521,47 @@ mod tests {
         assert_eq!(
             FactoryError::MissingApiKey("p".into(), "K".into()).code(),
             "gait.provider.factory.missing_api_key"
+        );
+    }
+
+    #[test]
+    fn session_header_is_attached_only_for_opencode() {
+        let session = Some("sess-1".to_string());
+        let session2 = Some("sess-2".to_string());
+        for model in ["opencode/glm-5.2", "openai/gpt-x", "ollama/x", "lmstudio/x"] {
+            let (provider_id, _model) = parse_model_string(model).unwrap();
+            // Every id must actually load through the factory arm.
+            load_provider_with_credential_params_and_gait_dir(
+                model,
+                Some(gait_auth::ResolvedCredential::ApiKey("k".into())),
+                &gait_types::config::LlmParamsConfig::default(),
+                None,
+                session.clone(),
+            )
+            .unwrap_or_else(|e| panic!("{model} must load: {e}"));
+            let got = session_header_for(&provider_id, &session);
+            let got2 = session_header_for(&provider_id, &session2);
+            if provider_id == "opencode" {
+                assert_eq!(
+                    got,
+                    Some("sess-1".to_string()),
+                    "{provider_id} must carry the session id"
+                );
+                assert_eq!(
+                    got2,
+                    Some("sess-2".to_string()),
+                    "{provider_id} must follow the second session id"
+                );
+            } else {
+                assert_eq!(got, None, "{provider_id} must not carry a session id");
+                assert_eq!(got2, None, "{provider_id} must never carry a session id");
+            }
+        }
+        // An empty gait session id is passed through here but filtered out by
+        // `with_session_header`, so opencode ends up sending nothing.
+        assert_eq!(
+            session_header_for("opencode", &Some(String::new())),
+            Some(String::new())
         );
     }
 }
