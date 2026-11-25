@@ -1,3 +1,4 @@
+use anyhow::Context;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use std::collections::{HashMap, HashSet};
@@ -709,7 +710,12 @@ pub async fn run_workflow(
         None
     };
 
-    let wf_events = run_log.read_events().unwrap_or_default();
+    let wf_events = run_log.read_events().with_context(|| {
+        format!(
+            "failed to read workflow run log at {}",
+            run_log.path().display()
+        )
+    })?;
     let mut state = reconstruct_state(&wf_events);
     let record_file = record::record_path(&run_dir);
     let mut workflow_record = if !wf_events.is_empty() && record_file.exists() {

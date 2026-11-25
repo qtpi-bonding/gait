@@ -357,6 +357,7 @@ nodes:
                 yaml_path: "workflows/t.yaml".into(),
                 args: vec![],
                 def: Some(def),
+                ..Default::default()
             })),
             ..Default::default()
         }]

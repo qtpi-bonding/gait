@@ -8,6 +8,15 @@
 //! Each line is an enveloped [`WorkflowEvent`] (`id`/`seq`/`parents`/
 //! `content_hash`) minted via `workflow_envelope::mint`; hashes are recorded,
 //! not verified on read (matches the session log).
+//!
+//! Logs whose format `version` is below [`LEGACY_BELOW_VERSION`] predate the
+//! current format: they are refused with [`LogError::Legacy`] by every entry
+//! point ([`WorkflowRunLog::open`], [`WorkflowRunLog::read_events`], and
+//! therefore `emit`) and are never parsed, self-healed, or rewritten on disk.
+//!
+//! Appends are serialized by an advisory lock on a dedicated sibling lock
+//! file (`log.jsonl.lock`), so separate handles — and separate processes —
+//! can never mint the same `seq` or interleave torn writes.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,9 +30,27 @@ use gait_core::proto::gait::workflow::v1::{
 /// used by `gait.log.v1` (bump on breaking schema changes).
 pub const WORKFLOW_LOG_VERSION: u32 = 1;
 
+/// The first log format generation that is still readable. Logs with a
+/// `version` below this value predate the current format and are refused.
+pub const LEGACY_BELOW_VERSION: u32 = 1;
+
+/// Typed errors for the workflow run log. Returned to callers wrapped in
+/// `anyhow::Error` — use `err.downcast_ref::<LogError>()` to inspect them.
+#[derive(Debug, thiserror::Error)]
+pub enum LogError {
+    /// The log was written by a format older than [`LEGACY_BELOW_VERSION`].
+    /// Such a log cannot be read, resumed, or aborted; it is left untouched.
+    #[error(
+        "legacy workflow log (format version {version}): this log predates the \
+         current format and cannot be read, resumed, or aborted"
+    )]
+    Legacy { version: u32 },
+}
+
 /// A handle to an open workflow-run log file. Use [`WorkflowRunLog::create`]
 /// to start a new run, or [`WorkflowRunLog::open`] to attach to an existing
 /// run (e.g. on resume after a gate pause).
+#[derive(Debug)]
 pub struct WorkflowRunLog {
     path: PathBuf,
 }
@@ -55,10 +82,17 @@ impl WorkflowRunLog {
     /// Open an existing workflow-run log at `{workflow_runs_dir}/{run_id}/log.jsonl`
     /// for append-only writes. The file must already exist; use [`create`] to
     /// start a new run.
+    ///
+    /// Refuses a legacy (pre-[`LEGACY_BELOW_VERSION`]) log with
+    /// [`LogError::Legacy`] and does not touch the file.
     pub fn open(workflow_runs_dir: &Path, run_id: &str) -> anyhow::Result<Self> {
         let path = workflow_runs_dir.join(run_id).join("log.jsonl");
         if !path.exists() {
             anyhow::bail!("workflow run log not found: {}", path.display());
+        }
+        let text = std::fs::read_to_string(&path)?;
+        if let Some(version) = legacy_version(&text) {
+            return Err(LogError::Legacy { version }.into());
         }
         Ok(Self { path })
     }
@@ -69,6 +103,11 @@ impl WorkflowRunLog {
     }
 
     /// Read all events from the log. Blank lines are skipped.
+    ///
+    /// Refuses a legacy (pre-[`LEGACY_BELOW_VERSION`]) log with
+    /// [`LogError::Legacy`] before any parsing happens: the raw bytes are
+    /// checked for a legacy format `version` first, so a legacy log is never
+    /// parsed, never self-healed, and left byte-identical on disk.
     ///
     /// Tail-tolerant: because writes are append-only, a crash mid-`writeln!`
     /// can only ever tear the LAST line. If the last non-blank line fails to
@@ -83,6 +122,9 @@ impl WorkflowRunLog {
             return Ok(Vec::new());
         }
         let text = std::fs::read_to_string(&self.path)?;
+        if let Some(version) = legacy_version(&text) {
+            return Err(LogError::Legacy { version }.into());
+        }
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         let mut events = Vec::with_capacity(lines.len());
         for (i, line) in lines.iter().enumerate() {
@@ -109,6 +151,15 @@ impl WorkflowRunLog {
             }
         }
         Ok(events)
+    }
+
+    /// Path to the advisory lock file guarding append-serialization, sibling
+    /// to the log: `{...}/log.jsonl.lock`. It is never read as a run (only
+    /// `log.jsonl` is).
+    fn lock_path(&self) -> PathBuf {
+        let mut p = self.path.clone().into_os_string();
+        p.push(".lock");
+        PathBuf::from(p)
     }
 
     /// Rewrite the log file to contain exactly `events`, one JSON line each.
@@ -153,6 +204,7 @@ impl WorkflowRunLog {
             yaml_path: yaml_path.to_string(),
             args: args.to_vec(),
             def: Some(def.clone()),
+            ..Default::default()
         }))
     }
 
@@ -206,6 +258,7 @@ impl WorkflowRunLog {
             node_id: node_id.to_string(),
             error: error.to_string(),
             attempt,
+            ..Default::default()
         }))
     }
 
@@ -270,7 +323,35 @@ impl WorkflowRunLog {
     /// Mint an enveloped WorkflowEvent for `kind` (chained after the current
     /// tail) and append it as one JSON line. Hashes are RECORDED, not verified
     /// on read — mirrors the session log.
+    ///
+    /// The whole read-tail → mint → append sequence is serialized by an
+    /// advisory exclusive lock on a dedicated sibling lock file
+    /// (`log.jsonl.lock`, via stable `File::lock`), so separate handles and
+    /// separate processes can never read the same tail and mint the same
+    /// `seq`, nor interleave torn writes. The lock is held across the
+    /// `read_events()` call — including if it errors (e.g. a legacy log) —
+    /// and released when the lock file handle drops.
     fn emit(
+        &self,
+        kind: gait_core::proto::gait::workflow::v1::workflow_event::Kind,
+    ) -> anyhow::Result<WorkflowEvent> {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.lock_path())?;
+        lock.lock()?;
+
+        let result = self.emit_locked(kind);
+
+        drop(lock);
+        result
+    }
+
+    /// The read-tail → mint → append body of [`emit`], run while the lock
+    /// file is held. Separated out so the lock covers the whole sequence and
+    /// is released on every return path.
+    fn emit_locked(
         &self,
         kind: gait_core::proto::gait::workflow::v1::workflow_event::Kind,
     ) -> anyhow::Result<WorkflowEvent> {
@@ -284,6 +365,34 @@ impl WorkflowRunLog {
         writeln!(file, "{}", serde_json::to_string(&ev)?)?;
         Ok(ev)
     }
+}
+
+/// Detect a legacy workflow log by reading the RAW JSON of the log's lines
+/// (before any pbjson parse, so unknown keys in a legacy log don't matter).
+///
+/// For every non-blank line that parses as a JSON object, take its `version`
+/// field (a missing key means 0 — pbjson omits zero values). A line whose
+/// JSON does not parse at all (e.g. a torn/garbage tail) is ignored and left
+/// to the normal path. Returns `Some(version)` for the first line whose
+/// version is below [`LEGACY_BELOW_VERSION`], or `None` if no legacy line is
+/// found. The version field is present in every line, so in practice the
+/// first line decides; checking every parseable line is a safety net.
+fn legacy_version(text: &str) -> Option<u32> {
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            // Torn/garbage line: not a version signal; the normal path will
+            // handle it (as a torn tail, or as real corruption).
+            continue;
+        };
+        let version = value.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if version < LEGACY_BELOW_VERSION {
+            return Some(version);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

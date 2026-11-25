@@ -40,6 +40,9 @@ message WorkflowStart {
   string          yaml_path = 3;  // path to the workflow yaml
   repeated string args      = 4;  // CLI args passed to the run
   Workflow        def       = 5;  // canonical workflow IR at run time
+  string          script_path   = 6;  // JS workflow script path
+  string          script_sha256 = 7;  // sha256 hex of the script
+  string          script_source = 8;  // script source text at run time
 }
 
 // ============================================================================
@@ -126,6 +129,15 @@ message NodeError {
   string node_id = 1;
   string error   = 2;
   uint32 attempt = 3;
+  NodeErrorKind kind = 4;  // how the node ended; FAILED is the default
+}
+
+// Terminal disposition of a node turn. FAILED is the proto3 default so old
+// log lines without `kind` parse as failures.
+enum NodeErrorKind {
+  NODE_ERROR_KIND_FAILED     = 0;
+  NODE_ERROR_KIND_CONTINUED  = 1;
+  NODE_ERROR_KIND_CANCELLED  = 2;
 }
 
 message NodeSkip {

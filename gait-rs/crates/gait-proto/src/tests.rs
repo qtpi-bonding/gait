@@ -463,3 +463,88 @@ fn turn_failed_with_code_round_trips() {
     let back: TurnFailed = serde_json::from_value(value).expect("deserialize");
     assert_eq!(back, failed);
 }
+
+// ============================================================================
+// workflow.v1 additive fields: NodeError.kind and WorkflowStart.script_*
+// ============================================================================
+
+#[test]
+fn node_error_without_kind_parses_as_failed_and_omits_on_serialize() {
+    use super::gait::workflow::v1::{NodeError, NodeErrorKind};
+
+    // Old log lines have no `kind` key; the proto3 default is Failed.
+    let old: NodeError = serde_json::from_value(json!({
+        "nodeId": "n1",
+        "error": "boom",
+        "attempt": 1
+    }))
+    .expect("old shape without kind");
+    assert_eq!(old.kind, NodeErrorKind::Failed as i32);
+
+    // pbjson omits zero values, so the default kind is not written.
+    let value = serde_json::to_value(&old).expect("serialize");
+    assert_eq!(
+        value,
+        json!({"nodeId": "n1", "error": "boom", "attempt": 1})
+    );
+}
+
+#[test]
+fn node_error_with_continued_kind_round_trips() {
+    use super::gait::workflow::v1::{NodeError, NodeErrorKind};
+
+    let err = NodeError {
+        node_id: "n2".into(),
+        error: "recoverable".into(),
+        attempt: 2,
+        kind: NodeErrorKind::Continued as i32,
+    };
+    let value = serde_json::to_value(&err).expect("serialize");
+    assert_eq!(value["kind"], json!("NODE_ERROR_KIND_CONTINUED"));
+    let back: NodeError = serde_json::from_value(value).expect("deserialize");
+    assert_eq!(back, err);
+}
+
+#[test]
+fn workflow_start_old_shape_parses_with_empty_script_fields() {
+    use super::gait::workflow::v1::WorkflowStart;
+
+    let start: WorkflowStart = serde_json::from_value(json!({
+        "runId": "run-1",
+        "workflow": "analyze",
+        "yamlPath": "wf.yaml",
+        "args": ["--pr", "42"],
+        "def": {"name": "analyze"}
+    }))
+    .expect("old WorkflowStart shape");
+    assert_eq!(start.run_id, "run-1");
+    assert_eq!(start.yaml_path, "wf.yaml");
+    assert_eq!(start.script_path, "");
+    assert_eq!(start.script_sha256, "");
+    assert_eq!(start.script_source, "");
+}
+
+#[test]
+fn workflow_start_with_script_fields_round_trips() {
+    use super::gait::workflow::v1::WorkflowStart;
+
+    let start = WorkflowStart {
+        run_id: "run-2".into(),
+        workflow: "analyze".into(),
+        yaml_path: String::new(),
+        args: vec![],
+        def: None,
+        script_path: "scripts/wf.js".into(),
+        script_sha256: "deadbeef".into(),
+        script_source: "export default async () => {}".into(),
+    };
+    let value = serde_json::to_value(&start).expect("serialize");
+    assert_eq!(value["scriptPath"], json!("scripts/wf.js"));
+    assert_eq!(value["scriptSha256"], json!("deadbeef"));
+    assert_eq!(
+        value["scriptSource"],
+        json!("export default async () => {}")
+    );
+    let back: WorkflowStart = serde_json::from_value(value).expect("deserialize");
+    assert_eq!(back, start);
+}
