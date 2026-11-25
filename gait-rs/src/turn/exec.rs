@@ -491,6 +491,9 @@ pub(super) enum VerifierDispatchOutcome {
     Executed(ShellExecution),
     /// Permission gate requires user approval; contains the permission items.
     NeedsPermission(Vec<pb::PermissionItem>),
+    /// Permission gate or risk classifier denied it, no prompt; the string is
+    /// the reason shown to the model.
+    Denied(String),
     /// Sandbox unlock required; contains the unlock item.
     NeedsSandboxUnlock(pb::SandboxUnlockItem),
 }
@@ -514,8 +517,9 @@ pub(super) async fn dispatch_verifier(
     effective_allow: &[String],
     deny: &[String],
     auto: bool,
-    _classifier: &dyn super::execute::Classifier,
-    _classify_policy: Option<&pb::ClassifyPolicy>,
+    classifier: &dyn super::execute::Classifier,
+    classify_policy: Option<&pb::ClassifyPolicy>,
+    classify_denial_streak: &mut u32,
 ) -> anyhow::Result<VerifierDispatchOutcome> {
     use crate::permissions::gate::{classify as gate_classify, GateDecision};
 
@@ -535,24 +539,54 @@ pub(super) async fn dispatch_verifier(
     // Apply the permission gate: check allow/deny/classify
     match gate_classify(&synthetic_call, Some(tool), effective_allow, deny, auto) {
         GateDecision::Deny => {
-            return Ok(VerifierDispatchOutcome::NeedsPermission(vec![
-                pb::PermissionItem {
-                    id: "verified_goal".into(),
-                    tool_name: "shell".into(),
-                    cmd: command.to_string(),
-                    reason: "[verified_goal verifier]".into(),
-                    patterns: vec!["shell:verified_goal".into()],
-                    tool_args: None,
-                    preview: None,
-                },
-            ]));
+            // A deny is not a prompt: record the same permission_denied event
+            // other denials emit and surface the reason to the model.
+            let perm = tool.permission(&shell_args);
+            let pattern = if let crate::types::ToolPermission::RequiresApproval(requests) = &perm {
+                requests
+                    .iter()
+                    .find_map(|req| {
+                        crate::permissions::find_matched_deny_pattern("shell", req, deny)
+                    })
+                    .unwrap_or_else(|| "shell".to_string())
+            } else {
+                "shell".to_string()
+            };
+            emitter.record(crate::proto::events::permission_denied(
+                "shell", command, &pattern,
+            ))?;
+            return Ok(VerifierDispatchOutcome::Denied(format!(
+                "permission denied by pattern {pattern}"
+            )));
         }
         GateDecision::Allow { .. } => {
             // Allowed to proceed; execute through Synapse
         }
         GateDecision::Gate { items } => {
-            // Requires classification or approval; return pause outcome
-            return Ok(VerifierDispatchOutcome::NeedsPermission(items));
+            // Consult the risk classifier; approve, deny, or leave pending.
+            match super::execute::classify_gated_items(
+                "shell",
+                &shell_args,
+                &items,
+                classify_policy,
+                classifier,
+                emitter,
+                classify_denial_streak,
+            )
+            .await?
+            {
+                super::execute::GatedVerdict::Approved => {
+                    // Fall through and execute exactly as the Allow arm does.
+                }
+                super::execute::GatedVerdict::Denied => {
+                    return Ok(VerifierDispatchOutcome::Denied(
+                        "denied by the risk classifier".to_string(),
+                    ));
+                }
+                super::execute::GatedVerdict::Unresolved => {
+                    return Ok(VerifierDispatchOutcome::NeedsPermission(items));
+                }
+            }
         }
     }
 
@@ -1156,6 +1190,7 @@ mod synapse_routing_tests {
             true, // auto
             &super::super::execute::DisabledClassifier,
             None,
+            &mut 0u32,
         )
         .await
         .unwrap();
@@ -1170,7 +1205,7 @@ mod synapse_routing_tests {
     }
 
     #[tokio::test]
-    async fn verified_goal_denied_returns_permission_pause() {
+    async fn verified_goal_deny_is_not_a_prompt() {
         let dir = tempdir().unwrap();
         let id = "svg-deny-1";
         std::fs::create_dir_all(
@@ -1188,7 +1223,7 @@ mod synapse_routing_tests {
             id.to_string(),
         ));
 
-        // In supervised mode with shell denied, should pause for permission
+        // In supervised mode with shell denied, must stay a deny: no prompt, no run
         let outcome = dispatch_verifier(
             "printf test",
             &shell_tool as &dyn Tool,
@@ -1199,16 +1234,168 @@ mod synapse_routing_tests {
             false,                    // not auto
             &super::super::execute::DisabledClassifier,
             None,
+            &mut 0u32,
         )
         .await
         .unwrap();
 
+        assert!(
+            matches!(outcome, VerifierDispatchOutcome::Denied(_)),
+            "expected Denied, got {outcome:?}"
+        );
         match outcome {
-            VerifierDispatchOutcome::NeedsPermission(items) => {
-                assert!(!items.is_empty());
-                assert_eq!(items[0].tool_name, "shell");
+            VerifierDispatchOutcome::Denied(reason) => {
+                assert!(
+                    reason.contains("shell"),
+                    "denial reason should mention the deny pattern: {reason}"
+                );
             }
-            other => panic!("expected NeedsPermission, got {:?}", other),
+            other => panic!("expected Denied, got {other:?}"),
+        }
+    }
+
+    /// Test-only fake classifier: fixed risk scores, counts calls.
+    struct CountingClassifier {
+        scores: gait_provider::classify::RiskScores,
+        calls: std::sync::Mutex<u32>,
+    }
+    impl CountingClassifier {
+        fn approving() -> Self {
+            Self {
+                scores: gait_provider::classify::RiskScores {
+                    confidentiality_risk: 0.02,
+                    integrity_risk: 0.01,
+                    availability_risk: 0.01,
+                },
+                calls: std::sync::Mutex::new(0),
+            }
+        }
+        fn denying() -> Self {
+            Self {
+                scores: gait_provider::classify::RiskScores {
+                    confidentiality_risk: 0.02,
+                    integrity_risk: 0.87,
+                    availability_risk: 0.01,
+                },
+                calls: std::sync::Mutex::new(0),
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl super::super::execute::Classifier for CountingClassifier {
+        async fn classify(
+            &self,
+            _inference: &str,
+            _state: &str,
+        ) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError>
+        {
+            *self.calls.lock().unwrap() += 1;
+            Ok(gait_provider::classify::RiskScores {
+                confidentiality_risk: self.scores.confidentiality_risk,
+                integrity_risk: self.scores.integrity_risk,
+                availability_risk: self.scores.availability_risk,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_goal_gated_call_consults_the_classifier_and_denies_high_risk() {
+        let dir = tempdir().unwrap();
+        let id = "svg-classify-deny";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), id, tx);
+
+        let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            id.to_string(),
+        ));
+
+        let classifier = CountingClassifier::denying();
+        let policy = pb::ClassifyPolicy {
+            inference: "fake".into(),
+            risk_threshold: 0.3,
+            max_consecutive_denials: 3,
+        };
+
+        let outcome = dispatch_verifier(
+            "printf ready",
+            &shell_tool as &dyn Tool,
+            &rec,
+            None,
+            &[], // effective_allow
+            &[], // deny
+            false,
+            &classifier,
+            Some(&policy),
+            &mut 0u32,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            *classifier.calls.lock().unwrap() >= 1,
+            "classifier must be consulted for a gated call"
+        );
+        assert!(
+            matches!(outcome, VerifierDispatchOutcome::Denied(_)),
+            "expected Denied, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_goal_gated_call_classifier_approval_executes() {
+        let dir = tempdir().unwrap();
+        let id = "svg-classify-approve";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), id, tx);
+
+        let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            id.to_string(),
+        ));
+
+        let classifier = CountingClassifier::approving();
+        let policy = pb::ClassifyPolicy {
+            inference: "fake".into(),
+            risk_threshold: 0.3,
+            max_consecutive_denials: 3,
+        };
+
+        let outcome = dispatch_verifier(
+            "printf ready",
+            &shell_tool as &dyn Tool,
+            &rec,
+            None,
+            &[], // effective_allow
+            &[], // deny
+            false,
+            &classifier,
+            Some(&policy),
+            &mut 0u32,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*classifier.calls.lock().unwrap(), 1);
+        match outcome {
+            VerifierDispatchOutcome::Executed(execution) => {
+                assert_eq!(execution.exit_code, Some(0));
+            }
+            other => panic!("expected Executed, got {:?}", other),
         }
     }
 
@@ -1242,6 +1429,7 @@ mod synapse_routing_tests {
             true, // auto
             &super::super::execute::DisabledClassifier,
             None,
+            &mut 0u32,
         )
         .await
         .unwrap();

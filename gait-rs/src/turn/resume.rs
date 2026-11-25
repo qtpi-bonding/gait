@@ -117,6 +117,7 @@ pub(crate) async fn apply_if_pending(
                     auto,
                     classifier,
                     classify_policy,
+                    &mut state.classify_denial_streak,
                 )
                 .await
                 {
@@ -183,6 +184,34 @@ pub(crate) async fn apply_if_pending(
                                     &pending_attempt.command,
                                     None,
                                     "verifier dispatch failed after approval",
+                                    completion,
+                                ))?;
+
+                                state.pending_verifier_attempt = None;
+                                let events_after = ingestor.events()?;
+                                state.messages = crate::session::retrace::messages(&events_after)?;
+                            }
+                            VerifierDispatchOutcome::Denied(reason) => {
+                                // Deny pattern or risk classifier refused; no prompt.
+                                // Treat as execution error.
+                                state.verified_goal_retries_remaining =
+                                    pending_attempt.verified_goal_retries_remaining;
+                                state.schema_retries_remaining =
+                                    pending_attempt.schema_retries_remaining;
+                                state.done_nudges_remaining = pending_attempt.done_nudges_remaining;
+
+                                let completion = serde_json::json!({
+                                    "message": pending_attempt.completion_message,
+                                    "result": pending_attempt.completion_result,
+                                    "implicit": pending_attempt.completion_implicit,
+                                });
+
+                                emitter.record(events::verified_goal(
+                                    &pending_attempt.attempt_id,
+                                    "execution_error",
+                                    &pending_attempt.command,
+                                    None,
+                                    &reason,
                                     completion,
                                 ))?;
 

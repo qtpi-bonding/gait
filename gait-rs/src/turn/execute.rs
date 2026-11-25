@@ -55,6 +55,82 @@ pub(crate) struct ProductionClassifier {
     pub gait_dir: std::path::PathBuf,
 }
 
+/// Outcome of running the gated items through the risk classifier.
+pub(super) enum GatedVerdict {
+    /// Every item scored below the risk threshold: execute without a prompt.
+    Approved,
+    /// At least one item scored at/above the risk threshold: treat as denied.
+    Denied,
+    /// No policy, circuit breaker tripped, or a classify call errored:
+    /// leave the items pending for a human.
+    Unresolved,
+}
+
+/// Classifies the permission items gated for a single tool call and returns
+/// the verdict for the whole batch (all-or-nothing per tool_call_id -- every
+/// item here shares the same id -- see resume.rs's "all segments must be
+/// approved" convention). Classifies every item first, without emitting
+/// anything or touching the streak, so a partial-batch failure (some items
+/// classified, one call errored) can't leave already-decided items dropped --
+/// neither executed nor re-surfaced for a human. Only commits to an outcome
+/// once every item in the batch got a real answer.
+pub(super) async fn classify_gated_items(
+    tool_name: &str,
+    args: &serde_json::Value,
+    items: &[pb::PermissionItem],
+    policy: Option<&pb::ClassifyPolicy>,
+    classifier: &dyn Classifier,
+    emitter: &dyn crate::types::Rec,
+    denial_streak: &mut u32,
+) -> anyhow::Result<GatedVerdict> {
+    let Some(policy) = policy else {
+        return Ok(GatedVerdict::Unresolved);
+    };
+    if *denial_streak >= policy.max_consecutive_denials {
+        return Ok(GatedVerdict::Unresolved);
+    }
+    let mut scored: Vec<(pb::PermissionItem, gait_provider::classify::RiskScores)> =
+        Vec::with_capacity(items.len());
+    for item in items {
+        let state_text = format!(
+            "{}: {}\n\npatterns: {}",
+            tool_name,
+            args,
+            item.patterns.join(", ")
+        );
+        match classifier.classify(&policy.inference, &state_text).await {
+            Ok(scores) => scored.push((item.clone(), scores)),
+            Err(_) => {
+                // No ClassifyDecision emitted (no decision was made), streak
+                // untouched: unresolved.
+                return Ok(GatedVerdict::Unresolved);
+            }
+        }
+    }
+    let tc_approved = scored
+        .iter()
+        .all(|(_, s)| classify_approves(s, policy.risk_threshold));
+    for (item, scores) in &scored {
+        emitter.record(events::classify_decision(pb::ClassifyDecision {
+            permission_item_id: item.id.clone(),
+            tool_name: item.tool_name.clone(),
+            cmd: item.cmd.clone(),
+            approved: tc_approved,
+            confidentiality_risk: scores.confidentiality_risk,
+            integrity_risk: scores.integrity_risk,
+            availability_risk: scores.availability_risk,
+            inference: policy.inference.clone(),
+        }))?;
+    }
+    if tc_approved {
+        *denial_streak = 0;
+        Ok(GatedVerdict::Approved)
+    } else {
+        *denial_streak = denial_streak.saturating_add(1);
+        Ok(GatedVerdict::Denied)
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct DisabledClassifier;
 
@@ -144,80 +220,29 @@ pub(crate) async fn run_tools(
             }
             GateDecision::Gate { items } => {
                 gated_ids.insert(tc.tool_call_id.clone());
-                // All-or-nothing per tool_call_id (every item here shares the
-                // same id -- see resume.rs's "all segments must be approved"
-                // convention). Classify every item first, without emitting
-                // anything or touching the streak, so a partial-batch failure
-                // (some items classified, one call errored) can't leave
-                // already-decided items dropped -- neither executed nor
-                // re-surfaced for a human. Only commit to an outcome once
-                // every item in the batch got a real answer.
-                let mut resolved = false;
-                if let Some(policy) = env.classify_policy {
-                    if state.classify_denial_streak < policy.max_consecutive_denials {
-                        let mut scored: Vec<(
-                            pb::PermissionItem,
-                            gait_provider::classify::RiskScores,
-                        )> = Vec::with_capacity(items.len());
-                        let mut call_failed = false;
-                        for item in &items {
-                            let state_text = format!(
-                                "{}: {}\n\npatterns: {}",
-                                tc.tool_name,
-                                tc.args,
-                                item.patterns.join(", ")
-                            );
-                            match env
-                                .classifier
-                                .classify(&policy.inference, &state_text)
-                                .await
-                            {
-                                Ok(scores) => scored.push((item.clone(), scores)),
-                                Err(_) => {
-                                    call_failed = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if !call_failed {
-                            let tc_approved = scored
-                                .iter()
-                                .all(|(_, s)| classify_approves(s, policy.risk_threshold));
-                            for (item, scores) in &scored {
-                                env.emitter.record(events::classify_decision(
-                                    pb::ClassifyDecision {
-                                        permission_item_id: item.id.clone(),
-                                        tool_name: item.tool_name.clone(),
-                                        cmd: item.cmd.clone(),
-                                        approved: tc_approved,
-                                        confidentiality_risk: scores.confidentiality_risk,
-                                        integrity_risk: scores.integrity_risk,
-                                        availability_risk: scores.availability_risk,
-                                        inference: policy.inference.clone(),
-                                    },
-                                ))?;
-                            }
-                            if tc_approved {
-                                state.classify_denial_streak = 0;
-                                gated_ids.remove(&tc.tool_call_id);
-                                tool_approval_prefixes.insert(
-                                    tc.tool_call_id.clone(),
-                                    "[Classifier-approved]".into(),
-                                );
-                            } else {
-                                state.classify_denial_streak =
-                                    state.classify_denial_streak.saturating_add(1);
-                                gated_ids.remove(&tc.tool_call_id);
-                                denied_ids.insert(tc.tool_call_id.clone());
-                            }
-                            resolved = true;
-                        }
-                        // call_failed: no ClassifyDecision emitted (no decision was
-                        // made), streak untouched, falls through below unresolved.
+                match classify_gated_items(
+                    &tc.tool_name,
+                    &tc.args,
+                    &items,
+                    env.classify_policy,
+                    env.classifier,
+                    env.emitter,
+                    &mut state.classify_denial_streak,
+                )
+                .await?
+                {
+                    GatedVerdict::Approved => {
+                        gated_ids.remove(&tc.tool_call_id);
+                        tool_approval_prefixes
+                            .insert(tc.tool_call_id.clone(), "[Classifier-approved]".into());
                     }
-                }
-                if !resolved {
-                    pending_permissions.extend(items);
+                    GatedVerdict::Denied => {
+                        gated_ids.remove(&tc.tool_call_id);
+                        denied_ids.insert(tc.tool_call_id.clone());
+                    }
+                    GatedVerdict::Unresolved => {
+                        pending_permissions.extend(items.iter().cloned());
+                    }
                 }
             }
         }
@@ -792,9 +817,12 @@ pub(crate) async fn verify_completion(
             });
 
         if let Some(shell_tool) = shell_tool {
+            // Clone the command so `state` can be borrowed mutably for the
+            // classify denial streak while we still reference it afterwards.
+            let verified_goal = verified_goal.clone();
             // Dispatch the verifier through the normal permission gate
             match super::exec::dispatch_verifier(
-                verified_goal,
+                &verified_goal,
                 shell_tool.as_ref(),
                 env.emitter,
                 env.relay,
@@ -803,6 +831,7 @@ pub(crate) async fn verify_completion(
                 env.auto,
                 env.classifier,
                 env.classify_policy,
+                &mut state.classify_denial_streak,
             )
             .await
             {
@@ -823,7 +852,7 @@ pub(crate) async fn verify_completion(
                     env.emitter.record(events::verified_goal(
                         &attempt_id,
                         status,
-                        verified_goal,
+                        &verified_goal,
                         exec_result.exit_code,
                         &exec_result.output,
                         completion,
@@ -869,7 +898,7 @@ pub(crate) async fn verify_completion(
                     env.emitter.record(events::verified_goal(
                         &attempt_id,
                         "pending",
-                        verified_goal,
+                        &verified_goal,
                         None,
                         "",
                         completion,
@@ -910,13 +939,37 @@ pub(crate) async fn verify_completion(
                     env.emitter.record(events::verified_goal(
                         &attempt_id,
                         "pending",
-                        verified_goal,
+                        &verified_goal,
                         None,
                         "",
                         completion,
                     ))?;
 
                     return Ok(StepOutcome::Pause(PauseKind::SandboxUnlock(vec![denial])));
+                }
+                Ok(super::exec::VerifierDispatchOutcome::Denied(reason)) => {
+                    // The verifier call was refused by the deny patterns or
+                    // the risk classifier: no prompt, no pending attempt.
+                    verifier_failure = true;
+                    feedback_messages.push(format!(
+                        "verified_goal command was denied:\nCommand: {}\nReason: {}",
+                        verified_goal, reason
+                    ));
+
+                    let completion = serde_json::json!({
+                        "message": completion_message,
+                        "result": completion_result,
+                        "implicit": completion_implicit,
+                    });
+
+                    env.emitter.record(events::verified_goal(
+                        &attempt_id,
+                        "execution_error",
+                        &verified_goal,
+                        None,
+                        &reason,
+                        completion,
+                    ))?;
                 }
                 Err(e) => {
                     // Dispatch error becomes execution_error
@@ -934,7 +987,7 @@ pub(crate) async fn verify_completion(
                     env.emitter.record(events::verified_goal(
                         &attempt_id,
                         "execution_error",
-                        verified_goal,
+                        &verified_goal,
                         None,
                         &format!("dispatch error: {}", e),
                         completion,
