@@ -432,12 +432,21 @@ pub async fn run_tool_as_spine(
                 scope.read_all || scope.readable.iter().any(|r| path.starts_with(r))
             };
             if !ok {
-                let _ = std::fs::remove_dir_all(&jail);
-                return error_feedback(&format!(
-                    "delegated {} out of scope: {}",
-                    if is_write { "write" } else { "read" },
-                    path.display()
-                ));
+                // Lazily consult the session log for once/session unlock grants
+                // before refusing; a read error means no grants (fail closed).
+                let events = crate::session::log::read_events(&crate::session::log::log_path(
+                    gait_dir, session_id,
+                ))
+                .unwrap_or_default();
+                let unlocked = crate::session::retrace::active_unlock_state(&events).grants(path);
+                if !unlocked {
+                    let _ = std::fs::remove_dir_all(&jail);
+                    return error_feedback(&format!(
+                        "delegated {} out of scope: {}",
+                        if is_write { "write" } else { "read" },
+                        path.display()
+                    ));
+                }
             }
         }
         match del.read_text_file(path).await {
@@ -1176,6 +1185,129 @@ mod tests {
         assert!(
             !called.load(Ordering::SeqCst),
             "delegate write must NOT run for an out-of-scope path"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegated_read_honors_session_unlock_outside_codebase() {
+        use gait_proto::gait::log::v1 as pb;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Fake(Arc<AtomicBool>);
+        #[async_trait::async_trait]
+        impl crate::embed::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(Some("hi".to_string()))
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let ws = tempfile::TempDir::new().unwrap();
+        let session = "sess-unlock-01";
+        std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), session)).unwrap();
+
+        let outside = tempfile::TempDir::new().unwrap();
+        let granted = outside.path().join("granted.txt");
+        let other = outside.path().join("other.txt");
+        std::fs::write(&granted, "secret-ok").unwrap();
+        std::fs::write(&other, "secret-no").unwrap();
+
+        let log_path = crate::session::log::log_path(ws.path(), session);
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        crate::proto::wire::append(
+            &log_path,
+            crate::proto::events::sandbox_unlock(&[pb::SandboxUnlockItem {
+                id: "u1".to_string(),
+                tool_name: "read".to_string(),
+                resource: granted.to_string_lossy().into_owned(),
+                dimension: "read".to_string(),
+                preview: None,
+            }]),
+        )
+        .unwrap();
+        crate::session::log::write_unlock_reply(
+            &log_path,
+            "user",
+            vec![pb::SandboxUnlockReplyItem {
+                id: "u1".to_string(),
+                decision: pb::Decision::Allow as i32,
+                scope: pb::Scope::Session as i32,
+            }],
+        )
+        .unwrap();
+
+        async fn call(ws: &Path, session: &str, file_path: &str, flag: Arc<AtomicBool>) -> String {
+            let mut s = pbjson_types::Struct::default();
+            s.fields.insert(
+                "file_path".into(),
+                pbjson_types::Value {
+                    kind: Some(pbjson_types::value::Kind::StringValue(file_path.into())),
+                },
+            );
+            let impulse = gait_proto::gait::sandbox::v1::Impulse {
+                tool: "read".into(),
+                args: Some(s),
+                requested: None,
+                prefetch: None,
+                shell_whitelist_patterns: vec![],
+                output_capture_mode: ProtoOutputCaptureMode::Returned as i32,
+                output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                    as i32,
+            };
+            let group = crate::process::establish(None);
+            let feedback = run_tool_as_spine(
+                impulse,
+                &crate::config::SandboxConfig::default(),
+                ws,
+                ws,
+                session,
+                true,
+                Path::new("/nonexistent-exe"),
+                group,
+                Some(Arc::new(Fake(flag)) as Arc<dyn crate::embed::FsDelegate>),
+            )
+            .await;
+            serde_json::to_string(&feedback.result).unwrap()
+        }
+
+        // Granted (session-scope unlock): must NOT be refused as out of scope.
+        let called = Arc::new(AtomicBool::new(false));
+        let rendered = call(
+            ws.path(),
+            session,
+            &granted.to_string_lossy(),
+            called.clone(),
+        )
+        .await;
+        assert!(
+            !rendered.to_lowercase().contains("out of scope"),
+            "session-unlocked read must not be refused: {rendered}"
+        );
+        assert!(
+            called.load(Ordering::SeqCst),
+            "delegate read must run for the unlocked path: {rendered}"
+        );
+
+        // Not unlocked: refused, delegate untouched.
+        let called2 = Arc::new(AtomicBool::new(false));
+        let rendered = call(
+            ws.path(),
+            session,
+            &other.to_string_lossy(),
+            called2.clone(),
+        )
+        .await;
+        assert!(
+            rendered.to_lowercase().contains("out of scope"),
+            "unlocked-scope check must refuse a path without a grant: {rendered}"
+        );
+        assert!(
+            !called2.load(Ordering::SeqCst),
+            "delegate read must NOT run for an unlocked-foreign path"
         );
     }
 
