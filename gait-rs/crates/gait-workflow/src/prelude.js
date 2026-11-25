@@ -17,6 +17,8 @@
             config: (a) => __host.wf.config(a),
             turn: (a) => __host.wf.turn(a),
             shell: (a) => __host.wf.shell(a),
+            now: () => __host.wf.now(null),
+            random: () => __host.wf.random(null),
             // Tagged template: interpolations become "$GAIT_ARG_<i>" markers in
             // the script text and GAIT_ARG_<i> entries in env. Values are never
             // spliced into the script text.

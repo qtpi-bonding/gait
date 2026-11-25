@@ -23,6 +23,7 @@ use gait_codemode::{CapabilityHost, HostError};
 use crate::exec_shell::{exec_shell_opts_with_host_env, NodeContext};
 use crate::observer::WorkflowObserver;
 use crate::run_log::WorkflowRunLog;
+use crate::state::{JournalEntry, JournalState, ScriptJournal};
 use crate::step::{ConfigOpts, ShellOpts, TurnOpts};
 use crate::turn_exec::{TurnExecutor, TurnRequest};
 
@@ -52,10 +53,28 @@ enum StepError {
     MissingId { method: String },
     #[error("duplicate step id '{id}': step ids must be unique within one run")]
     DuplicateId { id: String },
+    #[error("step id '{id}' is reserved (ids starting with __now_ or __random_ are used by gait.wf.now/random)")]
+    ReservedId { id: String },
     #[error("step cap of {cap} reached: refusing step '{id}'")]
     StepCap { cap: usize, id: String },
     #[error("step '{id}': retry/onFail/hooks are not supported yet")]
     RetryUnsupported { id: String },
+    #[error(
+        "step '{id}' changed kind in the script (logged as {old}, now {new}); \
+         the workflow script no longer matches its run log"
+    )]
+    KindChanged {
+        id: String,
+        old: String,
+        new: String,
+    },
+    #[error(
+        "step '{id}' is still open in the run log (no terminal event); \
+         pass --force-rerun {id} to accept re-running it"
+    )]
+    OpenStep { id: String },
+    #[error("gait.wf.{method} takes no arguments")]
+    NoArgs { method: String },
     #[error("step '{id}': gait.wf.{method} outputSchema is not supported yet")]
     OutputSchemaUnsupported { id: String, method: String },
     #[error("gait.wf.turn step '{id}': {source}")]
@@ -132,6 +151,14 @@ pub struct StepEngine<'a> {
     run_worktree: PathBuf,
     /// The turn executor (real or scripted) for prompt steps.
     turns: Arc<dyn TurnExecutor>,
+    /// The journal folded from the run log's existing events (empty for a
+    /// fresh run). Used by replay (next task).
+    #[allow(dead_code)]
+    journal: ScriptJournal,
+    /// Step ids the caller accepted re-running despite being open in the
+    /// journal. Used by replay (next task).
+    #[allow(dead_code)]
+    force_rerun: Vec<String>,
     /// The lifecycle observer, notified after every log write.
     observer: RefCell<&'a mut dyn WorkflowObserver>,
     /// Mutable engine state, guarded so borrows never cross an `.await`.
@@ -154,6 +181,21 @@ struct EngineState {
     executed: usize,
     /// Whether the WorkflowStart event has been written.
     started: bool,
+    /// How many `now` values have been issued (id suffix counter).
+    now_count: usize,
+    /// How many `random` values have been issued (id suffix counter).
+    random_count: usize,
+}
+
+/// What the journal says a step should do on this run.
+enum ReplayDisposition {
+    /// Run live exactly as a fresh run would.
+    Live,
+    /// Return the journaled terminal result without executing.
+    Complete(JournalEntry),
+    /// The step failed on a previous run; replay as a resolved `{error}`
+    /// result (a failed node counts as finished, so the rest runs).
+    Errored(JournalEntry),
 }
 
 impl<'a> StepEngine<'a> {
@@ -170,6 +212,8 @@ impl<'a> StepEngine<'a> {
         run_log: WorkflowRunLog,
         run_dir: impl Into<PathBuf>,
         turns: Arc<dyn TurnExecutor>,
+        journal: ScriptJournal,
+        force_rerun: Vec<String>,
         observer: &'a mut dyn WorkflowObserver,
     ) -> Self {
         let run_dir = run_dir.into();
@@ -187,12 +231,16 @@ impl<'a> StepEngine<'a> {
             run_dir,
             run_worktree,
             turns,
+            journal,
+            force_rerun,
             observer: RefCell::new(observer),
             state: RefCell::new(EngineState {
                 config: None,
                 seen_ids: HashSet::new(),
                 executed: 0,
                 started: false,
+                now_count: 0,
+                random_count: 0,
             }),
             worktree_ready: Cell::new(false),
             _sink_tx: sink_tx,
@@ -215,8 +263,57 @@ impl<'a> StepEngine<'a> {
             "config" => self.handle_config(args).await.map_err(|e| error_text(&e)),
             "turn" => self.handle_turn(args).await.map_err(|e| error_text(&e)),
             "shell" => self.handle_shell(args).await.map_err(|e| error_text(&e)),
+            "now" => self
+                .handle_now_random("now", args)
+                .map_err(|e| error_text(&e)),
+            "random" => self
+                .handle_now_random("random", args)
+                .map_err(|e| error_text(&e)),
             other => Err(error_text(&StepError::UnknownMethod(other.to_string()))),
         }
+    }
+
+    /// Replay disposition for one step id against the journal. Called after
+    /// validation/arg parsing and BEFORE `accept_step`'s cap check.
+    fn replay_disposition(&self, id: &str, kind: &str) -> Result<ReplayDisposition, StepError> {
+        let Some(entry) = self.journal.get(id) else {
+            return Ok(ReplayDisposition::Live);
+        };
+        if entry.state == JournalState::Cancelled {
+            // Not terminal: the step simply runs again, as today.
+            return Ok(ReplayDisposition::Live);
+        }
+        if entry.kind != kind {
+            return Err(StepError::KindChanged {
+                id: id.to_string(),
+                old: entry.kind.clone(),
+                new: kind.to_string(),
+            });
+        }
+        match &entry.state {
+            JournalState::Complete { .. } => Ok(ReplayDisposition::Complete(entry.clone())),
+            JournalState::Errored { .. } => Ok(ReplayDisposition::Errored(entry.clone())),
+            JournalState::Open => {
+                if self.force_rerun.iter().any(|f| f == id) {
+                    Ok(ReplayDisposition::Live)
+                } else {
+                    Err(StepError::OpenStep { id: id.to_string() })
+                }
+            }
+            JournalState::Cancelled => unreachable!("handled above"),
+        }
+    }
+
+    /// Record a replayed step's id: the duplicate-id check still applies (a
+    /// second call with the same id in one execution is an error), but the id
+    /// does NOT count toward the step cap.
+    fn record_seen(&self, id: &str) -> Result<(), StepError> {
+        let mut state = self.state.borrow_mut();
+        if state.seen_ids.contains(id) {
+            return Err(StepError::DuplicateId { id: id.to_string() });
+        }
+        state.seen_ids.insert(id.to_string());
+        Ok(())
     }
 
     /// Handle the `config` step: parse, write WorkflowStart, mark started.
@@ -227,18 +324,22 @@ impl<'a> StepEngine<'a> {
         let config: ConfigOpts =
             serde_json::from_value(args.clone()).map_err(StepError::ConfigArgs)?;
 
-        let ev = self
-            .run_log
-            .script_workflow_start(
-                &self.run_id,
-                &config.name,
-                &self.script_path,
-                &self.script_sha256,
-                &self.script_source,
-                &self.args,
-            )
-            .map_err(StepError::LogWrite)?;
-        self.observer.borrow_mut().on_event(&ev);
+        // On a resumed run the log already carries the WorkflowStart event;
+        // writing a second one would corrupt the journal fold.
+        if !self.resuming() {
+            let ev = self
+                .run_log
+                .script_workflow_start(
+                    &self.run_id,
+                    &config.name,
+                    &self.script_path,
+                    &self.script_sha256,
+                    &self.script_source,
+                    &self.args,
+                )
+                .map_err(StepError::LogWrite)?;
+            self.observer.borrow_mut().on_event(&ev);
+        }
 
         {
             let mut state = self.state.borrow_mut();
@@ -246,6 +347,11 @@ impl<'a> StepEngine<'a> {
             state.started = true;
         }
         Ok(serde_json::json!({ "runId": self.run_id }))
+    }
+
+    /// Whether the journal already carries a WorkflowStart (a resumed run).
+    fn resuming(&self) -> bool {
+        self.journal.has_workflow_start()
     }
 
     /// Common cheap checks for turn/shell steps: the config must be seen and
@@ -272,7 +378,12 @@ impl<'a> StepEngine<'a> {
             }
         };
         match obj.get("id").and_then(|v| v.as_str()) {
-            Some(id) if !id.is_empty() => Ok(id.to_string()),
+            Some(id) if !id.is_empty() => {
+                if id.starts_with("__now_") || id.starts_with("__random_") {
+                    return Err(StepError::ReservedId { id: id.to_string() });
+                }
+                Ok(id.to_string())
+            }
             _ => Err(StepError::MissingId {
                 method: method.to_string(),
             }),
@@ -341,6 +452,62 @@ impl<'a> StepEngine<'a> {
         )?;
         if opts.prompt.is_none() {
             return Err(StepError::MissingPrompt { id: id.clone() });
+        }
+
+        // Replay check comes BEFORE accept_step's cap check: a replayed step
+        // neither executes nor counts toward the cap.
+        match self.replay_disposition(&id, "turn")? {
+            ReplayDisposition::Complete(entry) => {
+                self.record_seen(&id)?;
+                let (session, output, exit, json_output) = match entry.state {
+                    JournalState::Complete {
+                        session_id,
+                        output,
+                        exit_code,
+                        json_output,
+                    } => (session_id, output, exit_code, json_output),
+                    _ => unreachable!("disposition says Complete"),
+                };
+                // A corrupt journaled value replays as absent, exactly as
+                // `reconstruct_state` folds it.
+                let json: Option<serde_json::Value> = if json_output.is_empty() {
+                    None
+                } else {
+                    serde_json::from_str(&json_output).ok()
+                };
+                let session = if session.is_empty() {
+                    None
+                } else {
+                    Some(session)
+                };
+                return Ok(serde_json::json!({
+                    "output": output,
+                    "exit": exit,
+                    "json": json,
+                    "sessionId": session,
+                    "error": null,
+                }));
+            }
+            ReplayDisposition::Errored(entry) => {
+                self.record_seen(&id)?;
+                let (session, error) = match entry.state {
+                    JournalState::Errored { error } => (entry.session_id, error),
+                    _ => unreachable!("disposition says Errored"),
+                };
+                let session = if session.is_empty() {
+                    None
+                } else {
+                    Some(session)
+                };
+                return Ok(serde_json::json!({
+                    "output": "",
+                    "exit": null,
+                    "json": null,
+                    "sessionId": session,
+                    "error": error,
+                }));
+            }
+            ReplayDisposition::Live => {}
         }
 
         self.accept_step(&id)?;
@@ -434,6 +601,53 @@ impl<'a> StepEngine<'a> {
             }
         }
 
+        // Replay check comes BEFORE accept_step's cap check: a replayed step
+        // neither executes (nor creates the worktree) nor counts toward the
+        // cap.
+        match self.replay_disposition(&id, "shell")? {
+            ReplayDisposition::Complete(entry) => {
+                self.record_seen(&id)?;
+                let (session, output, exit, json_output) = match entry.state {
+                    JournalState::Complete {
+                        session_id,
+                        output,
+                        exit_code,
+                        json_output,
+                    } => (session_id, output, exit_code, json_output),
+                    _ => unreachable!("disposition says Complete"),
+                };
+                let json: Option<serde_json::Value> = if json_output.is_empty() {
+                    None
+                } else {
+                    serde_json::from_str(&json_output).ok()
+                };
+                // Rebuild exactly the shape `serde_json::to_value(&StepResult)`
+                // produces for a live run.
+                return Ok(serde_json::json!({
+                    "output": output,
+                    "exit": exit,
+                    "json": json,
+                    "sessionId": if session.is_empty() { None } else { Some(session) },
+                    "error": null,
+                }));
+            }
+            ReplayDisposition::Errored(entry) => {
+                self.record_seen(&id)?;
+                let error = match entry.state {
+                    JournalState::Errored { error } => error,
+                    _ => unreachable!("disposition says Errored"),
+                };
+                return Ok(serde_json::json!({
+                    "output": "",
+                    "exit": null,
+                    "json": null,
+                    "sessionId": null,
+                    "error": error,
+                }));
+            }
+            ReplayDisposition::Live => {}
+        }
+
         self.accept_step(&id)?;
 
         self.ensure_worktree().map_err(StepError::Worktree)?;
@@ -475,6 +689,112 @@ impl<'a> StepEngine<'a> {
             return false;
         };
         !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+    }
+
+    /// Handle a `now` or `random` call: no arguments, config must be seen,
+    /// the id (`__now_<n>` / `__random_<n>`) is assigned synchronously from a
+    /// per-method counter, and the value is journaled so a replay returns the
+    /// SAME value. These never count toward the step cap.
+    fn handle_now_random(
+        &self,
+        method: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, StepError> {
+        // Config must have been handled, exactly like turn/shell.
+        {
+            let state = self.state.borrow();
+            if state.config.is_none() {
+                return Err(StepError::ConfigFirst);
+            }
+        }
+        match args {
+            serde_json::Value::Null | serde_json::Value::Object(_) => {}
+            _ => {
+                return Err(StepError::NoArgs {
+                    method: method.to_string(),
+                })
+            }
+        }
+
+        // Assign the id synchronously, before any await: the counter lives in
+        // EngineState and the borrow is dropped immediately.
+        let id = {
+            let mut state = self.state.borrow_mut();
+            let (count_field, prefix) = if method == "now" {
+                (&mut state.now_count, "__now_")
+            } else {
+                (&mut state.random_count, "__random_")
+            };
+            *count_field += 1;
+            format!("{prefix}{}", *count_field)
+        };
+
+        // Replay: a Complete journal entry with the same kind returns the
+        // journaled value with no log events.
+        if let ReplayDisposition::Complete(entry) = self.replay_disposition(&id, method)? {
+            let json_output = match entry.state {
+                JournalState::Complete { json_output, .. } => json_output,
+                _ => unreachable!("disposition says Complete"),
+            };
+            return serde_json::from_str(&json_output).map_err(StepError::ConfigArgs);
+        }
+
+        // Live: journal the value. `now` = unix time in ms; `random` = f64 in
+        // [0, 1) from SystemTime nanos mixed through a xorshift (no external
+        // dependency). The value is computed once, serialized, journaled and
+        // returned — no await anywhere, so no RefCell borrow can be held
+        // across a suspension.
+        let value: serde_json::Value = if method == "now" {
+            let ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or_default();
+            serde_json::Value::from(ms)
+        } else {
+            serde_json::Value::from(Self::xorshift_unit_f64())
+        };
+        let json_text = serde_json::to_string(&value).unwrap_or_default();
+
+        let ev = self
+            .run_log
+            .node_start(&id, method, 1, "")
+            .map_err(StepError::LogWrite)?;
+        self.observer.borrow_mut().on_event(&ev);
+        let ev = self
+            .run_log
+            .node_complete(&id, "", "", None, &json_text, "")
+            .map_err(StepError::LogWrite)?;
+        self.observer.borrow_mut().on_event(&ev);
+
+        Ok(value)
+    }
+
+    /// A pseudo-random f64 in [0, 1) derived from the system clock's nanos
+    /// mixed with a process-wide counter, via an xorshift64* generator. Not
+    /// cryptographic; just deterministic per call and never repeated within a
+    /// process.
+    fn xorshift_unit_f64() -> f64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0u64);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut x = nanos ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        if x == 0 {
+            x = 0x2545_F491_4F6C_DD1D;
+        }
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        let frac = (x >> 11) as f64 / (1u64 << 53) as f64;
+        // frac is in [0, 1); clamp defensively against float edge cases.
+        if !(0.0..1.0).contains(&frac) {
+            0.0
+        } else {
+            frac
+        }
     }
 
     /// Lazily create the run worktree. Synchronous (no await inside), so two
@@ -710,6 +1030,8 @@ mod tests {
             log,
             run_dir,
             Arc::new(script),
+            ScriptJournal::from_events(&[]),
+            Vec::new(),
             observer,
         );
         (dir, engine)
@@ -746,6 +1068,28 @@ mod tests {
             err.contains("gait.wf.turn: missing required field `id`"),
             "got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn reserved_journal_value_step_ids_are_rejected() {
+        let (_dir, engine) = make_engine(ScriptedTurnExecutor::new(), None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        for id in ["__now_user", "__random_user"] {
+            let err = engine
+                .handle("turn", json!({ "id": id, "prompt": "hi" }))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                format!(
+                    "step id '{id}' is reserved (ids starting with __now_ or __random_ are used by gait.wf.now/random)"
+                )
+            );
+        }
     }
 
     #[tokio::test]
@@ -917,5 +1261,194 @@ mod tests {
             .handle("turn", json!({ "id": "s1", "prompt": "go" }))
             .await
             .unwrap();
+    }
+
+    // ── Replay (task 4b) ────────────────────────────────────────────────────
+
+    use gait_core::proto::gait::workflow::v1::workflow_event;
+    use gait_core::proto::gait::workflow::v1::{
+        NodeComplete, NodeError, NodeErrorKind, NodeStart, WorkflowEvent,
+    };
+
+    /// A journal event with only the kind filled in.
+    fn journal_event(kind: workflow_event::Kind) -> WorkflowEvent {
+        WorkflowEvent {
+            version: 1,
+            ts: 0,
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
+            kind: Some(kind),
+        }
+    }
+
+    /// A StepEngine over a journal built from hand-written events.
+    fn make_engine_with_journal(
+        script: ScriptedTurnExecutor,
+        events: Vec<WorkflowEvent>,
+    ) -> (TempDir, StepEngine<'static>) {
+        let dir = TempDir::new().unwrap();
+        let run_id = "run-test".to_string();
+        let runs_dir = dir.path().join("workflow-runs");
+        let log = WorkflowRunLog::create(&runs_dir, &run_id).unwrap();
+        let run_dir = runs_dir.join(&run_id);
+        let observer: &'static mut dyn crate::observer::WorkflowObserver =
+            Box::leak(Box::new(NullObserver));
+        let engine = StepEngine::new(
+            run_id,
+            dir.path(),
+            dir.path(),
+            Vec::new(),
+            "wf.js",
+            "deadbeef",
+            "export default async () => {}",
+            log,
+            run_dir,
+            Arc::new(script),
+            ScriptJournal::from_events(&events),
+            Vec::new(),
+            observer,
+        );
+        (dir, engine)
+    }
+
+    /// A journaled COMPLETE shell step replays its recorded result without
+    /// executing: the returned output is the logged one and the worktree was
+    /// never created (a live shell step always creates it).
+    #[tokio::test]
+    async fn replayed_complete_shell_step_does_not_execute() {
+        let events = vec![
+            journal_event(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "s1".into(),
+                node_type: "shell".into(),
+                attempt: 1,
+                ..Default::default()
+            })),
+            journal_event(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "s1".into(),
+                output: "recorded".into(),
+                exit_code: Some(0),
+                ..Default::default()
+            })),
+        ];
+        let (_dir, engine) = make_engine_with_journal(ScriptedTurnExecutor::new(), events);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let value = engine
+            .handle("shell", json!({ "id": "s1", "script": "echo live" }))
+            .await
+            .unwrap();
+        assert_eq!(value["output"], "recorded");
+        assert_eq!(value["exit"], 0);
+        // The live path would have created <run>/worktree before executing.
+        assert!(
+            !engine.run_worktree.join(".git").exists(),
+            "a replayed shell step must not create the worktree"
+        );
+    }
+
+    /// A journaled ERRORED step replays as a resolved `{error}` result (a
+    /// failed node counts as finished), with no new log events.
+    #[tokio::test]
+    async fn replayed_errored_step_returns_the_error_result() {
+        let events = vec![
+            journal_event(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "t1".into(),
+                node_type: "turn".into(),
+                attempt: 1,
+                session_id: "sess-old".into(),
+            })),
+            journal_event(workflow_event::Kind::NodeError(NodeError {
+                node_id: "t1".into(),
+                error: "boom".into(),
+                kind: NodeErrorKind::Failed as i32,
+                ..Default::default()
+            })),
+        ];
+        let mut script = ScriptedTurnExecutor::new();
+        script.script_text("live-run-again");
+        let (_dir, engine) = make_engine_with_journal(script, events);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let value = engine
+            .handle("turn", json!({ "id": "t1", "prompt": "hi" }))
+            .await
+            .unwrap();
+        assert_eq!(value["error"], "boom");
+        assert_eq!(value["output"], "");
+        assert_eq!(value["exit"], serde_json::Value::Null);
+        assert_eq!(value["sessionId"], "sess-old");
+    }
+
+    /// A step id whose KIND changed between the journal and the script is an
+    /// error naming the step, the logged kind, and the new kind.
+    #[tokio::test]
+    async fn kind_mismatch_error_names_the_step() {
+        let events = vec![
+            journal_event(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "s1".into(),
+                node_type: "shell".into(),
+                attempt: 1,
+                ..Default::default()
+            })),
+            journal_event(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "s1".into(),
+                output: "old".into(),
+                ..Default::default()
+            })),
+        ];
+        let (_dir, engine) = make_engine_with_journal(ScriptedTurnExecutor::new(), events);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let err = engine
+            .handle("turn", json!({ "id": "s1", "prompt": "now a turn" }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("step 's1' changed kind in the script (logged as shell, now turn)"),
+            "got: {err}"
+        );
+        assert!(
+            !err.contains("script changed"),
+            "the message must not contain the forbidden substring: {err}"
+        );
+    }
+
+    /// `now` ids are assigned synchronously in call order: `__now_1`,
+    /// `__now_2`, ... as written into the log's NodeStart events.
+    #[tokio::test]
+    async fn now_ids_are_deterministic_in_call_order() {
+        let (_dir, engine) = make_engine(ScriptedTurnExecutor::new(), None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let v1 = engine.handle("now", serde_json::Value::Null).await.unwrap();
+        let v2 = engine.handle("now", json!({})).await.unwrap();
+        assert!(v1.is_i64() || v1.is_u64(), "now returns an integer: {v1}");
+        assert!(v2.is_i64() || v2.is_u64(), "now returns an integer: {v2}");
+
+        let log = WorkflowRunLog::open(&_dir.path().join("workflow-runs"), "run-test").unwrap();
+        let starts: Vec<String> = log
+            .read_events()
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev.kind {
+                Some(workflow_event::Kind::NodeStart(ns)) => Some(ns.node_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts, vec!["__now_1".to_string(), "__now_2".to_string()]);
     }
 }
