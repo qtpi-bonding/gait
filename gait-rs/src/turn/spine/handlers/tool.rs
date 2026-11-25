@@ -169,7 +169,9 @@ fn detached_shell_scope(
     // default shell scope. The full agent ceiling is inherited EXCEPT that
     // `sandbox.tools.shell` overrides set to false narrow it.
     crate::sandbox::ceiling::compute_scope(
-        narrow_by_shell_override(
+        crate::sandbox::ceiling::apply_tool_override(
+            "shell",
+            sandbox_cfg,
             ToolAccess {
                 reads: true,
                 writes: true,
@@ -177,31 +179,12 @@ fn detached_shell_scope(
                 spawns: true,
                 local_bind: true,
             },
-            sandbox_cfg,
+            true,
         ),
         sandbox_cfg,
         codebase,
         jail,
     )
-}
-
-/// Narrow the full agent ToolAccess by the `sandbox.tools.shell` override:
-/// each field set to `Some(false)` clears the corresponding capability
-/// (narrowing only); `Some(true)` or `None` leave it unchanged. `spawns` has
-/// no override field and is always preserved.
-fn narrow_by_shell_override(
-    full: crate::types::ToolAccess,
-    sandbox_cfg: &SandboxConfig,
-) -> crate::types::ToolAccess {
-    let override_cfg = sandbox_cfg.tools.get("shell");
-    let is_off = |field: Option<bool>| field == Some(false);
-    crate::types::ToolAccess {
-        reads: full.reads && !override_cfg.map(|o| is_off(o.reads)).unwrap_or(false),
-        writes: full.writes && !override_cfg.map(|o| is_off(o.writes)).unwrap_or(false),
-        network: full.network && !override_cfg.map(|o| is_off(o.network)).unwrap_or(false),
-        spawns: full.spawns,
-        local_bind: full.local_bind && !override_cfg.map(|o| is_off(o.local_bind)).unwrap_or(false),
-    }
 }
 
 /// Add Gait-owned, current-session runtime paths to a hand's bounded scope.
