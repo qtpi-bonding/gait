@@ -126,24 +126,110 @@ async fn connect_stdio(
     name: &str,
     label: &str,
 ) -> anyhow::Result<RunningService<RoleClient, ()>> {
-    let transport = TokioChildProcess::new(tokio::process::Command::new(prog).configure(|c| {
-        c.args(args);
-        c.kill_on_drop(true);
-        if let Some(env) = env {
-            for (k, v) in env {
-                c.env(k, v);
-            }
-        }
-    }))
-    .map_err(|e| anyhow::anyhow!("MCP spawn {name} failed: {e}"))?;
+    let cmd = stdio_command(prog, args, env);
+    let transport =
+        TokioChildProcess::new(cmd).map_err(|e| anyhow::anyhow!("MCP spawn {name} failed: {e}"))?;
     ().serve(transport)
         .await
         .map_err(|e| anyhow::anyhow!("MCP handshake failed ({label} {name}): {e}"))
 }
 
+fn stdio_command(
+    prog: &str,
+    args: &[String],
+    env: Option<&std::collections::HashMap<String, String>>,
+) -> tokio::process::Command {
+    tokio::process::Command::new(prog).configure(|c| {
+        c.args(args);
+        c.kill_on_drop(true);
+        // MCP servers are third-party tools and carry no causes: never inherit
+        // our own trace context. An explicit config entry still wins below.
+        c.env_remove("TRACEPARENT");
+        c.env_remove("BAGGAGE");
+        if let Some(env) = env {
+            for (k, v) in env {
+                c.env(k, v);
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdio_command_removes_trace_and_baggage_but_config_env_wins() {
+        let cmd = stdio_command("x", &[], None);
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        for key in ["TRACEPARENT", "BAGGAGE"] {
+            let entry = envs
+                .iter()
+                .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+                .expect("removal entry present");
+            assert_eq!(entry.1, None, "{key} must be removed");
+        }
+
+        let mut map = std::collections::HashMap::new();
+        map.insert("BAGGAGE".to_string(), "explicit".to_string());
+        let cmd = stdio_command("x", &[], Some(&map));
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        let baggage = envs
+            .iter()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("BAGGAGE"))
+            .expect("BAGGAGE entry present");
+        assert_eq!(baggage.1, Some(std::ffi::OsStr::new("explicit")));
+        let traceparent = envs
+            .iter()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("TRACEPARENT"))
+            .expect("removal entry present");
+        assert_eq!(traceparent.1, None, "TRACEPARENT must stay removed");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn stdio_server_sees_neither_trace_var_even_when_gait_has_them() {
+        unsafe {
+            std::env::set_var("TRACEPARENT", "00-trace-span-01");
+            std::env::set_var("BAGGAGE", "key=value");
+        }
+
+        let mut cmd = stdio_command(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '%s|%s' \"${TRACEPARENT-unset}\" \"${BAGGAGE-unset}\"".into(),
+            ],
+            None,
+        );
+        let output = cmd.output().await.expect("child runs");
+        unsafe {
+            std::env::remove_var("TRACEPARENT");
+            std::env::remove_var("BAGGAGE");
+        }
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "unset|unset");
+
+        unsafe {
+            std::env::set_var("TRACEPARENT", "00-trace-span-01");
+            std::env::set_var("BAGGAGE", "key=value");
+        }
+        let mut map = std::collections::HashMap::new();
+        map.insert("BAGGAGE".to_string(), "explicit".to_string());
+        let mut cmd = stdio_command(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '%s|%s' \"${TRACEPARENT-unset}\" \"${BAGGAGE-unset}\"".into(),
+            ],
+            Some(&map),
+        );
+        let output = cmd.output().await.expect("child runs");
+        unsafe {
+            std::env::remove_var("TRACEPARENT");
+            std::env::remove_var("BAGGAGE");
+        }
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "unset|explicit");
+    }
 
     #[test]
     fn declared_output_schema_rejects_missing_structured_content() {
