@@ -195,20 +195,25 @@ pub fn resolve_credential_lease_with(
             )));
         }
     }
-    // 1. Check env var (ANTHROPIC_API_KEY, MINIMAX_API_KEY, OPENAI_API_KEY, etc.)
-    let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
+    // 1. Check env var: the one table is
+    // `gait_provider::providers::lookup(provider)` -> `ProviderSpec.env_var`.
+    // A provider not in the table (or with `env_var: None`) has no env var and
+    // falls through to the auth.json step.
+    let env_var = gait_provider::providers::lookup(provider).and_then(|spec| spec.env_var);
     if provider != "openai-signin" {
-        if let Some(key) = platform
-            .env(&env_var)
-            .and_then(|value| value.into_string().ok())
-        {
-            if !key.is_empty() {
-                return Ok(Some(CredentialLease {
-                    credential: ResolvedCredential::ApiKey(key),
-                    source_id: "environment".into(),
-                    location: AuthLocation::Environment(env_var),
-                    revision: None,
-                }));
+        if let Some(env_var) = env_var {
+            if let Some(key) = platform
+                .env(env_var)
+                .and_then(|value| value.into_string().ok())
+            {
+                if !key.is_empty() {
+                    return Ok(Some(CredentialLease {
+                        credential: ResolvedCredential::ApiKey(key),
+                        source_id: "environment".into(),
+                        location: AuthLocation::Environment(env_var.to_string()),
+                        revision: None,
+                    }));
+                }
             }
         }
     }
@@ -970,6 +975,43 @@ mod tests {
             lease.location,
             AuthLocation::Environment("OPENAI_API_KEY".into())
         );
+    }
+
+    #[test]
+    fn every_table_provider_resolves_the_table_env_name() {
+        for spec in gait_provider::providers::PROVIDERS {
+            let Some(name) = spec.env_var else {
+                continue;
+            };
+            if spec.auth_method != gait_provider::providers::AuthMethod::ApiKey {
+                continue;
+            }
+            if spec.id == "openai-signin" {
+                continue;
+            }
+            let platform = FakePlatform {
+                home: PathBuf::from("/users/test"),
+                env: HashMap::from([(
+                    name.to_string(),
+                    OsString::from(format!("sk-fake-{}", spec.id)),
+                )]),
+            };
+            let lease = resolve_credential_lease_with(&platform, spec.id)
+                .unwrap_or_else(|error| panic!("{}: {error}", spec.id))
+                .unwrap_or_else(|| panic!("{}: no lease", spec.id));
+            assert_eq!(
+                lease.credential.api_key(),
+                Some(format!("sk-fake-{}", spec.id)).as_deref(),
+                "{}",
+                spec.id
+            );
+            assert_eq!(
+                lease.location,
+                AuthLocation::Environment(name.to_string()),
+                "{}",
+                spec.id
+            );
+        }
     }
 
     #[test]
