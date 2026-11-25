@@ -429,3 +429,108 @@ async fn no_span_repeats_a_key_or_conflicts_with_a_label() {
         }
     }
 }
+
+/// Per-turn causes must reach each turn's brain process: the baggage captured
+/// under prompt 1 lands in the brain env of turn 1, prompt 2's in turn 2, and
+/// neither prompt's labels go stale into the other turn.
+#[tokio::test]
+async fn per_turn_causes_reach_each_turns_brain_env_and_never_go_stale() {
+    let _captured = testing::capture_exclusive();
+    let origin = tracing::info_span!("test-env-origin");
+    let carrier1 = origin.in_scope(|| {
+        concord_telemetry::context::add("action_id", "A1");
+        concord_telemetry::context::add("turn_id", "T1");
+        carrier::capture()
+    });
+    let carrier2 = origin.in_scope(|| {
+        concord_telemetry::context::add("action_id", "A2");
+        concord_telemetry::context::add("turn_id", "T2");
+        carrier::capture()
+    });
+    let (_t, gait_dir, repo) = workspace();
+    write_frames(
+        &gait_dir,
+        0,
+        &[
+            append_event(gait_core::proto::events::assistant_text(
+                "working".into(),
+            )),
+            forward_event(gait_core::proto::events::assistant_text(
+                "working".into(),
+            )),
+            terminated(r#"{"text":"ok"}"#),
+        ],
+    );
+    write_frames(
+        &gait_dir,
+        1,
+        &[
+            append_event(gait_core::proto::events::assistant_text(
+                "working more".into(),
+            )),
+            forward_event(gait_core::proto::events::assistant_text(
+                "working more".into(),
+            )),
+            terminated(r#"{"text":"ok"}"#),
+        ],
+    );
+    let (channel, server) = gait_acp::build_agent(SessionMap::new()).into_channel_and_future();
+    tokio::spawn(server);
+    let (meta1, meta2) = (meta_of(&carrier1), meta_of(&carrier2));
+    Client
+        .builder()
+        .connect_with(channel, async |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            let mut req1 = PromptRequest::new(sid.clone(), vec!["go".to_string().into()]);
+            req1.meta = Some(meta1);
+            let resp1 = cx.send_request(req1).block_task().await?;
+            assert_eq!(resp1.stop_reason, StopReason::EndTurn);
+            let mut req2 = PromptRequest::new(sid, vec!["go again".to_string().into()]);
+            req2.meta = Some(meta2);
+            let resp2 = cx.send_request(req2).block_task().await?;
+            assert_eq!(resp2.stop_reason, StopReason::EndTurn);
+            Ok(())
+        })
+        .await
+        .expect("connection stays alive");
+    drop(origin);
+
+    let env1 = std::fs::read_to_string(gait_dir.join("mock_env.0.txt"))
+        .expect("turn 1 brain env file");
+    let env2 = std::fs::read_to_string(gait_dir.join("mock_env.1.txt"))
+        .expect("turn 2 brain env file");
+    for (env, name) in [(&env1, "turn 1"), (&env2, "turn 2")] {
+        let traceparent = env
+            .lines()
+            .find(|l| l.starts_with("TRACEPARENT="))
+            .expect("traceparent line");
+        assert!(
+            traceparent.len() > "TRACEPARENT=".len(),
+            "{name} TRACEPARENT is empty"
+        );
+    }
+    let baggage1 = env1
+        .lines()
+        .find(|l| l.starts_with("BAGGAGE="))
+        .expect("turn 1 baggage line");
+    assert!(
+        baggage1.contains("action_id=A1") && baggage1.contains("turn_id=T1"),
+        "turn 1 brain baggage lost prompt 1's labels: {baggage1}"
+    );
+    let baggage2 = env2
+        .lines()
+        .find(|l| l.starts_with("BAGGAGE="))
+        .expect("turn 2 baggage line");
+    assert!(
+        baggage2.contains("action_id=A2") && baggage2.contains("turn_id=T2"),
+        "turn 2 brain baggage lost prompt 2's labels: {baggage2}"
+    );
+    assert!(
+        !baggage2.contains("A1") && !baggage2.contains("T1"),
+        "prompt 1's labels went stale into turn 2's brain env: {baggage2}"
+    );
+}

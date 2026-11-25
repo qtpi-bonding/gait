@@ -68,6 +68,13 @@ pub fn run() {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
     let _ = std::fs::write(dir.join("mock_step"), (step + 1).to_string());
+    // Record the brain's own env so tests can prove per-turn causes reach it.
+    let traceparent = std::env::var("TRACEPARENT").unwrap_or_default();
+    let baggage = std::env::var("BAGGAGE").unwrap_or_default();
+    let _ = std::fs::write(
+        dir.join(format!("mock_env.{step}.txt")),
+        format!("TRACEPARENT={traceparent}\nBAGGAGE={baggage}\n"),
+    );
     let numbered = dir.join(format!("mock_frames.{step}.bin"));
     let numbered_fixture = numbered.exists();
     let frames_path = if numbered_fixture {
