@@ -345,7 +345,10 @@ enum ScriptedOutcome {
         output: String,
         session_id: Option<String>,
     },
-    Json(Value),
+    Json {
+        json: Value,
+        session_id: Option<String>,
+    },
     Failure(String),
 }
 
@@ -374,12 +377,14 @@ impl ScriptedTurnExecutor {
         self
     }
 
-    /// Set the session id reported by the most recently scripted text
-    /// outcome (a fake session that persists across the scripted turns).
+    /// Set the session id reported by the most recently scripted text or
+    /// json outcome (a fake session that persists across the scripted
+    /// turns).
     pub fn session_id(&mut self, id: impl Into<String>) -> &mut Self {
         let mut q = self.script.lock().unwrap();
         match q.back_mut() {
             Some(ScriptedOutcome::Text { session_id, .. }) => *session_id = Some(id.into()),
+            Some(ScriptedOutcome::Json { session_id, .. }) => *session_id = Some(id.into()),
             _ => q.push_back(ScriptedOutcome::Text {
                 output: String::new(),
                 session_id: Some(id.into()),
@@ -404,7 +409,10 @@ impl ScriptedTurnExecutor {
         self.script
             .lock()
             .unwrap()
-            .push_back(ScriptedOutcome::Json(json));
+            .push_back(ScriptedOutcome::Json {
+                json,
+                session_id: None,
+            });
         self
     }
 }
@@ -420,10 +428,11 @@ impl TurnExecutor for ScriptedTurnExecutor {
                 session_id,
                 ..TurnOutcome::default()
             }),
-            Some(ScriptedOutcome::Json(json)) => Ok(TurnOutcome {
+            Some(ScriptedOutcome::Json { json, session_id }) => Ok(TurnOutcome {
                 output: serde_json::to_string(&json).unwrap_or_default(),
                 exit: Some(0),
                 json: Some(json),
+                session_id,
                 ..TurnOutcome::default()
             }),
             Some(ScriptedOutcome::Failure(msg)) => anyhow::bail!("{msg}"),

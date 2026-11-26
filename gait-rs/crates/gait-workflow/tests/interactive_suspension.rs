@@ -1,32 +1,31 @@
-//! Regression test for item 8: automated nodes must fully drain before an
-//! independent interactive (absent-prompt) node suspends the run.
+//! Regression test for item 8: in-flight steps must fully drain before an
+//! interactive (absent-prompt) step suspends the run and it returns
+//! NodeOpen; calls issued after the pause are held until the run resumes.
 //!
-//! Graph: automated chain a -> b (shell, no model needed) plus an
-//! independent interactive node h (empty prompt), no live input source.
-//! Expectation: NodeComplete for a and b are both recorded BEFORE the run
-//! returns NodeOpen for h — proving the automated frontier drains first,
-//! not merely that h eventually opens.
-
-use gait_workflow::convert::to_proto;
-use gait_workflow::observer::CliObserver;
-use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef;
+//! Script: two shell steps a and b started together (each `sleep 1; echo ...`,
+//! so both are genuinely in flight), then an independent interactive node h
+//! started while a and b are still running, all three awaited together, no
+//! live input source.
+//! Expectation: start:h is recorded BEFORE complete:a and complete:b —
+//! proving a and b were still executing when h was reached — yet
+//! NodeComplete for a and b are both recorded before the run returns
+//! NodeOpen for h, proving the in-flight steps drain before suspension.
 
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
+use gait_workflow::observer::CliObserver;
+use gait_workflow::run_log::WorkflowRunLog;
+use gait_workflow::runner::WorkflowOutcome;
+use gait_workflow::script::{run_script, ScriptRunOpts};
+use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 
 use tempfile::TempDir;
 
-const WORKFLOW_YAML: &str = r#"
-name: interactive-suspension-test
-nodes:
-  - id: a
-    shell: "echo alpha"
-  - id: b
-    depends_on: [a]
-    shell: "echo beta"
-  - id: h
-    prompt: ""
+const WORKFLOW_JS: &str = r#"
+await gait.wf.config({ name: "interactive-suspension-test" });
+const a = gait.wf.shell({ id: "a", script: "sleep 1; echo alpha" });
+const b = gait.wf.shell({ id: "b", script: "sleep 1; echo beta" });
+const h = gait.wf.turn({ id: "h" });
+await Promise.all([a, b, h]);
 "#;
 
 fn setup_gait_dir(dir: &std::path::Path) {
@@ -60,6 +59,27 @@ fn setup_gait_dir(dir: &std::path::Path) {
         .unwrap();
 }
 
+async fn run_js(tmp: &TempDir, run_id: &str, source: &str) -> anyhow::Result<WorkflowOutcome> {
+    let script_path = tmp.path().join("wf.js");
+    std::fs::write(&script_path, source).unwrap();
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    run_script(
+        ScriptRunOpts {
+            script_path,
+            run_id: run_id.to_string(),
+            gait_dir: tmp.path().to_path_buf(),
+            codebase: tmp.path().to_path_buf(),
+            args: vec![],
+            force_rerun_nodes: vec![],
+            force: false,
+            turns: std::sync::Arc::new(ScriptedTurnExecutor::new()),
+        },
+        &mut sink,
+        &mut CliObserver,
+    )
+    .await
+}
+
 /// Maps a NodeStart/NodeComplete event to a `"start:<id>"`/`"complete:<id>"`
 /// label; other event kinds map to `None`.
 fn node_event_label(e: &WorkflowEvent) -> Option<String> {
@@ -76,26 +96,9 @@ async fn automated_nodes_drain_before_interactive_suspension() {
     let gait_dir = tmp.path().to_path_buf();
     setup_gait_dir(&gait_dir);
 
-    let wf: WorkflowDef = serde_yaml::from_str(WORKFLOW_YAML).unwrap();
     let run_id = "test-interactive-suspension-001".to_string();
 
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: to_proto(&wf),
-            yaml_path: "interactive-suspension-test.yaml".to_string(),
-            run_id: run_id.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None, // headless: no live input source
-    )
-    .await
-    .unwrap();
+    let outcome = run_js(&tmp, &run_id, WORKFLOW_JS).await.unwrap();
 
     assert_eq!(
         outcome,
@@ -119,12 +122,23 @@ async fn automated_nodes_drain_before_interactive_suspension() {
         .iter()
         .position(|e| e == "start:h")
         .expect("h must have started");
+    let a_start = order
+        .iter()
+        .position(|e| e == "start:a")
+        .expect("a must have started");
+    let b_start = order
+        .iter()
+        .position(|e| e == "start:b")
+        .expect("b must have started");
 
     assert!(
-        a_done < h_start && b_done < h_start,
-        "automated nodes must complete before interactive suspension: {order:?}"
+        a_start < h_start && b_start < h_start,
+        "a and b must have been started (in flight) before h: {order:?}"
     );
-
+    assert!(
+        h_start < a_done && h_start < b_done,
+        "h must start while a and b are still executing: {order:?}"
+    );
     // h itself must be left open, not completed.
     let h_done = order.iter().any(|e| e == "complete:h");
     assert!(

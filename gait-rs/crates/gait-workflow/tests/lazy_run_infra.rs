@@ -1,9 +1,12 @@
-//! Spec-06 §2: a degenerate single-prompt run creates run_id + run log only —
-//! no run worktree, no run lock. (The positive/shell case lives in run_lock.rs.)
-use gait_core::proto::gait::workflow::v1::{node, Node, PromptNode, Workflow};
-use gait_turn_runner::TurnProfileOverride;
-use gait_workflow::observer::CliObserver;
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
+//! Spec-06 §2 (script engine): a degenerate single-prompt script run creates
+//! run_id + run log only — no run worktree, no run lock. (The positive/shell
+//! case lives in run_lock.rs.)
+use std::sync::Arc;
+
+use gait_workflow::observer::NullObserver;
+use gait_workflow::runner::WorkflowOutcome;
+use gait_workflow::script::{run_script, ScriptRunOpts};
+use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 
 use tempfile::TempDir;
 
@@ -24,20 +27,36 @@ fn init_git_repo(gait_dir: &std::path::Path) {
         .unwrap();
 }
 
-fn degenerate_wf() -> Workflow {
-    Workflow {
-        name: "chat".into(),
-        nodes: vec![Node {
-            id: "chat".into(),
-            body: Some(node::Body::Prompt(PromptNode {
-                prompt: String::new(),
-                continue_session: String::new(),
-                codebase: None,
-            })),
-            ..Default::default()
-        }],
-        ..Default::default()
-    }
+/// The degenerate workflow from the YAML original, expressed as a script:
+/// one node whose turn carries no prompt, which leaves the run open
+/// (`WorkflowOutcome::NodeOpen`) before any model turn is executed.
+fn degenerate_script() -> String {
+    r#"
+        const cfg = await gait.wf.config({ name: "chat" });
+        const t = await gait.wf.turn({ id: "chat" });
+    "#
+    .to_string()
+}
+
+async fn run_js(tmp: &TempDir, run_id: &str, source: &str) -> anyhow::Result<WorkflowOutcome> {
+    let script_path = tmp.path().join("wf.js");
+    std::fs::write(&script_path, source).unwrap();
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    run_script(
+        ScriptRunOpts {
+            script_path,
+            run_id: run_id.to_string(),
+            gait_dir: tmp.path().to_path_buf(),
+            codebase: tmp.path().to_path_buf(),
+            args: vec![],
+            force_rerun_nodes: vec![],
+            force: false,
+            turns: Arc::new(ScriptedTurnExecutor::new()),
+        },
+        &mut sink,
+        &mut NullObserver,
+    )
+    .await
 }
 
 #[tokio::test]
@@ -46,23 +65,7 @@ async fn degenerate_single_prompt_run_creates_no_run_worktree_or_lock() {
     let gait_dir = tmp.path().to_path_buf();
     init_git_repo(&gait_dir);
     let run_id = "chat-lazy-001".to_string();
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: degenerate_wf(),
-            yaml_path: String::new(),
-            run_id: run_id.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
-    )
-    .await
-    .unwrap();
+    let outcome = run_js(&tmp, &run_id, &degenerate_script()).await.unwrap();
     assert_eq!(outcome, WorkflowOutcome::NodeOpen);
     let run_dir = gait_dir.join("workflow-runs").join(&run_id);
     assert!(run_dir.join("log.jsonl").exists(), "run log must exist");
@@ -79,62 +82,4 @@ async fn degenerate_single_prompt_run_creates_no_run_worktree_or_lock() {
             .is_err(),
         "degenerate run must NOT create branch run/{run_id}"
     );
-}
-
-// Task 3: `single_prompt_run`/`SinglePromptOpts` are gone — the degenerate
-// one-node graph they used to build is now exercised directly through
-// `run_workflow`, same as every other node. This test also carries a
-// `profile: Some(TurnProfileOverride)` override (unlike the sibling test
-// above, which passes none) to prove `exec_prompt_node`'s shared-runner
-// profile plumbing doesn't disturb the run's laziness — the degenerate node
-// here is absent-prompt/no-input, so it returns `NodeOutput::open()` before
-// the override's allow/deny/inference fields are ever consulted.
-#[tokio::test]
-async fn degenerate_graph_with_profile_override_stays_lazy() {
-    let tmp = TempDir::new().unwrap();
-    let gait_dir = tmp.path().to_path_buf();
-    init_git_repo(&gait_dir);
-    let run_id = "chat-spr-001".to_string();
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: degenerate_wf(),
-            yaml_path: String::new(),
-            run_id: run_id.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            profile: Some(TurnProfileOverride {
-                inference: None,
-                explicit_inference_override: false,
-                session_updates: vec![],
-                allow: vec![],
-                deny: vec![],
-                agent: None,
-                max_iter: None,
-                result_schema: None,
-                auto: None,
-                verified_goal: None,
-                status_block: None,
-            }),
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        outcome,
-        WorkflowOutcome::NodeOpen,
-        "prompt:None + input:None → open node"
-    );
-    let run_dir = gait_dir.join("workflow-runs").join(&run_id);
-    assert!(run_dir.join("log.jsonl").exists());
-    assert!(
-        !run_dir.join("worktree").exists(),
-        "a degenerate node stays lazy through the shared runner"
-    );
-    // (No `lock`-absence assertion — see M2 note in Task 1.1: it's vacuous post-Drop.)
 }

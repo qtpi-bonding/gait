@@ -4,8 +4,8 @@
 //! bookkeeping `sessions/<run_id>/` worktree or `session/<run_id>` branch: the
 //! run owns its own `workflow-runs/<run_id>/` log + `run/<run_id>` branch, and
 //! only genuine PROMPT nodes mint their own per-node sessions. This test drives
-//! a shell-only workflow (with before/after hooks, so `hook_run` is exercised)
-//! and asserts:
+//! a shell-only JavaScript workflow (with before/after hooks, so `hook_run` is
+//! exercised) through the script engine and asserts:
 //!
 //!   1. NO `sessions/<run_id>/` directory is created for the run.
 //!   2. NO `session/<run_id>` git branch is created for the run.
@@ -19,22 +19,19 @@
 //! now-provable form of the "sessions don't know workflows exist" guarantee and
 //! fail loudly if the bookkeeping session ever comes back.
 
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef;
+use gait_workflow::script::{run_script, ScriptRunOpts};
+use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 
 use tempfile::TempDir;
 
-const WORKFLOW_YAML: &str = r#"
-name: purity-test
-nodes:
-  - id: step1
-    shell: "echo hello"
-    hooks:
-      before: "echo before-hook"
-      after: "echo after-hook"
-  - id: step2
-    depends_on: [step1]
-    shell: "echo world"
+const WORKFLOW_JS: &str = r#"
+await gait.wf.config({ name: "purity-test" });
+await gait.wf.shell({
+  id: "step1",
+  script: "echo hello",
+  hooks: { before: "echo before-hook", after: "echo after-hook" },
+});
+await gait.wf.shell({ id: "step2", script: "echo world" });
 "#;
 
 fn setup_git_gait_dir(gait_dir: &std::path::Path) {
@@ -67,27 +64,25 @@ async fn workflow_run_creates_no_bookkeeping_session_and_leaks_no_raws() {
     let gait_dir = dir.path().to_path_buf();
     setup_git_gait_dir(&gait_dir);
 
-    let wf: WorkflowDef = serde_yaml::from_str(WORKFLOW_YAML).unwrap();
+    let script_path = dir.path().join("wf.js");
+    std::fs::write(&script_path, WORKFLOW_JS).unwrap();
     let run_id = format!("purity-{}", std::process::id());
 
+    let opts = ScriptRunOpts {
+        script_path,
+        run_id: run_id.clone(),
+        gait_dir: gait_dir.clone(),
+        codebase: gait_dir.clone(),
+        args: vec![],
+        force_rerun_nodes: vec![],
+        force: false,
+        turns: std::sync::Arc::new(ScriptedTurnExecutor::default()),
+    };
     let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: gait_workflow::convert::to_proto(&wf),
-            yaml_path: "purity-test.yaml".to_string(),
-            run_id: run_id.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut gait_workflow::observer::NullObserver,
-        None,
-    )
-    .await
-    .expect("run should succeed");
-    assert_eq!(outcome, WorkflowOutcome::Completed);
+    let outcome = run_script(opts, &mut sink, &mut gait_workflow::observer::NullObserver)
+        .await
+        .expect("run should succeed");
+    assert_eq!(outcome, gait_workflow::runner::WorkflowOutcome::Completed);
 
     // (1) No bookkeeping session directory (live worktree mount) for the run.
     let run_session_dir = gait_core::session::live::worktree_dir(&gait_dir, &run_id);

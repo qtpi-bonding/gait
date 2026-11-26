@@ -1,26 +1,25 @@
-//! Cross-consumer equivalence: run the same two-node shell workflow with
-//! `CliObserver` and `ChannelObserver` and assert that both produce identical
-//! folded `WorkflowState` (both nodes Done, workflow completed).
+//! Cross-consumer equivalence: run the same two-node shell workflow (written
+//! as a JavaScript workflow script for the script engine) with `CliObserver`
+//! and `ChannelObserver` and assert that both produce identical folded
+//! `WorkflowState` (both nodes Done, workflow completed).
 //!
 //! Shell nodes require no model, so this test runs fully offline.
 
-use gait_workflow::convert::to_proto;
+use std::sync::Arc;
+
 use gait_workflow::observer::{ChannelObserver, CliObserver};
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef;
+use gait_workflow::runner::WorkflowOutcome;
+use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::state::{reconstruct_state, NodeStatus};
+use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 
 use tempfile::TempDir;
 
-const WORKFLOW_YAML: &str = r#"
-name: cross-consumer-test
-nodes:
-  - id: a
-    shell: "echo alpha"
-  - id: b
-    depends_on: [a]
-    shell: "echo beta"
+const WORKFLOW_SCRIPT: &str = r#"
+await gait.wf.config({ name: "cross-consumer-test" });
+await gait.wf.shell({ id: "a", script: "echo alpha" });
+await gait.wf.shell({ id: "b", script: "echo beta" });
 "#;
 
 fn setup_gait_dir(dir: &std::path::Path) {
@@ -65,33 +64,44 @@ fn unique_session_id(prefix: &str) -> String {
     )
 }
 
+async fn run_js(
+    tmp: &TempDir,
+    run_id: &str,
+    source: &str,
+    observer: &mut dyn gait_workflow::observer::WorkflowObserver,
+) -> anyhow::Result<WorkflowOutcome> {
+    let script_path = tmp.path().join("wf.js");
+    std::fs::write(&script_path, source).unwrap();
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    run_script(
+        ScriptRunOpts {
+            script_path,
+            run_id: run_id.to_string(),
+            gait_dir: tmp.path().to_path_buf(),
+            codebase: tmp.path().to_path_buf(),
+            args: vec![],
+            force_rerun_nodes: vec![],
+            force: false,
+            turns: Arc::new(ScriptedTurnExecutor::new()),
+        },
+        &mut sink,
+        observer,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn cli_and_channel_observer_produce_identical_state() {
-    let wf: WorkflowDef = serde_yaml::from_str(WORKFLOW_YAML).unwrap();
-
     // ── Run 1: CliObserver ────────────────────────────────────────────────────
     let dir1 = TempDir::new().unwrap();
     let gait_dir1 = dir1.path().to_path_buf();
     setup_gait_dir(&gait_dir1);
     let session1 = unique_session_id("cli");
 
-    let mut sink1 = gait_core::embed::CliSink::stdio(true);
-    let outcome1 = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: to_proto(&wf),
-            yaml_path: "cross-consumer-test.yaml".to_string(),
-            run_id: session1.clone(),
-            gait_dir: gait_dir1.clone(),
-            codebase: gait_dir1.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink1,
-        &mut CliObserver,
-        None,
-    )
-    .await
-    .expect("CliObserver run should succeed");
+    let mut obs1 = CliObserver;
+    let outcome1 = run_js(&dir1, &session1, WORKFLOW_SCRIPT, &mut obs1)
+        .await
+        .expect("CliObserver run should succeed");
 
     assert_eq!(outcome1, WorkflowOutcome::Completed);
 
@@ -107,23 +117,9 @@ async fn cli_and_channel_observer_produce_identical_state() {
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut obs2 = ChannelObserver::new(event_tx);
 
-    let mut sink2 = gait_core::embed::CliSink::stdio(true);
-    let outcome2 = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: to_proto(&wf),
-            yaml_path: "cross-consumer-test.yaml".to_string(),
-            run_id: session2.clone(),
-            gait_dir: gait_dir2.clone(),
-            codebase: gait_dir2.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink2,
-        &mut obs2,
-        None,
-    )
-    .await
-    .expect("ChannelObserver run should succeed");
+    let outcome2 = run_js(&dir2, &session2, WORKFLOW_SCRIPT, &mut obs2)
+        .await
+        .expect("ChannelObserver run should succeed");
 
     assert_eq!(outcome2, WorkflowOutcome::Completed);
 

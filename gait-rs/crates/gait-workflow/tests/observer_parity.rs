@@ -1,83 +1,94 @@
-//! Observer parity test: run a two-shell-node workflow with a `ChannelObserver`
-//! and assert that:
+//! Observer parity test: run a two-shell-node JavaScript workflow with a
+//! `ChannelObserver` and assert that:
 //! 1. The run-log (folded via `reconstruct_state`) reports both nodes as Done.
 //! 2. The event channel received `WorkflowStart` and `WorkflowComplete` events.
+//! 3. The evidence record (configured via `gait.wf.config`) captured the
+//!    record commands and tree hashes.
 //!
 //! Shell nodes require no model, so this test runs fully offline.
 
-use gait_workflow::observer::ChannelObserver;
-use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef;
-use gait_workflow::state::{reconstruct_state, NodeStatus};
+use std::path::Path;
 
 use gait_core::proto::gait::workflow::v1::workflow_event;
-
+use gait_workflow::run_log::WorkflowRunLog;
+use gait_workflow::runner::WorkflowOutcome;
+use gait_workflow::script::{run_script, ScriptRunOpts};
+use gait_workflow::state::{reconstruct_state, NodeStatus};
+use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 use tempfile::TempDir;
 
-/// Minimal two-node sequential shell workflow.
-const WORKFLOW_YAML: &str = r#"
-name: parity-test
-record:
-  commands:
-    - id: runtime
-      command: printf record-ok
-nodes:
-  - id: step1
-    shell: "echo hello"
-  - id: step2
-    depends_on: [step1]
-    shell: "echo world"
+/// Minimal two-node sequential shell workflow with a runtime record command.
+const SCRIPT_JS: &str = r#"
+await gait.wf.config({
+  name: "parity-test",
+  record: {
+    commands: [{ id: "runtime", command: "printf record-ok" }],
+  },
+});
+await gait.wf.shell({ id: "step1", script: "echo hello" });
+await gait.wf.shell({ id: "step2", script: "echo world" });
 "#;
+
+fn init_git_repo(gait_dir: &Path) {
+    std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(gait_dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(gait_dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "t@t.com")
+        .output()
+        .unwrap();
+}
+
+/// Set up a real git-backed gait-dir (the same shape the parity tests build)
+/// so a shell workflow can create session worktrees offline.
+fn setup_git_gait_dir(gait_dir: &std::path::Path) {
+    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
+    std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
+    init_git_repo(gait_dir);
+}
+
+/// Write the script and run it once through the script engine with the given
+/// observer and sink.
+async fn run_js_with_observer(
+    tmp: &TempDir,
+    run_id: &str,
+    source: &str,
+    observer: &mut dyn gait_workflow::observer::WorkflowObserver,
+    sink: &mut dyn gait_core::embed::TurnSink,
+) -> anyhow::Result<WorkflowOutcome> {
+    let script_path = tmp.path().join("wf.js");
+    std::fs::write(&script_path, source).unwrap();
+    run_script(
+        ScriptRunOpts {
+            script_path,
+            run_id: run_id.to_string(),
+            gait_dir: tmp.path().to_path_buf(),
+            codebase: tmp.path().to_path_buf(),
+            args: vec![],
+            force_rerun_nodes: vec![],
+            force: false,
+            turns: std::sync::Arc::new(ScriptedTurnExecutor::new()),
+        },
+        sink,
+        observer,
+    )
+    .await
+}
 
 #[tokio::test]
 async fn observer_parity_shell_workflow() {
     let dir = TempDir::new().unwrap();
     let gait_dir = dir.path().to_path_buf();
+    setup_git_gait_dir(&gait_dir);
 
-    // Minimal gait-dir structure
-    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
-    std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
-    // git repo needed by Repos::production() / commit_session
-    std::process::Command::new("git")
-        .args(["init", "--bare", "traces.git"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-    // We need a proper traces repo that gait_core can use.
-    // Instead, we override with a non-git path and rely on the fact that
-    // commit_session falls back gracefully; however gait_core::git::Repos::production()
-    // uses the actual filesystem. Let's init a real git repo for the session.
-    std::process::Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-    // Need an initial commit so the repo has a main branch for worktree creation.
-    std::fs::write(gait_dir.join(".gitkeep"), "").unwrap();
-    std::process::Command::new("git")
-        .args(["add", ".gitkeep"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-
-    let wf: WorkflowDef = serde_yaml::from_str(WORKFLOW_YAML).unwrap();
-    let session_id = format!(
+    let run_id = format!(
         "parity-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -86,25 +97,12 @@ async fn observer_parity_shell_workflow() {
     );
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut obs = ChannelObserver::new(event_tx);
+    let mut obs = gait_workflow::observer::ChannelObserver::new(event_tx);
 
     let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: gait_workflow::convert::to_proto(&wf),
-            yaml_path: "workflows/parity-test.yaml".to_string(),
-            run_id: session_id.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut obs,
-        None,
-    )
-    .await
-    .unwrap();
+    let outcome = run_js_with_observer(&dir, &run_id, SCRIPT_JS, &mut obs, &mut sink)
+        .await
+        .unwrap();
 
     assert_eq!(outcome, WorkflowOutcome::Completed);
 
@@ -112,7 +110,7 @@ async fn observer_parity_shell_workflow() {
         &std::fs::read(
             gait_dir
                 .join("workflow-runs")
-                .join(&session_id)
+                .join(&run_id)
                 .join("record.json"),
         )
         .unwrap(),
@@ -127,7 +125,7 @@ async fn observer_parity_shell_workflow() {
 
     // ── Fold the run-log and assert node statuses ──────────────────────────
     let workflow_runs_dir = gait_dir.join("workflow-runs");
-    let log = WorkflowRunLog::open(&workflow_runs_dir, &session_id).unwrap();
+    let log = WorkflowRunLog::open(&workflow_runs_dir, &run_id).unwrap();
     let events = log.read_events().unwrap();
     let state = reconstruct_state(&events);
 
@@ -159,35 +157,9 @@ async fn observer_parity_shell_workflow() {
     );
 }
 
-/// Set up a real git-backed gait-dir (the same shape `observer_parity_shell_workflow`
-/// builds) so a shell workflow can create session worktrees offline.
-fn setup_git_gait_dir(gait_dir: &std::path::Path) {
-    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
-    std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
-    for args in [
-        vec!["init", "--initial-branch=main"],
-        vec!["config", "user.email", "test@test.com"],
-        vec!["config", "user.name", "Test"],
-    ] {
-        std::process::Command::new("git")
-            .args(&args)
-            .current_dir(gait_dir)
-            .output()
-            .unwrap();
-    }
-    std::fs::write(gait_dir.join(".gitkeep"), "").unwrap();
-    for args in [vec!["add", ".gitkeep"], vec!["commit", "-m", "init"]] {
-        std::process::Command::new("git")
-            .args(&args)
-            .current_dir(gait_dir)
-            .output()
-            .unwrap();
-    }
-}
-
-/// Orchestrator regression: `run_workflow` accepts a `RecordingSink` and drives
+/// Orchestrator regression: `run_script` accepts a `RecordingSink` and drives
 /// a real (offline, shell) workflow to completion with both nodes Done. This
-/// exercises the new `sink` parameter and the `select!` drain loop end-to-end.
+/// exercises the `sink` parameter and the event drain loop end-to-end.
 #[tokio::test]
 async fn run_workflow_accepts_recording_sink() {
     use gait_core::embed::RecordingSink;
@@ -195,28 +167,20 @@ async fn run_workflow_accepts_recording_sink() {
     let gait_dir = dir.path().to_path_buf();
     setup_git_gait_dir(&gait_dir);
 
-    let wf: WorkflowDef = serde_yaml::from_str(WORKFLOW_YAML).unwrap();
-    let session = format!("rec{}", std::process::id());
+    let run_id = format!("rec{}", std::process::id());
     let mut sink = RecordingSink::default();
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: gait_workflow::convert::to_proto(&wf),
-            yaml_path: "rec-test.yaml".to_string(),
-            run_id: session.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
+    let outcome = run_js_with_observer(
+        &dir,
+        &run_id,
+        SCRIPT_JS,
         &mut gait_workflow::observer::NullObserver,
-        None,
+        &mut sink,
     )
     .await
     .expect("run should succeed");
     assert_eq!(outcome, WorkflowOutcome::Completed);
 
-    let log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &session).unwrap();
+    let log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
     let state = reconstruct_state(&log.read_events().unwrap());
     assert_eq!(state.node_status("step1"), NodeStatus::Done);
     assert_eq!(state.node_status("step2"), NodeStatus::Done);

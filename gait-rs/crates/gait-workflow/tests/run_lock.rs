@@ -2,24 +2,20 @@
 //!
 //! (a) `SessionLock` (reused as a generic RAII dir lock) rejects a second
 //!     concurrent acquire on the same run dir — one executor per run.
-//! (b) The positive path: after a headless `run_workflow` call, the run dir
-//!     holds a `worktree/` on branch `run/<run_id>`.
+//! (b) The positive path: after a headless `run_script` call (script engine),
+//!     the run dir holds a `worktree/` on branch `run/<run_id>`.
 
 use gait_core::session::SessionLock;
 
-use gait_workflow::convert::to_proto;
-use gait_workflow::observer::CliObserver;
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef;
+use gait_workflow::script::{run_script, ScriptRunOpts};
+use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 
 use tempfile::TempDir;
 
 /// A trivial single-node shell workflow that completes offline (no model call).
-const SHELL_YAML: &str = r#"
-name: run-lock-test
-nodes:
-  - id: step
-    shell: "true"
+const SHELL_JS: &str = r#"
+await gait.wf.config({ name: "run-lock-test" });
+await gait.wf.shell({ id: "step", script: "true" });
 "#;
 
 fn init_git_repo(gait_dir: &std::path::Path) {
@@ -57,33 +53,34 @@ async fn second_executor_on_same_run_is_rejected() {
 }
 
 #[tokio::test]
-async fn run_workflow_creates_run_branch_and_worktree() {
+async fn run_script_creates_run_branch_and_worktree() {
     let tmp = TempDir::new().unwrap();
     let gait_dir = tmp.path().to_path_buf();
     init_git_repo(&gait_dir);
 
-    let wf: WorkflowDef = serde_yaml::from_str(SHELL_YAML).unwrap();
+    let script_path = tmp.path().join("wf.js");
+    std::fs::write(&script_path, SHELL_JS).unwrap();
     let run_id = "test-run-lock-001".to_string();
 
     let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: to_proto(&wf),
-            yaml_path: "run-lock-test.yaml".to_string(),
+    let outcome = run_script(
+        ScriptRunOpts {
+            script_path,
             run_id: run_id.clone(),
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
-            ..Default::default()
+            force_rerun_nodes: vec![],
+            force: false,
+            turns: std::sync::Arc::new(ScriptedTurnExecutor::new()),
         },
         &mut sink,
-        &mut CliObserver,
-        None,
+        &mut gait_workflow::observer::NullObserver,
     )
     .await
     .unwrap();
 
-    assert_eq!(outcome, WorkflowOutcome::Completed);
+    assert_eq!(outcome, gait_workflow::runner::WorkflowOutcome::Completed);
 
     let run_dir = gait_dir.join("workflow-runs").join(&run_id);
     let worktree = run_dir.join("worktree");
@@ -101,6 +98,6 @@ async fn run_workflow_creates_run_branch_and_worktree() {
         "expected branch run/{run_id} to exist"
     );
 
-    // The lock must have been released once run_workflow returned.
+    // The lock must have been released once run_script returned.
     let _reacquire = SessionLock::acquire(&run_dir).unwrap();
 }

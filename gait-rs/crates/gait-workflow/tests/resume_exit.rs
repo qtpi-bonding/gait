@@ -1,42 +1,91 @@
-//! Resume/exit integration tests for the orchestrator's open-node and gate paths.
+//! Resume/exit integration tests for the script engine's open-node and gate
+//! paths.
 //!
-//! (a) An absent-prompt node with `input: None` → the run exits with
-//!     `WorkflowOutcome::NodeOpen`, the run-log has `NodeStart("chat")` but
-//!     **no** `NodeComplete("chat")`, and `reconstruct_state.open_node() == Some("chat")`.
+//! (a) A promptless turn node (`gait.wf.turn({ id })` with no prompt) leaves
+//!     the run open: the run exits with `WorkflowOutcome::NodeOpen`, the
+//!     run-log has `NodeStart("chat")` but **no** `NodeComplete("chat")`, and
+//!     `reconstruct_state.open_node() == Some("chat")`.
 //!
-//! (b) A gate node → `WorkflowOutcome::GatePaused`, distinct from `NodeOpen`;
-//!     no `NodeOpen` event is emitted.
+//! (b) A gate node (`gait.wf.gate({ id, ... })`) → `WorkflowOutcome::GatePaused`,
+//!     distinct from `NodeOpen`; no `NodeOpen` event is emitted.
 //!
-//! Both tests run fully offline (no model call) — shell and gate/open nodes
-//! don't require an LLM.
-
-use gait_workflow::convert::to_proto;
-use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef;
-use gait_workflow::state::reconstruct_state;
+//! Both tests run fully offline (no model call) — promptless turn and gate
+//! nodes don't require an LLM.
 
 use gait_core::proto::gait::workflow::v1::workflow_event;
 
-use gait_workflow::observer::CliObserver;
+use gait_workflow::run_log::WorkflowRunLog;
+use gait_workflow::runner::WorkflowOutcome;
+use gait_workflow::script::{run_script, ScriptRunOpts};
+use gait_workflow::state::reconstruct_state;
+use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 use tempfile::TempDir;
 
-/// A workflow with a single absent-prompt node (empty `prompt:`) named "chat".
-/// Running headless (input=None) should exit with NodeOpen.
-const OPEN_NODE_YAML: &str = r#"
-name: open-node-test
-nodes:
-  - id: chat
-    prompt: ""
+/// A script with a single promptless turn node named "chat". Running
+/// headless (no user input) should exit with NodeOpen.
+const OPEN_NODE_SCRIPT: &str = r#"
+await gait.wf.config({ name: "open-node-test" });
+await gait.wf.turn({ id: "chat" });
 "#;
 
-/// A workflow with a single gate node.
-const GATE_YAML: &str = r#"
-name: gate-test
-nodes:
-  - id: approve
-    gate: "Ready to proceed?"
+/// A script with a single gate node.
+const GATE_SCRIPT: &str = r#"
+await gait.wf.config({ name: "gate-test" });
+await gait.wf.gate({ id: "approve", message: "Ready to proceed?" });
 "#;
+
+fn init_git_repo(gait_dir: &std::path::Path) {
+    std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(gait_dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(gait_dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "t@t.com")
+        .output()
+        .unwrap();
+}
+
+async fn run_js(
+    tmp: &TempDir,
+    run_id: &str,
+    source: &str,
+    exec: std::sync::Arc<dyn gait_workflow::turn_exec::TurnExecutor>,
+) -> anyhow::Result<WorkflowOutcome> {
+    let script_path = tmp.path().join("wf.js");
+    std::fs::write(&script_path, source).unwrap();
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    run_script(
+        ScriptRunOpts {
+            script_path,
+            run_id: run_id.to_string(),
+            gait_dir: tmp.path().to_path_buf(),
+            codebase: tmp.path().to_path_buf(),
+            args: vec![],
+            force_rerun_nodes: vec![],
+            force: false,
+            turns: exec,
+        },
+        &mut sink,
+        &mut gait_workflow::observer::CliObserver,
+    )
+    .await
+}
+
+fn log_events(
+    gait_dir: &std::path::Path,
+    run_id: &str,
+) -> Vec<gait_core::proto::gait::workflow::v1::WorkflowEvent> {
+    WorkflowRunLog::open(&gait_dir.join("workflow-runs"), run_id)
+        .unwrap()
+        .read_events()
+        .unwrap()
+}
 
 #[tokio::test]
 async fn absent_prompt_headless_exits_node_open() {
@@ -44,42 +93,13 @@ async fn absent_prompt_headless_exits_node_open() {
     let gait_dir = tmp.path().to_path_buf();
 
     // Initialize the git repo that session worktrees need.
-    std::process::Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "--allow-empty", "-m", "init"])
-        .current_dir(&gait_dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "t@t.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "t@t.com")
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
+    init_git_repo(&gait_dir);
 
-    let wf: WorkflowDef = serde_yaml::from_str(OPEN_NODE_YAML).unwrap();
     let run_id = "test-open-node-001".to_string();
 
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: to_proto(&wf),
-            yaml_path: "open-node-test.yaml".to_string(),
-            run_id: run_id.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None, // headless: no input source
-    )
-    .await
-    .unwrap();
+    let exec = std::sync::Arc::new(ScriptedTurnExecutor::new())
+        as std::sync::Arc<dyn gait_workflow::turn_exec::TurnExecutor>;
+    let outcome = run_js(&tmp, &run_id, OPEN_NODE_SCRIPT, exec).await.unwrap();
 
     // (a-1) Outcome is NodeOpen, NOT GatePaused.
     assert_eq!(
@@ -90,20 +110,13 @@ async fn absent_prompt_headless_exits_node_open() {
     assert_ne!(outcome, WorkflowOutcome::GatePaused);
 
     // (a-2) Run-log has NodeStart("chat") but NO NodeComplete("chat").
-    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
-    let events = run_log.read_events().unwrap_or_default();
-    let has_node_start = events.iter().any(|e| {
-        matches!(
-            &e.kind,
-            Some(workflow_event::Kind::NodeStart(ns)) if ns.node_id == "chat"
-        )
-    });
-    let has_node_complete = events.iter().any(|e| {
-        matches!(
-            &e.kind,
-            Some(workflow_event::Kind::NodeComplete(nc)) if nc.node_id == "chat"
-        )
-    });
+    let events = log_events(&gait_dir, &run_id);
+    let has_node_start = events.iter().any(
+        |e| matches!(&e.kind, Some(workflow_event::Kind::NodeStart(ns)) if ns.node_id == "chat"),
+    );
+    let has_node_complete = events.iter().any(
+        |e| matches!(&e.kind, Some(workflow_event::Kind::NodeComplete(nc)) if nc.node_id == "chat"),
+    );
     assert!(has_node_start, "run-log must have NodeStart(chat)");
     assert!(
         !has_node_complete,
@@ -127,42 +140,13 @@ async fn gate_node_exits_gate_paused_not_node_open() {
     let gait_dir = tmp.path().to_path_buf();
 
     // Initialize git repo.
-    std::process::Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "--allow-empty", "-m", "init"])
-        .current_dir(&gait_dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "t@t.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "t@t.com")
-        .current_dir(&gait_dir)
-        .output()
-        .unwrap();
+    init_git_repo(&gait_dir);
 
-    let wf: WorkflowDef = serde_yaml::from_str(GATE_YAML).unwrap();
     let run_id = "test-gate-001".to_string();
 
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: to_proto(&wf),
-            yaml_path: "gate-test.yaml".to_string(),
-            run_id: run_id.clone(),
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.clone(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
-    )
-    .await
-    .unwrap();
+    let exec = std::sync::Arc::new(ScriptedTurnExecutor::new())
+        as std::sync::Arc<dyn gait_workflow::turn_exec::TurnExecutor>;
+    let outcome = run_js(&tmp, &run_id, GATE_SCRIPT, exec).await.unwrap();
 
     // (b-1) Gate exits GatePaused, NOT NodeOpen.
     assert_eq!(
@@ -173,14 +157,10 @@ async fn gate_node_exits_gate_paused_not_node_open() {
     assert_ne!(outcome, WorkflowOutcome::NodeOpen);
 
     // (b-2) Run-log has WorkflowGate event (specific to gate path).
-    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
-    let events = run_log.read_events().unwrap_or_default();
-    let has_workflow_gate = events.iter().any(|e| {
-        matches!(
-            &e.kind,
-            Some(workflow_event::Kind::WorkflowGate(wg)) if wg.node_id == "approve"
-        )
-    });
+    let events = log_events(&gait_dir, &run_id);
+    let has_workflow_gate = events
+        .iter()
+        .any(|e| matches!(&e.kind, Some(workflow_event::Kind::WorkflowGate(wg)) if wg.node_id == "approve"));
     assert!(
         has_workflow_gate,
         "run-log must have WorkflowGate(approve) for gate path"
