@@ -6,7 +6,6 @@ pub enum NodeStatus {
     Pending,
     Running,
     Done,
-    Skipped,
     Error(String),
     Paused,
 }
@@ -40,10 +39,6 @@ impl WorkflowState {
 
     pub fn is_done(&self, id: &str) -> bool {
         matches!(self.node_status(id), NodeStatus::Done)
-    }
-
-    pub fn is_skipped(&self, id: &str) -> bool {
-        matches!(self.node_status(id), NodeStatus::Skipped)
     }
 
     /// Returns the node_id of the last node that was started but not yet
@@ -92,9 +87,6 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
             workflow_event::Kind::NodeComplete(nc) => {
                 state.set_status(&nc.node_id, NodeStatus::Done);
                 state.workflow_status = "running".to_string();
-            }
-            workflow_event::Kind::NodeSkip(ns) => {
-                state.set_status(&ns.node_id, NodeStatus::Skipped);
             }
             workflow_event::Kind::NodeError(ne) => {
                 state.set_status(&ne.node_id, NodeStatus::Error(ne.error.clone()));
@@ -355,17 +347,12 @@ mod tests {
                 exit_code: Some(0),
                 ..Default::default()
             })),
-            we(workflow_event::Kind::NodeSkip(NodeSkip {
-                node_id: "n2".into(),
-                reason: "inactive branch".into(),
-            })),
         ];
         let state = reconstruct_state(&evs);
         assert_eq!(state.workflow_id, "wf1");
         assert_eq!(state.node_status("n1"), NodeStatus::Done);
-        assert_eq!(state.node_status("n2"), NodeStatus::Skipped);
         assert_eq!(state.node_status("n3"), NodeStatus::Pending);
-        assert_eq!(state.open_node(), None); // all nodes completed or skipped
+        assert_eq!(state.open_node(), None); // the only node completed
     }
 
     #[test]
@@ -605,16 +592,10 @@ mod tests {
                 error: "no start".into(),
                 ..Default::default()
             })),
-            // Other event kinds are ignored too.
-            we(workflow_event::Kind::NodeSkip(NodeSkip {
-                node_id: "skipped".into(),
-                reason: "inactive branch".into(),
-            })),
         ];
         let j = ScriptJournal::from_events(&evs);
         assert!(j.get("ghost").is_none());
         assert!(j.get("phantom").is_none());
-        assert!(j.get("skipped").is_none());
         assert!(j.open_ids().is_empty());
     }
 }

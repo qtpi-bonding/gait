@@ -3,7 +3,7 @@ syntax = "proto3";
 package gait.workflow.v1;
 
 // ============================================================================
-// gait workflow run log — append-only event stream for a workflow execution.
+// gait workflow run log — append-only event stream for a script workflow run.
 //
 //   * One WorkflowEvent per line in workflow-runs/{run_id}/log.jsonl.
 //   * JSON on the wire (pbjson, camelCase) — same pattern as gait.log.v1.
@@ -26,39 +26,24 @@ message WorkflowEvent {
     NodeStart        node_start        = 4;
     NodeComplete     node_complete     = 5;
     NodeError        node_error        = 6;
-    NodeSkip         node_skip         = 7;
     WorkflowGate     workflow_gate     = 8;
     WorkflowComplete workflow_complete = 9;
     WorkflowError    workflow_error    = 10;
     WorkflowHookRun  hook_run          = 15;
   }
+  reserved 7;
+  reserved "node_skip";
 }
 
 message WorkflowStart {
   string          run_id    = 1;  // e.g. "analyze-pr-20260616-143022"
-  string          workflow  = 2;  // workflow name from yaml
-  string          yaml_path = 3;  // path to the workflow yaml
+  string          workflow  = 2;  // workflow name from the script
   repeated string args      = 4;  // CLI args passed to the run
-  Workflow        def       = 5;  // canonical workflow IR at run time
   string          script_path   = 6;  // JS workflow script path
   string          script_sha256 = 7;  // sha256 hex of the script
   string          script_source = 8;  // script source text at run time
-}
-
-// ============================================================================
-// Canonical workflow IR — written once into WorkflowStart.def so the run log
-// is self-describing without re-parsing the yaml.
-// ============================================================================
-
-message Workflow {
-  uint32          version       = 1;  // format generation (mirrors WorkflowEvent.version)
-  string          name          = 2;
-  string          version_label = 3;  // human yaml `version:` string
-  optional string inference     = 4;
-  repeated string allow         = 5;
-  bool            auto          = 6;
-  repeated Node   nodes         = 7;
-  RecordConfig    record        = 8;  // developer-declared evidence commands
+  reserved 3, 5;
+  reserved "yaml_path", "def";
 }
 
 // Explicit evidence probes. These are not workflow nodes and are not automatic
@@ -73,45 +58,9 @@ message RecordCommand {
   uint64 timeout_ms = 3;
 }
 
-message Node {
-  string          id                 = 1;
-  repeated string depends_on         = 2;
-  optional string inference          = 3;
-  optional bool   auto               = 4;
-  repeated string allow              = 5;
-  optional string agent              = 6;
-  optional string system_prompt      = 7;
-  repeated string files              = 8;
-  string          output_schema_json = 9;   // JSON; empty if none
-  optional OnError on_error          = 10;
-  optional Hooks  hooks              = 12;
-  oneof body {
-    PromptNode prompt = 13;
-    ShellNode  shell  = 14;
-    BranchNode branch = 15;
-    GateNode   gate   = 16;
-  }
-}
-
-message PromptNode {
-  string          prompt           = 1;  // empty => absent => open node (pause === exit)
-  string          continue_session = 2;  // empty => fresh; else continue this session id
-  optional string codebase         = 3;
-}
-message ShellNode  { string command = 1; optional uint64 timeout_ms = 2; }
-message BranchNode {
-  string          on     = 1;
-  optional string then   = 2;
-  optional string else_  = 3;
-  map<string,string> cases = 4;
-}
-message GateNode   { string message = 1; }
-message OnError    { uint32 retry_times = 1; uint64 delay = 2; string backoff = 3; string context = 4; bool continue = 5; }
-message Hooks      { optional string before = 1; optional string after = 2; optional string error = 3; optional uint64 timeout_ms = 4; }
-
 message NodeStart {
   string node_id    = 1;
-  string node_type  = 2;  // "shell" | "prompt" | "branch" | "gate"
+  string node_type  = 2;  // script step kind: "shell" | "turn" | "gate" | "now" | "random"
   uint32 attempt    = 3;  // 1-based; >1 on retries
   string session_id = 4;  // gait session ID for this node's turn (empty for shell-only nodes)
   bool interactive = 5;   // true for a promptless interactive turn; keep node_type "turn"
@@ -123,7 +72,8 @@ message NodeComplete {
   string output     = 3;  // captured stdout / agent output() text
   optional int32 exit_code  = 4;  // set for shell nodes
   string json_output         = 5;  // JSON string; empty if none
-  string routed_to           = 6;  // set for branch nodes; target node id
+  reserved 6;
+  reserved "routed_to";
 }
 
 message NodeError {
@@ -139,11 +89,6 @@ enum NodeErrorKind {
   NODE_ERROR_KIND_FAILED     = 0;
   NODE_ERROR_KIND_CONTINUED  = 1;
   NODE_ERROR_KIND_CANCELLED  = 2;
-}
-
-message NodeSkip {
-  string node_id = 1;
-  string reason  = 2;  // e.g. "inactive branch (routed to pass-node)"
 }
 
 message WorkflowGate {

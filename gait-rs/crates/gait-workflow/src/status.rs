@@ -242,9 +242,6 @@ fn replay(events: &[WorkflowEvent]) -> (RunStatus, u64) {
                     total_seen,
                 };
             }
-            Some(Kind::NodeSkip(_)) => {
-                total_seen += 1;
-            }
             Some(Kind::NodeError(_)) => {
                 // Mid-run node error; status only changes on terminal workflow
                 // event. Keep running tally consistent.
@@ -289,11 +286,17 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let run_id = "test-run-20260616-120000";
         let log = WorkflowRunLog::create(dir.path(), run_id).unwrap();
-        let def = gait_core::proto::gait::workflow::v1::Workflow::default();
-        log.workflow_start(run_id, "test-workflow", "workflows/test.yaml", &[], &def)
-            .unwrap();
+        log.script_workflow_start(
+            run_id,
+            "test-workflow",
+            "workflows/test.js",
+            "deadbeef",
+            "export default async () => {}",
+            &[],
+        )
+        .unwrap();
         log.node_start("a", "shell", 1, "session-a").unwrap();
-        log.node_complete("a", "session-a", "ok", Some(0), "{}", "")
+        log.node_complete("a", "session-a", "ok", Some(0), "{}")
             .unwrap();
         log.workflow_complete(run_id).unwrap();
 

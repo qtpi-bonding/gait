@@ -19,9 +19,8 @@ use gait_core::Session;
 
 /// Per-turn driver: supplies `brain_launch()` so `run_loop` can spawn `gait
 /// __brain` for each turn. Moved unchanged (field-for-field) from
-/// `gait-workflow::exec_prompt::PromptNodeDriver` — sealed turns are no
-/// longer workflow-specific, so this driver no longer lives under
-/// `gait-workflow`.
+/// the former gait-workflow prompt driver — sealed turns are no longer
+/// workflow-specific, so this driver no longer lives under `gait-workflow`.
 struct SealedTurnDriver {
     verified_goal: Option<String>,
     status_block: Option<String>,
@@ -329,7 +328,7 @@ pub struct TurnRunOpts {
     pub run_id: String,
     pub session_id: String,
     /// Carried through unchanged from the old `SinglePromptOpts::continue_session`
-    /// / `PromptNode.continue_session` for the caller's own bookkeeping —
+    /// / `continue_session` for the caller's own bookkeeping —
     /// this crate does NOT perform "" = fresh vs non-empty = attach
     /// resolution itself. `session_id` is already the caller-resolved,
     /// authoritative session id by the time it reaches `TurnRunOpts`:

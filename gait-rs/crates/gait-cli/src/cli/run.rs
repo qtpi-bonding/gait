@@ -244,7 +244,7 @@ pub async fn cmd_run(
         args.inference.clone(),
     );
     let model = profile.model.clone();
-    // Validation only — `PromptNodeDriver::brain_launch` re-derives the
+    // Validation only — the turn driver's `brain_launch` re-derives the
     // provider (and resolves the API key) from `self.model` itself now that
     // `cmd_run` no longer builds its own driver.
     if model.split_once('/').is_none() {

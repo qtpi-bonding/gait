@@ -299,7 +299,6 @@ mod tests {
         for ty in [
             "workflow_start",
             "node_start",
-            "node_skip",
             "node_complete",
             "hook_run",
             "workflow_gate",

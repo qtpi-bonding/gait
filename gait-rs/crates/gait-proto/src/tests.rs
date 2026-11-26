@@ -506,34 +506,13 @@ fn node_error_with_continued_kind_round_trips() {
 }
 
 #[test]
-fn workflow_start_old_shape_parses_with_empty_script_fields() {
-    use super::gait::workflow::v1::WorkflowStart;
-
-    let start: WorkflowStart = serde_json::from_value(json!({
-        "runId": "run-1",
-        "workflow": "analyze",
-        "yamlPath": "wf.yaml",
-        "args": ["--pr", "42"],
-        "def": {"name": "analyze"}
-    }))
-    .expect("old WorkflowStart shape");
-    assert_eq!(start.run_id, "run-1");
-    assert_eq!(start.yaml_path, "wf.yaml");
-    assert_eq!(start.script_path, "");
-    assert_eq!(start.script_sha256, "");
-    assert_eq!(start.script_source, "");
-}
-
-#[test]
 fn workflow_start_with_script_fields_round_trips() {
     use super::gait::workflow::v1::WorkflowStart;
 
     let start = WorkflowStart {
         run_id: "run-2".into(),
         workflow: "analyze".into(),
-        yaml_path: String::new(),
         args: vec![],
-        def: None,
         script_path: "scripts/wf.js".into(),
         script_sha256: "deadbeef".into(),
         script_source: "export default async () => {}".into(),

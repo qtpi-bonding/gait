@@ -15,7 +15,6 @@ const ARMS: &[&str] = &[
     "nodeStart",
     "nodeComplete",
     "nodeError",
-    "nodeSkip",
     "workflowGate",
     "workflowComplete",
     "workflowError",

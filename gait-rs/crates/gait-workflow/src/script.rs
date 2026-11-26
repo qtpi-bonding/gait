@@ -734,7 +734,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir should work");
         let runs_dir = dir.path().join("workflow-runs");
         let log = WorkflowRunLog::create(&runs_dir, "run-def").expect("create should work");
-        log.workflow_start("run-def", "wf", "wf.yaml", &[], &Default::default())
+        log.script_workflow_start("run-def", "wf", "wf.js", "deadbeef", "", &[])
             .expect("start event should write");
         let events = log.read_events().expect("events should read back");
         let err = resolve_script_continue(&events, None, false)

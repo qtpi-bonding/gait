@@ -17,8 +17,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use gait_core::proto::gait::workflow::v1::{
-    NodeComplete, NodeError, NodeErrorKind, NodeSkip, NodeStart, Workflow, WorkflowComplete,
-    WorkflowError, WorkflowEvent, WorkflowGate, WorkflowStart,
+    NodeComplete, NodeError, NodeErrorKind, NodeStart, WorkflowComplete, WorkflowError,
+    WorkflowEvent, WorkflowGate, WorkflowStart,
 };
 
 /// Current format generation for the workflow run log. Mirrors the contract
@@ -155,30 +155,9 @@ impl WorkflowRunLog {
 
     // -- writers ------------------------------------------------------------
 
-    /// Append a workflow start event. The `run_id` should be the same id used
-    /// to create the log directory.
-    pub fn workflow_start(
-        &self,
-        run_id: &str,
-        workflow: &str,
-        yaml_path: &str,
-        args: &[String],
-        def: &Workflow,
-    ) -> anyhow::Result<WorkflowEvent> {
-        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
-        self.emit(Kind::WorkflowStart(WorkflowStart {
-            run_id: run_id.to_string(),
-            workflow: workflow.to_string(),
-            yaml_path: yaml_path.to_string(),
-            args: args.to_vec(),
-            def: Some(def.clone()),
-            ..Default::default()
-        }))
-    }
-
-    /// Append a workflow start event for a script (JS) workflow. The workflow
-    /// carries no `def` and no path: the script's path, sha256, and full
-    /// source text are recorded instead.
+    /// Append a workflow start event for a script (JS) workflow. The script's
+    /// path, sha256, and full source text are recorded so the run log is
+    /// self-describing.
     pub fn script_workflow_start(
         &self,
         run_id: &str,
@@ -192,9 +171,7 @@ impl WorkflowRunLog {
         self.emit(Kind::WorkflowStart(WorkflowStart {
             run_id: run_id.to_string(),
             workflow: workflow.to_string(),
-            yaml_path: String::new(),
             args: args.to_vec(),
-            def: None,
             script_path: script_path.to_string(),
             script_sha256: script_sha256.to_string(),
             script_source: script_source.to_string(),
@@ -244,7 +221,6 @@ impl WorkflowRunLog {
         output: &str,
         exit_code: Option<i32>,
         json_output: &str,
-        routed_to: &str,
     ) -> anyhow::Result<WorkflowEvent> {
         use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
         self.emit(Kind::NodeComplete(NodeComplete {
@@ -253,7 +229,6 @@ impl WorkflowRunLog {
             output: output.to_string(),
             exit_code,
             json_output: json_output.to_string(),
-            routed_to: routed_to.to_string(),
         }))
     }
 
@@ -305,15 +280,6 @@ impl WorkflowRunLog {
             error: reason.to_string(),
             attempt,
             kind: NodeErrorKind::Cancelled as i32,
-        }))
-    }
-
-    /// Append a node skip event (e.g. inactive branch path).
-    pub fn node_skip(&self, node_id: &str, reason: &str) -> anyhow::Result<WorkflowEvent> {
-        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
-        self.emit(Kind::NodeSkip(NodeSkip {
-            node_id: node_id.to_string(),
-            reason: reason.to_string(),
         }))
     }
 
@@ -441,8 +407,6 @@ mod tests {
         };
         assert_eq!(start.run_id, "run-script");
         assert_eq!(start.workflow, "my-script-wf");
-        assert_eq!(start.yaml_path, "", "a script workflow has no yaml path");
-        assert!(start.def.is_none(), "a script workflow has no def");
         assert_eq!(start.script_path, "scripts/wf.js");
         assert_eq!(start.script_sha256, "deadbeef");
         assert_eq!(start.script_source, "export default async () => {}");
@@ -453,13 +417,13 @@ mod tests {
     fn log_roundtrips_workflow_start() {
         let dir = TempDir::new().unwrap();
         let log = WorkflowRunLog::create(dir.path(), "test-run-20260616-120000").unwrap();
-        let def = gait_core::proto::gait::workflow::v1::Workflow::default();
-        log.workflow_start(
+        log.script_workflow_start(
             "test-run-20260616-120000",
             "test-workflow",
-            "workflows/test.yaml",
+            "workflows/test.js",
+            "deadbeef",
+            "export default async () => {}",
             &[],
-            &def,
         )
         .unwrap(); // return value (WorkflowEvent) is intentionally discarded in tests
         let events = log.read_events().unwrap();
@@ -489,8 +453,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = WorkflowRunLog::create(dir.path(), "run-x").unwrap();
         log.node_start("a", "shell", 1, "sa").unwrap();
-        log.node_complete("a", "sa", "ok", Some(0), "{}", "")
-            .unwrap();
+        log.node_complete("a", "sa", "ok", Some(0), "{}").unwrap();
         let evs = log.read_events().unwrap();
         assert_eq!(evs[0].seq, 1);
         assert!(evs[0].parents.is_empty());
@@ -548,8 +511,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = WorkflowRunLog::create(dir.path(), "run-torn").unwrap();
         log.node_start("a", "shell", 1, "sa").unwrap();
-        log.node_complete("a", "sa", "ok", Some(0), "{}", "")
-            .unwrap();
+        log.node_complete("a", "sa", "ok", Some(0), "{}").unwrap();
 
         // Simulate a crash mid-writeln!: append a truncated, unparseable line
         // directly to the file (no trailing newline, matches a torn write).
@@ -635,9 +597,7 @@ mod tests {
 
         // A normal write after the crash must succeed and chain onto `first`,
         // not the dropped torn line — this is the "resume after crash" case.
-        let second = log
-            .node_complete("a", "sa", "ok", Some(0), "{}", "")
-            .unwrap();
+        let second = log.node_complete("a", "sa", "ok", Some(0), "{}").unwrap();
         assert_eq!(second.parents, vec![first.id.clone()]);
 
         let events = log.read_events().unwrap();
@@ -651,8 +611,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = WorkflowRunLog::create(dir.path(), "run-mid-corrupt").unwrap();
         log.node_start("a", "shell", 1, "sa").unwrap();
-        log.node_complete("a", "sa", "ok", Some(0), "{}", "")
-            .unwrap();
+        log.node_complete("a", "sa", "ok", Some(0), "{}").unwrap();
 
         // Garbage in the MIDDLE (a valid-looking line follows it), not the tail.
         {

@@ -764,14 +764,7 @@ impl<'a> StepEngine<'a> {
                 };
                 let log_result = self
                     .run_log
-                    .node_complete(
-                        &id,
-                        &session_id,
-                        &outcome.output,
-                        outcome.exit,
-                        &json_text,
-                        "",
-                    )
+                    .node_complete(&id, &session_id, &outcome.output, outcome.exit, &json_text)
                     .map_err(StepError::LogWrite);
                 self.unregister_in_flight(&id);
                 let ev = log_result?;
@@ -998,7 +991,7 @@ impl<'a> StepEngine<'a> {
                             self.record_seen(&id)?;
                             let ev = self
                                 .run_log
-                                .node_complete(&id, "", "", None, "", "")
+                                .node_complete(&id, "", "", None, "")
                                 .map_err(StepError::LogWrite)?;
                             self.observer.borrow_mut().on_event(&ev);
                             return Ok(serde_json::Value::Null);
@@ -1205,7 +1198,7 @@ impl<'a> StepEngine<'a> {
                 };
                 let log_result = self
                     .run_log
-                    .node_complete(&id, "", &res.output, res.exit, &json_text, "")
+                    .node_complete(&id, "", &res.output, res.exit, &json_text)
                     .map_err(StepError::LogWrite);
                 self.unregister_in_flight(&id);
                 let ev = log_result?;
@@ -1343,7 +1336,7 @@ impl<'a> StepEngine<'a> {
         self.observer.borrow_mut().on_event(&ev);
         let ev = self
             .run_log
-            .node_complete(&id, "", "", None, &json_text, "")
+            .node_complete(&id, "", "", None, &json_text)
             .map_err(StepError::LogWrite)?;
         self.observer.borrow_mut().on_event(&ev);
 

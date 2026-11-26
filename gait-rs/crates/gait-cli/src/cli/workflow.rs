@@ -526,7 +526,6 @@ mod continue_arg_tests {
 #[cfg(test)]
 mod abort_tests {
     use super::*;
-    use gait_core::proto::gait::workflow::v1::Workflow;
     use gait_workflow::run_log::WorkflowRunLog;
 
     #[test]
@@ -536,14 +535,8 @@ mod abort_tests {
         let runs = gait_dir.join("workflow-runs");
         // A run that is mid-flight: started, one node running, no terminal event.
         let log = WorkflowRunLog::create(&runs, "deploy-abort-1").unwrap();
-        log.workflow_start(
-            "deploy-abort-1",
-            "deploy",
-            "wf.yaml",
-            &[],
-            &Workflow::default(),
-        )
-        .unwrap();
+        log.script_workflow_start("deploy-abort-1", "deploy", "wf.js", "deadbeef", "", &[])
+            .unwrap();
         log.node_start("build", "shell", 1, "").unwrap();
         // Pre-condition: without the abort, the run folds to "running" (resumable).
         let before = reconstruct_state(
@@ -573,7 +566,6 @@ mod abort_tests {
 #[cfg(test)]
 mod list_tests {
     use super::*;
-    use gait_core::proto::gait::workflow::v1::Workflow;
     use gait_workflow::run_log::WorkflowRunLog;
 
     #[test]
@@ -581,14 +573,8 @@ mod list_tests {
         let td = tempfile::TempDir::new().unwrap();
         let runs = td.path().join("workflow-runs");
         let log = WorkflowRunLog::create(&runs, "deploy-1-2-3").unwrap();
-        log.workflow_start(
-            "deploy-1-2-3",
-            "deploy",
-            "wf.yaml",
-            &[],
-            &Workflow::default(),
-        )
-        .unwrap();
+        log.script_workflow_start("deploy-1-2-3", "deploy", "wf.js", "deadbeef", "", &[])
+            .unwrap();
         log.workflow_complete("deploy-1-2-3").unwrap();
         let out = collect_workflow_summaries(&runs);
         assert_eq!(
@@ -606,7 +592,7 @@ mod list_tests {
         let td = tempfile::TempDir::new().unwrap();
         let runs = td.path().join("workflow-runs");
         let log = WorkflowRunLog::create(&runs, "deploy-9").unwrap();
-        log.workflow_start("deploy-9", "deploy", "wf.yaml", &[], &Workflow::default())
+        log.script_workflow_start("deploy-9", "deploy", "wf.js", "deadbeef", "", &[])
             .unwrap();
         let state = gait_workflow::state::reconstruct_state(
             &WorkflowRunLog::open(&runs, "deploy-9")

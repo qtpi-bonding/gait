@@ -21,7 +21,7 @@ use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 /// Called inline from the runner after each log write. Stream items are no
 /// longer delivered here — turn output flows through the caller-supplied
 /// `TurnSink` instead. The observer sees exactly one `on_event` call per
-/// terminal event (start, complete, skip, error, etc.).
+/// event (start, complete, error, etc.).
 pub trait WorkflowObserver {
     /// Called after a workflow event has been appended to the run-log.
     fn on_event(&mut self, ev: &WorkflowEvent);
@@ -45,9 +45,6 @@ impl WorkflowObserver for CliObserver {
             }
             Some(workflow_event::Kind::NodeComplete(s)) => {
                 eprintln!("[gait workflow] node done: {}", s.node_id);
-            }
-            Some(workflow_event::Kind::NodeSkip(s)) => {
-                eprintln!("[gait workflow] node skip: {}", s.node_id);
             }
             Some(workflow_event::Kind::NodeError(s)) => {
                 eprintln!("[gait workflow] node error: {} — {}", s.node_id, s.error);
