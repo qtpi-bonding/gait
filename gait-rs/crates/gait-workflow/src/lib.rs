@@ -8,6 +8,7 @@ pub mod exec_prompt;
 pub mod exec_shell;
 pub mod hooks;
 pub mod host;
+pub mod launch;
 pub mod runner;
 pub mod schema;
 pub mod state;

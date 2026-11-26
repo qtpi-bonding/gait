@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use crate::cli::error::{CliError, CliResult};
 use gait_workflow::observer::CliObserver;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef; // still needed for yaml parsing
+use gait_workflow::schema::WorkflowDef;
 use gait_workflow::state::reconstruct_state;
+use gait_workflow::WorkflowOutcome;
 
 /// `gait workflow <run|list|continue|abort|log>` subcommand.
 #[derive(Parser, Debug)]
@@ -132,48 +132,37 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Res
     };
     let args: Vec<String> = argv[1..].to_vec();
 
-    let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
-    let yaml_content = std::fs::read_to_string(&yaml_path).map_err(|e| {
-        let message = format!("[gait] cannot read {}: {}", yaml_path.display(), e);
-        if e.kind() == std::io::ErrorKind::NotFound {
-            CliError::not_found(message)
-        } else {
-            CliError::failed(message)
-        }
-    })?;
-    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content)
-        .map_err(|e| CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e)))?;
-
-    let run_id = gait_workflow::convert::mint_run_id(&wf.name);
-    eprintln!("[gait workflow] starting {} as session {}", name, run_id);
-
     let mut sink = gait_core::embed::CliSink::stdio(false);
-    match run_workflow(
-        WorkflowRunOpts {
-            workflow_def: gait_workflow::convert::to_proto(&wf),
-            yaml_path: yaml_path.to_string_lossy().to_string(),
-            run_id,
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.join("codebase"),
-            args,
-            ..Default::default()
+    let env = gait_workflow::launch::LaunchEnv {
+        gait_dir: gait_dir.clone(),
+        codebase: gait_dir.join("codebase"),
+        started: &mut |run_id, wf_name| {
+            eprintln!("[gait workflow] starting {wf_name} as session {run_id}")
         },
-        &mut sink,
-        &mut CliObserver,
-        None,
-    )
-    .await
-    {
-        Ok(WorkflowOutcome::Completed) => Ok(0u8),
-        Ok(WorkflowOutcome::GatePaused) => {
+        sink: &mut sink,
+        observer: &mut CliObserver,
+    };
+    match gait_workflow::launch::run_named(&name, args, env).await {
+        Ok((_run_id, WorkflowOutcome::Completed)) => Ok(0u8),
+        Ok((_run_id, WorkflowOutcome::GatePaused)) => {
             eprintln!("[gait workflow] paused at gate");
             Ok(2u8)
         }
-        Ok(WorkflowOutcome::NodeOpen) => {
+        Ok((_run_id, WorkflowOutcome::NodeOpen)) => {
             eprintln!("[gait workflow] paused at open node");
             Ok(0u8)
         }
-        Err(e) => Err(CliError::failed_with("[gait workflow] error", e)),
+        Err((_run_id, e)) => Err(launch_error(e)),
+    }
+}
+
+/// Map a `launch::LaunchError` to today's `CliError` classes.
+fn launch_error(e: gait_workflow::launch::LaunchError) -> anyhow::Error {
+    match e {
+        gait_workflow::launch::LaunchError::Failed(e) => {
+            CliError::failed_with("[gait workflow] error", e)
+        }
+        e => coded_error::into_anyhow(e),
     }
 }
 
@@ -430,8 +419,9 @@ pub fn workflow_list_json(gait_dir: &Path) -> serde_json::Value {
 struct ContinueArgs {
     /// Workflow run id to resume.
     run_id: String,
-    /// Resume the ORIGINAL logged graph even if the on-disk YAML changed.
-    /// Without this, an edited YAML is a hard error (never a silent divergence).
+    /// Resume the ORIGINAL logged script or YAML graph even if the on-disk
+    /// file changed. Without this, an edited script or YAML is a hard error
+    /// (never a silent divergence).
     #[arg(long)]
     force: bool,
     /// Accept the risk of re-running a shell node that was still executing when
@@ -455,7 +445,8 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow
     };
     let workflow_id = parsed.run_id;
 
-    // Source of truth: the run log — NOT the session transcript, NOT disk YAML.
+    // The legacy-log refusals stay here (the log must be openable BEFORE the
+    // engine is chosen); the engine decision lives in launch.rs.
     let run_log = match gait_workflow::run_log::WorkflowRunLog::open(
         &gait_dir.join("workflow-runs"),
         &workflow_id,
@@ -463,76 +454,23 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow
         Ok(l) => l,
         Err(e) => return Err(open_failure(&workflow_id, &e, "continued")),
     };
-    let events = match run_log.read_events() {
-        Ok(ev) => ev,
-        Err(e) => return Err(read_failure(&workflow_id, &e, "continued")),
-    };
-
-    // Read on-disk YAML (if present) ONLY to detect drift; the graph that runs
-    // always comes from the logged def.
-    let logged_yaml_path = events
-        .iter()
-        .find_map(|e| {
-            use gait_core::proto::gait::workflow::v1::workflow_event;
-            match &e.kind {
-                Some(workflow_event::Kind::WorkflowStart(s)) => Some(s.yaml_path.clone()),
-                _ => None,
-            }
-        })
-        .ok_or_else(|| {
-            CliError::failed(format!(
-                "[gait] run log for {} has no workflow start event",
-                workflow_id
-            ))
-        })?;
-    let disk_yaml = std::fs::read_to_string(&logged_yaml_path).ok();
-
-    let resolved = match gait_workflow::convert::resolve_continue_def(
-        &events,
-        disk_yaml.as_deref(),
-        parsed.force,
-    ) {
-        Ok(r) => r,
-        Err(gait_workflow::convert::ContinueError::Drift { .. }) => {
-            return Err(CliError::invalid_input(format!(
-                "[gait] {} changed since this run started; start a new run, \
-                     or pass --force to resume the original graph",
-                logged_yaml_path
-            )));
-        }
-        Err(gait_workflow::convert::ContinueError::NoStart) => {
-            return Err(CliError::failed(format!(
-                "[gait] run log for {} has no workflow_start",
-                workflow_id
-            )));
-        }
-    };
-
-    if parsed.force && disk_yaml.is_some() {
-        eprintln!(
-            "[gait workflow] --force: resuming the ORIGINAL logged graph (ignoring on-disk YAML edits)"
-        );
+    if let Err(e) = run_log.read_events() {
+        return Err(read_failure(&workflow_id, &e, "continued"));
     }
-    eprintln!(
-        "[gait workflow] resuming {} ({})",
-        resolved.workflow_name, workflow_id
-    );
 
     let mut sink = gait_core::embed::CliSink::stdio(false);
-    match run_workflow(
-        WorkflowRunOpts {
-            workflow_def: resolved.def,
-            yaml_path: resolved.yaml_path,
-            run_id: workflow_id,
-            gait_dir: gait_dir.clone(),
-            codebase: gait_dir.join("codebase"),
-            args: resolved.args,
-            force_rerun_nodes: parsed.force_rerun.clone(),
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
+    let env = gait_workflow::launch::LaunchEnv {
+        gait_dir: gait_dir.clone(),
+        codebase: gait_dir.join("codebase"),
+        started: &mut |run_id, name| eprintln!("[gait workflow] resuming {name} ({run_id})"),
+        sink: &mut sink,
+        observer: &mut CliObserver,
+    };
+    match gait_workflow::launch::continue_run(
+        &workflow_id,
+        parsed.force,
+        parsed.force_rerun.clone(),
+        env,
     )
     .await
     {
@@ -545,7 +483,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow
             eprintln!("[gait workflow] paused at open node");
             Ok(0u8)
         }
-        Err(e) => Err(CliError::failed_with("[gait workflow] error", e)),
+        Err(e) => Err(launch_error(e)),
     }
 }
 
@@ -918,9 +856,14 @@ mod validate_tests {
             .await
             .expect_err("missing workflow file is an error");
         assert!(matches!(
-            coded_error::downcast_ref::<CliError>(&err),
-            Some(CliError::NotFound(_))
+            coded_error::downcast_ref::<gait_workflow::launch::LaunchError>(&err),
+            Some(gait_workflow::launch::LaunchError::NotFound { .. })
         ));
+        assert_eq!(
+            coded_error::cli::exit_code_anyhow(&err),
+            65,
+            "LaunchError::NotFound maps to exit code 65"
+        );
     }
 
     #[tokio::test]

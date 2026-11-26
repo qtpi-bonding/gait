@@ -6,3 +6,4 @@
 
 mod legacy_log_cli;
 mod reply;
+mod workflow_cli;

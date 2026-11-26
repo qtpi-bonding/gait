@@ -1322,7 +1322,7 @@ fn one_off_schema() -> serde_json::Value {
 }
 
 /// Run a named workflow (`workflows/<name>.yaml`) for the REPL `/workflow`
-/// command — awaits `run_workflow` inline (spec-06 §5 Task 4.1).
+/// command — awaits `launch::run_named` inline (spec-06 §5 Task 4.1).
 ///
 /// The old `GaitWorkflowRunner` replacement spawned a detached `std::thread` +
 /// its own tokio runtime: an untracked resident thread, a daemonless-model
@@ -1339,43 +1339,18 @@ pub(crate) async fn run_named_workflow(
     gait_dir: std::path::PathBuf,
     codebase: std::path::PathBuf,
 ) -> String {
-    let yaml_path = gait_dir.join("workflows").join(format!("{name}.yaml"));
-    let yaml_content = match std::fs::read_to_string(&yaml_path) {
-        Ok(c) => c,
-        Err(e) => return format!("workflow error: cannot read {}: {e}", yaml_path.display()),
-    };
-    let workflow_def_serde: gait_workflow::schema::WorkflowDef =
-        match serde_yaml::from_str(&yaml_content) {
-            Ok(w) => w,
-            Err(e) => {
-                return format!(
-                    "workflow error: invalid yaml at {}: {e}",
-                    yaml_path.display()
-                );
-            }
-        };
-    let workflow_def = gait_workflow::convert::to_proto(&workflow_def_serde);
-    let run_id = gait_workflow::convert::mint_run_id(name);
-    let yaml_path_str = yaml_path.to_string_lossy().to_string();
     let mut sink = gait_core::embed::CliSink::stdio(true);
-    match gait_workflow::run_workflow(
-        gait_workflow::WorkflowRunOpts {
-            workflow_def,
-            yaml_path: yaml_path_str,
-            run_id: run_id.clone(),
-            gait_dir,
-            codebase,
-            args,
-            ..Default::default()
-        },
-        &mut sink,
-        &mut gait_workflow::observer::CliObserver,
-        None,
-    )
-    .await
-    {
-        Ok(outcome) => format!("workflow {run_id}: {outcome:?}"),
-        Err(e) => format!("workflow error: {run_id}: {e}"),
+    let env = gait_workflow::launch::LaunchEnv {
+        gait_dir,
+        codebase,
+        started: &mut |_run_id, _name| {},
+        sink: &mut sink,
+        observer: &mut gait_workflow::observer::CliObserver,
+    };
+    match gait_workflow::launch::run_named(name, args, env).await {
+        Ok((run_id, outcome)) => format!("workflow {run_id}: {outcome:?}"),
+        Err((Some(run_id), e)) => format!("workflow error: {run_id}: {e}"),
+        Err((None, e)) => format!("workflow error: {e}"),
     }
 }
 
