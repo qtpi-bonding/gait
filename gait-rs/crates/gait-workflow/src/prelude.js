@@ -17,6 +17,7 @@
             config: (a) => __host.wf.config(a),
             turn: (a) => __host.wf.turn(a),
             shell: (a) => __host.wf.shell(a),
+            gate: (a) => __host.wf.gate(a),
             now: () => __host.wf.now(null),
             random: () => __host.wf.random(null),
             // Tagged template: interpolations become "$GAIT_ARG_<i>" markers in

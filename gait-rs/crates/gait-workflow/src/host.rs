@@ -9,6 +9,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
+use std::future::pending;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::channel as workflow_channel;
@@ -20,7 +21,7 @@ use crate::exec_shell::{exec_shell_opts_with_host_env, NodeContext};
 use crate::observer::WorkflowObserver;
 use crate::run_log::WorkflowRunLog;
 use crate::state::{JournalEntry, JournalState, ScriptJournal};
-use crate::step::{ConfigOpts, ShellOpts, TurnOpts};
+use crate::step::{ConfigOpts, GateOpts, ShellOpts, TurnOpts};
 use crate::turn_exec::{TurnExecutor, TurnRequest};
 
 /// A step-level failure, rendered with the exact message text the JS layer
@@ -63,10 +64,13 @@ enum StepError {
         id: String,
         source: serde_json::Error,
     },
-    #[error("turn step '{id}': prompt is required")]
-    MissingPrompt { id: String },
     #[error("gait.wf.shell step '{id}': {source}")]
     ShellArgs {
+        id: String,
+        source: serde_json::Error,
+    },
+    #[error("gait.wf.gate step '{id}': {source}")]
+    GateArgs {
         id: String,
         source: serde_json::Error,
     },
@@ -98,6 +102,22 @@ impl StepError {
             source,
         }
     }
+}
+
+/// A requested suspension of the run, waiting for the engine to be quiescent.
+#[derive(Debug, Clone)]
+pub enum PauseKind {
+    /// A gate with a human-facing message.
+    Gate { message: String },
+    /// An interactive step (promptless turn) waiting for input.
+    Open,
+}
+
+/// A suspension request: which kind, and the step id that requested it.
+#[derive(Debug, Clone)]
+pub struct PauseRequest {
+    pub kind: PauseKind,
+    pub id: String,
 }
 
 /// The local step engine for JS (script) workflows.
@@ -150,6 +170,15 @@ pub struct StepEngine<'a> {
     _sink_tx: tokio::sync::mpsc::UnboundedSender<gait_core::embed::SinkFrame>,
 }
 
+impl Drop for StepEngine<'_> {
+    fn drop(&mut self) {
+        // A dropped run_script future (e.g. Ctrl-C) must still record Cancelled
+        // for steps that were mid-flight. Log write errors are deliberately
+        // ignored here: the run is being torn down anyway.
+        self.cancel_in_flight("workflow run interrupted");
+    }
+}
+
 /// Mutable state of a [`StepEngine`].
 struct EngineState {
     /// The workflow-level config, once `config` has been handled.
@@ -164,6 +193,11 @@ struct EngineState {
     now_count: usize,
     /// How many `random` values have been issued (id suffix counter).
     random_count: usize,
+    /// Steps currently executing live (id, kind). Gates and held calls are
+    /// never registered; replayed steps never register.
+    in_flight: Vec<(String, String)>,
+    /// The first requested pause, if any. Later pause requests are held.
+    pause: Option<PauseRequest>,
 }
 
 /// What the journal says a step should do on this run.
@@ -220,6 +254,8 @@ impl<'a> StepEngine<'a> {
                 started: false,
                 now_count: 0,
                 random_count: 0,
+                in_flight: Vec::new(),
+                pause: None,
             }),
             worktree_ready: Cell::new(false),
             _sink_tx: sink_tx,
@@ -229,6 +265,83 @@ impl<'a> StepEngine<'a> {
     /// Whether the `config` step has been handled (WorkflowStart written).
     pub fn started(&self) -> bool {
         self.state.borrow().started
+    }
+
+    /// The ids of the steps currently executing live, in registration order.
+    pub fn in_flight_ids(&self) -> Vec<String> {
+        self.state
+            .borrow()
+            .in_flight
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Register a live step right after its NodeStart event is written.
+    fn register_in_flight(&self, id: &str, kind: &str) {
+        self.state
+            .borrow_mut()
+            .in_flight
+            .push((id.to_string(), kind.to_string()));
+    }
+
+    /// Unregister a step right after its terminal log event (NodeComplete or
+    /// NodeError) is written. Idempotent per step: a step that already wrote
+    /// its terminal event is no longer registered.
+    fn unregister_in_flight(&self, id: &str) {
+        self.state
+            .borrow_mut()
+            .in_flight
+            .retain(|(flight_id, _)| flight_id != id);
+    }
+
+    /// Whether a pause has been requested AND no step is executing live.
+    pub fn pause_ready(&self) -> bool {
+        let state = self.state.borrow();
+        state.pause.is_some() && state.in_flight.is_empty()
+    }
+
+    /// Take the requested pause (if one is ready). The pause is consumed.
+    pub fn take_pause(&self) -> Option<PauseRequest> {
+        if !self.pause_ready() {
+            return None;
+        }
+        self.state.borrow_mut().pause.take()
+    }
+
+    /// Request a pause (the FIRST request wins) if none is pending. Returns
+    /// whether THIS call owns the pause (i.e. none was already requested).
+    fn request_pause(&self, request: PauseRequest) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.pause.is_some() {
+            return false;
+        }
+        state.pause = Some(request);
+        true
+    }
+
+    /// Whether a live call is currently HELD because a pause was requested:
+    /// its future never resolves, it writes no log event and does not
+    /// register. Replays execute nothing and are still answered.
+    fn is_held(&self) -> bool {
+        self.state.borrow().pause.is_some()
+    }
+
+    /// Write a terminal Cancelled event for every registered step, notify
+    /// the observer, and clear the registry. Idempotent: a step that already
+    /// wrote its terminal event is no longer registered, so nothing is
+    /// written twice.
+    pub fn cancel_in_flight(&self, reason: &str) {
+        let ids: Vec<String> = {
+            let mut state = self.state.borrow_mut();
+            let taken = std::mem::take(&mut state.in_flight);
+            taken.into_iter().map(|(id, _)| id).collect()
+        };
+        for id in ids {
+            if let Ok(ev) = self.run_log.node_cancelled(&id, reason, 1) {
+                self.observer.borrow_mut().on_event(&ev);
+            }
+        }
     }
 
     /// Handle one `gait.wf.*` step request. Errors are plain strings — they
@@ -242,8 +355,9 @@ impl<'a> StepEngine<'a> {
             "config" => self.handle_config(args).await,
             "turn" => self.handle_turn(args).await,
             "shell" => self.handle_shell(args).await,
-            "now" => self.handle_now_random("now", args),
-            "random" => self.handle_now_random("random", args),
+            "gate" => self.handle_gate(args).await,
+            "now" => self.handle_now_random("now", args).await,
+            "random" => self.handle_now_random("random", args).await,
             other => Err(StepError::UnknownMethod(other.to_string())),
         }
         .map_err(|e| e.to_string())
@@ -426,8 +540,12 @@ impl<'a> StepEngine<'a> {
             opts.hooks.is_some(),
             false,
         )?;
+
+        // A promptless turn is an INTERACTIVE step: it suspends the run with
+        // an Open journal state instead of executing. Its replay rules differ
+        // from a prompt turn's, so it is handled separately below.
         if opts.prompt.is_none() {
-            return Err(StepError::MissingPrompt { id: id.clone() });
+            return self.handle_interactive_turn(&id, &opts).await;
         }
 
         // Replay check comes BEFORE accept_step's cap check: a replayed step
@@ -486,6 +604,12 @@ impl<'a> StepEngine<'a> {
             ReplayDisposition::Live => {}
         }
 
+        // Once a pause is requested, a live call is HELD: it never resolves,
+        // writes no log event, and does not register.
+        if self.is_held() {
+            return Ok(pending::<serde_json::Value>().await);
+        }
+
         self.accept_step(&id)?;
 
         let ev = self
@@ -498,6 +622,7 @@ impl<'a> StepEngine<'a> {
             )
             .map_err(StepError::LogWrite)?;
         self.observer.borrow_mut().on_event(&ev);
+        self.register_in_flight(&id, "turn");
 
         let req = TurnRequest {
             id: id.clone(),
@@ -517,7 +642,7 @@ impl<'a> StepEngine<'a> {
                     Some(j) => serde_json::to_string(j).unwrap_or_default(),
                     None => String::new(),
                 };
-                let ev = self
+                let log_result = self
                     .run_log
                     .node_complete(
                         &id,
@@ -527,7 +652,9 @@ impl<'a> StepEngine<'a> {
                         &json_text,
                         "",
                     )
-                    .map_err(StepError::LogWrite)?;
+                    .map_err(StepError::LogWrite);
+                self.unregister_in_flight(&id);
+                let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
                 Ok(serde_json::json!({
                     "output": outcome.output,
@@ -539,14 +666,201 @@ impl<'a> StepEngine<'a> {
             }
             Err(e) => {
                 let message = e.to_string();
-                let ev = self
+                let log_result = self
                     .run_log
                     .node_error(&id, &message, 1)
-                    .map_err(StepError::LogWrite)?;
+                    .map_err(StepError::LogWrite);
+                self.unregister_in_flight(&id);
+                let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
                 Err(StepError::TurnFailure(message))
             }
         }
+    }
+
+    /// Handle an INTERACTIVE turn step (`gait.wf.turn({ id })` with no
+    /// prompt): it suspends the run with an Open journal state and never
+    /// resolves. Replays follow the usual turn rules; an Open journal entry
+    /// is NOT an OpenStep error — the continue re-suspends the same step.
+    async fn handle_interactive_turn(
+        &self,
+        id: &str,
+        opts: &TurnOpts,
+    ) -> Result<serde_json::Value, StepError> {
+        let entry = self.journal.get(id);
+        match entry {
+            Some(entry) if entry.state != JournalState::Cancelled => {
+                if entry.kind != "turn" {
+                    return Err(StepError::KindChanged {
+                        id: id.to_string(),
+                        old: entry.kind.clone(),
+                        new: "turn".to_string(),
+                    });
+                }
+                match &entry.state {
+                    JournalState::Complete { .. } => {
+                        self.record_seen(id)?;
+                        let (session, output, exit, json_output) = match &entry.state {
+                            JournalState::Complete {
+                                session_id,
+                                output,
+                                exit_code,
+                                json_output,
+                            } => (session_id, output, exit_code, json_output),
+                            _ => unreachable!("checked above"),
+                        };
+                        let json: Option<serde_json::Value> = if json_output.is_empty() {
+                            None
+                        } else {
+                            serde_json::from_str(json_output).ok()
+                        };
+                        let session = if session.is_empty() {
+                            None
+                        } else {
+                            Some(session.clone())
+                        };
+                        return Ok(serde_json::json!({
+                            "output": output,
+                            "exit": exit,
+                            "json": json,
+                            "sessionId": session,
+                            "error": null,
+                        }));
+                    }
+                    JournalState::Errored { error } => {
+                        self.record_seen(id)?;
+                        let session = if entry.session_id.is_empty() {
+                            None
+                        } else {
+                            Some(entry.session_id.clone())
+                        };
+                        return Ok(serde_json::json!({
+                            "output": "",
+                            "exit": null,
+                            "json": null,
+                            "sessionId": session,
+                            "error": error,
+                        }));
+                    }
+                    JournalState::Open => {
+                        if !self.force_rerun.iter().any(|f| f == id) {
+                            // The interactive step is still open: re-suspend
+                            // it (exempt from the crash guard; the OpenStep
+                            // error stays narrow to prompt turns).
+                            if self.is_held() {
+                                return Ok(pending::<serde_json::Value>().await);
+                            }
+                            self.request_pause(PauseRequest {
+                                kind: PauseKind::Open,
+                                id: id.to_string(),
+                            });
+                            return Ok(pending::<serde_json::Value>().await);
+                        }
+                        // force-rerun: fall through to the live path.
+                    }
+                    JournalState::Cancelled => unreachable!("handled above"),
+                }
+            }
+            _ => {}
+        }
+
+        // Live: held calls never resolve and write no log event.
+        if self.is_held() {
+            return Ok(pending::<serde_json::Value>().await);
+        }
+
+        let ev = self
+            .run_log
+            .node_start(
+                id,
+                "turn",
+                1,
+                opts.continue_session.as_deref().unwrap_or(""),
+            )
+            .map_err(StepError::LogWrite)?;
+        self.observer.borrow_mut().on_event(&ev);
+        self.request_pause(PauseRequest {
+            kind: PauseKind::Open,
+            id: id.to_string(),
+        });
+        // The interactive step never resolves; the run suspends with the
+        // step's journal state Open (it is exempt from the crash guard).
+        Ok(pending::<serde_json::Value>().await)
+    }
+
+    /// Handle a `gate` step: parse, check, and either replay or request a
+    /// pause that suspends the run until a human continues it. A gate call
+    /// NEVER resolves: a first-run gate suspends the run; on the continue
+    /// (journal Open) it writes exactly one NodeComplete and returns null.
+    async fn handle_gate(&self, args: serde_json::Value) -> Result<serde_json::Value, StepError> {
+        let id = self.validate_common_step("gate", &args)?;
+        let opts: GateOpts = serde_json::from_value(args).map_err(|e| StepError::GateArgs {
+            id: id.clone(),
+            source: e,
+        })?;
+
+        if let Some(entry) = self.journal.get(&id) {
+            if entry.state != JournalState::Cancelled {
+                if entry.kind != "gate" {
+                    return Err(StepError::KindChanged {
+                        id: id.clone(),
+                        old: entry.kind.clone(),
+                        new: "gate".to_string(),
+                    });
+                }
+                match &entry.state {
+                    JournalState::Complete { .. } => {
+                        self.record_seen(&id)?;
+                        return Ok(serde_json::Value::Null);
+                    }
+                    JournalState::Errored { error } => {
+                        self.record_seen(&id)?;
+                        return Ok(serde_json::json!({ "error": error }));
+                    }
+                    JournalState::Open => {
+                        if !self.force_rerun.iter().any(|f| f == &id) {
+                            // The gate was reached on the previous run: this
+                            // continue RESOLVES it with exactly one
+                            // NodeComplete.
+                            self.record_seen(&id)?;
+                            let ev = self
+                                .run_log
+                                .node_complete(&id, "", "", None, "", "")
+                                .map_err(StepError::LogWrite)?;
+                            self.observer.borrow_mut().on_event(&ev);
+                            return Ok(serde_json::Value::Null);
+                        }
+                        // force-rerun: fall through to the live path.
+                    }
+                    JournalState::Cancelled => unreachable!("handled above"),
+                }
+            }
+        }
+
+        // Live: a held call (a pause was already requested) never resolves
+        // and writes no NodeStart.
+        if self.is_held() {
+            return Ok(pending::<serde_json::Value>().await);
+        }
+
+        // Gates do not count toward the step cap; only the duplicate-id
+        // check applies.
+        self.record_seen(&id)?;
+
+        let ev = self
+            .run_log
+            .node_start(&id, "gate", 1, "")
+            .map_err(StepError::LogWrite)?;
+        self.observer.borrow_mut().on_event(&ev);
+        self.request_pause(PauseRequest {
+            kind: PauseKind::Gate {
+                message: opts.message,
+            },
+            id: id.clone(),
+        });
+        // The gate never resolves: the run suspends once the in-flight
+        // registry is empty (see `pause_ready`).
+        Ok(pending::<serde_json::Value>().await)
     }
 
     /// Handle a `shell` step: parse, check, split host env, run, log, return.
@@ -625,6 +939,12 @@ impl<'a> StepEngine<'a> {
             ReplayDisposition::Live => {}
         }
 
+        // Once a pause is requested, a live call is HELD: it never resolves,
+        // writes no log event, and does not register.
+        if self.is_held() {
+            return Ok(pending::<serde_json::Value>().await);
+        }
+
         self.accept_step(&id)?;
 
         self.ensure_worktree().map_err(StepError::Worktree)?;
@@ -634,6 +954,7 @@ impl<'a> StepEngine<'a> {
             .node_start(&id, "shell", 1, "")
             .map_err(StepError::LogWrite)?;
         self.observer.borrow_mut().on_event(&ev);
+        self.register_in_flight(&id, "shell");
 
         let ctx = self.build_node_context(&id);
         match exec_shell_opts_with_host_env(&opts, &ctx, &[], &host_env).await {
@@ -642,19 +963,23 @@ impl<'a> StepEngine<'a> {
                     Some(j) => serde_json::to_string(j).unwrap_or_default(),
                     None => String::new(),
                 };
-                let ev = self
+                let log_result = self
                     .run_log
                     .node_complete(&id, "", &res.output, res.exit, &json_text, "")
-                    .map_err(StepError::LogWrite)?;
+                    .map_err(StepError::LogWrite);
+                self.unregister_in_flight(&id);
+                let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
                 serde_json::to_value(&res).map_err(|e| StepError::LogWrite(e.into()))
             }
             Err(e) => {
                 let message = e.to_string();
-                let ev = self
+                let log_result = self
                     .run_log
                     .node_error(&id, &message, 1)
-                    .map_err(StepError::LogWrite)?;
+                    .map_err(StepError::LogWrite);
+                self.unregister_in_flight(&id);
+                let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
                 Err(StepError::ShellFailure(message))
             }
@@ -673,7 +998,7 @@ impl<'a> StepEngine<'a> {
     /// the id (`__now_<n>` / `__random_<n>`) is assigned synchronously from a
     /// per-method counter, and the value is journaled so a replay returns the
     /// SAME value. These never count toward the step cap.
-    fn handle_now_random(
+    async fn handle_now_random(
         &self,
         method: &str,
         args: serde_json::Value,
@@ -715,6 +1040,12 @@ impl<'a> StepEngine<'a> {
                 _ => unreachable!("disposition says Complete"),
             };
             return serde_json::from_str(&json_output).map_err(StepError::ConfigArgs);
+        }
+
+        // Once a pause is requested, a live call is HELD: it never resolves
+        // and writes no log event. (Replays above are still answered.)
+        if self.is_held() {
+            return Ok(pending::<serde_json::Value>().await);
         }
 
         // Live: journal the value. `now` = unix time in ms; `random` = f64 in
@@ -903,6 +1234,7 @@ fn _call_future_is_send(h: &WorkflowHost) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::turn_exec::TurnOutcome;
     use serde_json::json;
 
     fn assert_send<T: Send>() {}
@@ -1015,6 +1347,76 @@ mod tests {
         (dir, engine)
     }
 
+    /// Build a StepEngine whose turns never resolve (a hanging executor) —
+    /// a live step stays mid-flight indefinitely.
+    fn make_hanging_engine() -> (TempDir, StepEngine<'static>) {
+        struct HangingExecutor;
+        #[async_trait::async_trait(?Send)]
+        impl TurnExecutor for HangingExecutor {
+            async fn run_turn(&self, _req: TurnRequest) -> anyhow::Result<TurnOutcome> {
+                std::future::pending::<()>().await;
+                unreachable!("pending never resolves");
+            }
+        }
+        make_engine_with_executor(Arc::new(HangingExecutor))
+    }
+
+    /// Build a StepEngine over the given turn executor.
+    fn make_engine_with_executor(turns: Arc<dyn TurnExecutor>) -> (TempDir, StepEngine<'static>) {
+        let dir = TempDir::new().unwrap();
+        let run_id = "run-test".to_string();
+        let runs_dir = dir.path().join("workflow-runs");
+        let log = WorkflowRunLog::create(&runs_dir, &run_id).unwrap();
+        let run_dir = runs_dir.join(&run_id);
+        let observer: &'static mut dyn crate::observer::WorkflowObserver =
+            Box::leak(Box::new(NullObserver));
+        let engine = StepEngine::new(
+            run_id,
+            dir.path(),
+            dir.path(),
+            Vec::new(),
+            "wf.js",
+            "deadbeef",
+            "export default async () => {}",
+            log,
+            run_dir,
+            turns,
+            ScriptJournal::from_events(&[]),
+            Vec::new(),
+            observer,
+        );
+        (dir, engine)
+    }
+
+    /// Build a StepEngine over an EXISTING run log: the journal is rebuilt
+    /// from that log's events, and further appends go to the same file.
+    fn make_engine_on_existing_log(
+        script: ScriptedTurnExecutor,
+        runs_dir: &std::path::Path,
+        run_id: &str,
+    ) -> StepEngine<'static> {
+        let log = WorkflowRunLog::open(runs_dir, run_id).unwrap();
+        let run_dir = runs_dir.join(run_id);
+        let journal_events = log.read_events().unwrap();
+        let observer: &'static mut dyn crate::observer::WorkflowObserver =
+            Box::leak(Box::new(NullObserver));
+        StepEngine::new(
+            run_id.to_string(),
+            runs_dir.parent().unwrap(),
+            runs_dir.parent().unwrap(),
+            Vec::new(),
+            "wf.js",
+            "deadbeef",
+            "export default async () => {}",
+            log,
+            run_dir,
+            Arc::new(script),
+            ScriptJournal::from_events(&journal_events),
+            Vec::new(),
+            observer,
+        )
+    }
+
     #[tokio::test]
     async fn config_must_come_first() {
         let (_dir, engine) = make_engine(ScriptedTurnExecutor::new(), None);
@@ -1088,8 +1490,8 @@ mod tests {
     #[tokio::test]
     async fn unknown_method_is_an_error() {
         let (_dir, engine) = make_engine(ScriptedTurnExecutor::new(), None);
-        let err = engine.handle("gate", json!({})).await.unwrap_err();
-        assert_eq!(err, "unknown gait.wf method 'gate'");
+        let err = engine.handle("bogus", json!({})).await.unwrap_err();
+        assert_eq!(err, "unknown gait.wf method 'bogus'");
     }
 
     #[tokio::test]
@@ -1424,5 +1826,262 @@ mod tests {
             })
             .collect();
         assert_eq!(starts, vec!["__now_1".to_string(), "__now_2".to_string()]);
+    }
+
+    // ── Gates, interactive steps, cancellation (task JS-5a) ─────────────────
+
+    /// The ids of NodeError events in the engine's log, with their kinds.
+    fn node_errors(dir: &TempDir) -> Vec<(String, i32)> {
+        let log = WorkflowRunLog::open(&dir.path().join("workflow-runs"), "run-test").unwrap();
+        log.read_events()
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev.kind {
+                Some(workflow_event::Kind::NodeError(ne)) => Some((ne.node_id, ne.kind)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// All events in the engine's log.
+    fn all_events(dir: &TempDir) -> Vec<workflow_event::Kind> {
+        let log = WorkflowRunLog::open(&dir.path().join("workflow-runs"), "run-test").unwrap();
+        log.read_events()
+            .unwrap()
+            .into_iter()
+            .map(|ev| ev.kind.expect("event must have a kind"))
+            .collect()
+    }
+
+    /// `cancel_in_flight` writes a Cancelled-kind NodeError per registered
+    /// step and clears the registry.
+    #[tokio::test]
+    async fn cancel_in_flight_writes_cancelled_and_clears_the_registry() {
+        let (_dir, engine) = make_hanging_engine();
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        // A live turn that never resolves registers as in-flight: the call
+        // is polled until the engine's registry shows the step, then
+        // cancelled mid-flight.
+        {
+            let handle_fut = engine.handle("turn", json!({ "id": "t1", "prompt": "hi" }));
+            tokio::pin!(handle_fut);
+            for _ in 0..200 {
+                assert!(
+                    futures_util::poll!(handle_fut.as_mut()).is_pending(),
+                    "turn must hang"
+                );
+                tokio::task::yield_now().await;
+                if !engine.in_flight_ids().is_empty() {
+                    break;
+                }
+            }
+            assert_eq!(engine.in_flight_ids(), vec!["t1".to_string()]);
+
+            engine.cancel_in_flight("test cancel");
+            assert!(engine.in_flight_ids().is_empty(), "registry must clear");
+            let errors = node_errors(&_dir);
+            assert_eq!(
+                errors,
+                vec![("t1".to_string(), NodeErrorKind::Cancelled as i32)]
+            );
+        }
+
+        // Drop the still-running turn; the step is no longer registered, so
+        // dropping must not write a SECOND terminal event for the same step.
+        assert_eq!(
+            node_errors(&_dir).len(),
+            1,
+            "a cancelled step must not be written twice"
+        );
+    }
+
+    /// A live gate writes a NodeStart with node_type gate, sets a Gate pause,
+    /// and never resolves (the call is driven under a short timeout).
+    #[tokio::test]
+    async fn gate_live_writes_node_start_and_sets_a_gate_pause() {
+        let (_dir, engine) = make_engine(ScriptedTurnExecutor::new(), None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            engine.handle("gate", json!({ "id": "review", "message": "look" })),
+        )
+        .await;
+        assert!(result.is_err(), "a live gate call must never resolve");
+
+        let events = all_events(&_dir);
+        assert!(
+            events.iter().any(
+                |k| matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "review" && ns.node_type == "gate")
+            ),
+            "the gate must write a NodeStart with node_type gate: {events:?}"
+        );
+        assert!(
+            !events.iter().any(
+                |k| matches!(k, workflow_event::Kind::NodeComplete(nc) if nc.node_id == "review")
+            ),
+            "a paused gate must not complete"
+        );
+
+        // The engine is not yet quiescent-checked: with nothing executing the
+        // pause is immediately ready, and it is a Gate pause for this gate.
+        assert!(engine.pause_ready());
+        let pause = engine.take_pause().expect("the gate must set a pause");
+        assert_eq!(pause.id, "review");
+        assert!(
+            matches!(&pause.kind, PauseKind::Gate { message } if message == "look"),
+            "the pause must carry the gate message: {pause:?}"
+        );
+    }
+
+    /// A gate whose journal entry is Open (reached on the previous run)
+    /// resolves on the continue: exactly one NodeComplete is written and the
+    /// call returns null.
+    #[tokio::test]
+    async fn gate_on_open_journal_writes_one_node_complete_and_returns_null() {
+        let events = vec![journal_event(workflow_event::Kind::NodeStart(NodeStart {
+            node_id: "review".into(),
+            node_type: "gate".into(),
+            attempt: 1,
+            ..Default::default()
+        }))];
+        let (_dir, engine) = make_engine_with_journal(ScriptedTurnExecutor::new(), events);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let value = engine
+            .handle("gate", json!({ "id": "review", "message": "look" }))
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::Value::Null);
+        assert!(!engine.pause_ready(), "a resolved gate must not pause");
+
+        let completes = all_events(&_dir)
+            .into_iter()
+            .filter(
+                |k| matches!(k, workflow_event::Kind::NodeComplete(nc) if nc.node_id == "review"),
+            )
+            .count();
+        assert_eq!(
+            completes, 1,
+            "the gate resolves with exactly one NodeComplete"
+        );
+    }
+
+    /// An interactive (promptless) turn writes NodeStart once, sets an Open
+    /// pause, and a re-call over the Open journal re-suspends without writing
+    /// a second NodeStart or an OpenStep error.
+    #[tokio::test]
+    async fn interactive_turn_sets_open_pause_and_node_start_once_across_re_call() {
+        let mut script = ScriptedTurnExecutor::new();
+        script.script_text("unused");
+        let (_dir, engine) = make_engine(script, None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let first = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            engine.handle("turn", json!({ "id": "chat" })),
+        )
+        .await;
+        assert!(first.is_err(), "a live interactive turn must never resolve");
+        assert!(engine.pause_ready());
+        let pause = engine.take_pause().unwrap();
+        assert_eq!(pause.id, "chat");
+        assert!(matches!(pause.kind, PauseKind::Open));
+        assert_eq!(
+            all_events(&_dir)
+                .into_iter()
+                .filter(
+                    |k| matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat")
+                )
+                .count(),
+            1,
+            "the first call writes exactly one NodeStart"
+        );
+
+        // Re-call over the Open journal: re-suspend, no new NodeStart.
+        // Reuse the SAME run log (the second engine appends to it) and
+        // rebuild the journal from the log's actual events, exactly as a
+        // resumed run would.
+        let runs_dir = _dir.path().join("workflow-runs");
+        let engine2 =
+            make_engine_on_existing_log(ScriptedTurnExecutor::new(), &runs_dir, "run-test");
+        engine2
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            engine2.handle("turn", json!({ "id": "chat" })),
+        )
+        .await;
+        assert!(second.is_err(), "the re-call must re-suspend, not error");
+        assert!(
+            engine2.pause_ready(),
+            "the re-call must set the Open pause again"
+        );
+        assert_eq!(
+            all_events(&_dir)
+                .into_iter()
+                .filter(
+                    |k| matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat")
+                )
+                .count(),
+            1,
+            "the re-call must NOT write a second NodeStart"
+        );
+    }
+
+    /// Once a pause is requested, a later live step call is HELD: it writes
+    /// no log event and never resolves (driven under a short timeout).
+    #[tokio::test]
+    async fn held_call_after_pause_writes_nothing() {
+        let mut script = ScriptedTurnExecutor::new();
+        script.script_text("unused");
+        let (_dir, engine) = make_engine(script, None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        // A live gate requests the first pause.
+        let gate = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            engine.handle("gate", json!({ "id": "g", "message": "m" })),
+        )
+        .await;
+        assert!(gate.is_err(), "the gate must suspend");
+
+        let before = all_events(&_dir).len();
+
+        // A later live call (a prompt turn) is held: it never resolves and
+        // writes no log event.
+        let held = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            engine.handle("turn", json!({ "id": "t1", "prompt": "hi" })),
+        )
+        .await;
+        assert!(held.is_err(), "a held call must never resolve");
+        assert_eq!(
+            all_events(&_dir).len(),
+            before,
+            "a held call must write no log event"
+        );
+        assert!(
+            !engine.in_flight_ids().contains(&"t1".to_string()),
+            "a held call must not register"
+        );
     }
 }
