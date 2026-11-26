@@ -94,7 +94,6 @@
 1	crates/gait-workflow/src/hooks.rs: ratchet.error_to_string: error formatted as string
 4	crates/gait-workflow/src/host.rs: ratchet.error_to_string: error converted to string
 1	crates/gait-workflow/src/host.rs: ratchet.raw_channel: raw tokio channel
-1	crates/gait-workflow/src/script.rs: ratchet.error_to_string: error converted to string
 1	crates/gait-workflow/src/observer.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-workflow/src/output.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-workflow/src/record.rs: ratchet.error_to_string: error formatted as string

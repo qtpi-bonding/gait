@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use gait_codemode::{ApiSurface, CodeModeError, LimitsMode, RunOptions, WorkflowLimits};
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
-use crate::host::{StepEngine, StepRequest, WorkflowHost};
+use crate::host::{PauseKind, StepEngine, StepRequest, WorkflowHost};
 use crate::observer::WorkflowObserver;
 use crate::run_log::WorkflowRunLog;
 use crate::runner::WorkflowOutcome;
@@ -255,7 +255,17 @@ pub async fn run_script(
         let open_ids = journal.open_ids();
         let unaccepted: Vec<String> = open_ids
             .iter()
-            .filter(|id| !opts.force_rerun_nodes.contains(id))
+            // Gates and promptless (interactive) turns are EXEMPT: a gate
+            // pause and an interactive suspension both leave their step
+            // Open by design, and a plain continue is the normal path. An
+            // interactive turn's prompt-lessness can only be judged at the
+            // call site, so its crash (a crashed PROMPT turn stays guarded)
+            // is caught there instead of here.
+            .filter(|id| {
+                let entry = journal.get(id).expect("open id must have an entry");
+                let exempt = entry.kind == "gate" || entry.kind == "turn";
+                !exempt && !opts.force_rerun_nodes.contains(id)
+            })
             .cloned()
             .collect();
         if !unaccepted.is_empty() {
@@ -300,6 +310,8 @@ pub async fn run_script(
 
     let started;
     let mut finished: Option<Result<gait_codemode::RunReport, CodeModeError>> = None;
+    let mut paused = false;
+    let outcome;
     {
         let engine = StepEngine::new(
             &run_id,
@@ -348,6 +360,16 @@ pub async fn run_script(
         tokio::pin!(run_fut);
 
         loop {
+            // A requested pause whose steps have all settled: stop the run
+            // here. The run future (blocked on the never-resolving pause
+            // call) is simply dropped, so no script catch/finally can
+            // observe the suspension as a rejection. While steps are still
+            // in flight the loop keeps polling them (and answering replays)
+            // until the registry drains.
+            if !paused && engine.pause_ready() {
+                paused = true;
+                break;
+            }
             tokio::select! {
                 biased;
                 res = &mut run_fut, if finished.is_none() => {
@@ -379,35 +401,110 @@ pub async fn run_script(
                         }
                     }
                 }
+                _ = std::future::poll_fn(|_cx| {
+                    if engine.pause_ready() {
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                }) => {
+                    paused = true;
+                    break;
+                }
             }
         }
         // Dropping the in-flight futures cancels pending steps (shell children
         // die via kill_on_drop).
         drop(in_flight);
+        if engine.pause_ready() {
+            paused = true;
+        }
+        outcome = if paused {
+            // The run may have completed in the same poll in which a pause
+            // became ready. Pausing takes precedence over interpreting the
+            // completed report (including unawaited-step and rejection
+            // checks).
+            // The registry is empty (pause_ready), so no cancel is needed.
+            let pause = engine.take_pause().expect("a ready pause must be takeable");
+            match pause.kind {
+                PauseKind::Gate { message } => RunEnd::Paused {
+                    gate: Some((pause.id, message)),
+                },
+                PauseKind::Open => RunEnd::Paused { gate: None },
+            }
+        } else {
+            match finished.take() {
+                Some(Ok(report)) => {
+                    let ids = engine.in_flight_ids();
+                    if !ids.is_empty() {
+                        // Steps started but never awaited before the script
+                        // ended: cancel each and fail the run.
+                        let message = ids
+                            .iter()
+                            .map(|id| format!("step {id} was not awaited"))
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        engine.cancel_in_flight("step was not awaited");
+                        RunEnd::Failed { message }
+                    } else if !report.unhandled_rejections.is_empty() {
+                        let message = format!(
+                            "workflow failed with unhandled promise rejection(s): {}",
+                            report.unhandled_rejections.join("; ")
+                        );
+                        engine.cancel_in_flight("workflow failed");
+                        RunEnd::Failed { message }
+                    } else {
+                        RunEnd::Completed
+                    }
+                }
+                Some(Err(e)) => {
+                    // Cancel leftovers BEFORE the workflow_error so failed
+                    // siblings get Cancelled events.
+                    engine.cancel_in_flight("workflow failed");
+                    RunEnd::Failed {
+                        message: e.to_string(),
+                    }
+                }
+                None => unreachable!("the loop only breaks after finishing or pausing"),
+            }
+        };
         started = engine.started();
     }
 
     // (5) Result handling.
-    match finished.expect("run future must finish before the loop exits") {
-        Ok(report) => {
-            if !report.unhandled_rejections.is_empty() {
-                let message = format!(
-                    "workflow failed with unhandled promise rejection(s): {}",
-                    report.unhandled_rejections.join("; ")
-                );
-                return finish_with_error(&run_log, &run_id, started, &message, observer);
+    match outcome {
+        RunEnd::Paused { gate } => match gate {
+            None => Ok(WorkflowOutcome::NodeOpen),
+            Some((id, message)) => {
+                let ev = run_log.workflow_gate(&id, &message)?;
+                observer.on_event(&ev);
+                Ok(WorkflowOutcome::GatePaused)
             }
+        },
+        RunEnd::Completed => {
             if started {
                 let ev = run_log.workflow_complete(&run_id)?;
                 observer.on_event(&ev);
             }
             Ok(WorkflowOutcome::Completed)
         }
-        Err(e) => {
-            let message = e.to_string();
+        RunEnd::Failed { message } => {
             finish_with_error(&run_log, &run_id, started, &message, observer)
         }
     }
+}
+
+/// How the script loop ended, decided inside the engine's scope.
+enum RunEnd {
+    /// The run suspended: a gate (with id + message) or an interactive step.
+    Paused {
+        /// `Some((id, message))` for a gate pause, `None` for an Open one.
+        gate: Option<(String, String)>,
+    },
+    /// The script ran to the end successfully.
+    Completed,
+    /// The run failed with this message.
+    Failed { message: String },
 }
 
 /// Write the terminal `workflow_error` event (if the run started) and turn
