@@ -9,7 +9,7 @@ use std::path::Path;
 #[test]
 fn gait_dir_trailing_after_workflow_run_args_is_still_used() {
     let ws = tempfile::TempDir::new().unwrap();
-    // No `workflows/somename.yaml` under ws — we're not exercising a real
+    // No `workflows/somename.js` under ws — we're not exercising a real
     // workflow run, only proving `cmd_workflow` resolved `gait_dir` to `ws`,
     // not `$GAIT_DIR` (which we deliberately don't set at all here).
     let exe = env!("CARGO_BIN_EXE_gait");
@@ -24,7 +24,7 @@ fn gait_dir_trailing_after_workflow_run_args_is_still_used() {
         !stderr.contains("no gait dir"),
         "gait_dir must have been resolved from the trailing --gait-dir, not left unset: {stderr}"
     );
-    let expected_path = Path::new(ws.path()).join("workflows").join("somename.yaml");
+    let expected_path = Path::new(ws.path()).join("workflows").join("somename.js");
     assert!(
         stderr.contains(&expected_path.display().to_string()),
         "expected the error to reference the explicit --gait-dir path {}, got: {stderr}",

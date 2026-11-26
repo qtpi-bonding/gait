@@ -1360,16 +1360,17 @@ pub(crate) async fn run_named_workflow(
 mod run_named_workflow_tests {
     use super::run_named_workflow;
 
-    /// Invalid YAML in the workflow file must surface both the headline and
-    /// the parser's detail (line/column), not just the top-level text.
+    /// A broken JS script (syntax error) must surface both the headline
+    /// ("workflow run failed") and the parser's detail ("Unexpected token"),
+    /// not just the top-level text.
     #[tokio::test]
-    async fn invalid_yaml_reports_headline_and_parser_detail() {
+    async fn broken_script_reports_headline_and_detail() {
         let tmp = tempfile::TempDir::new().unwrap();
         let gait_dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
         std::fs::write(
-            gait_dir.join("workflows/bad.yaml"),
-            "name: bad\nnodes:\n  - id: [unclosed\n",
+            gait_dir.join("workflows/bad.js"),
+            "await gait.wf.config({ name: \"bad\" ;\n",
         )
         .unwrap();
 
@@ -1379,18 +1380,20 @@ mod run_named_workflow_tests {
             result.starts_with("workflow error:"),
             "unexpected result: {result}"
         );
-        assert!(result.contains("invalid workflow YAML"), "{result}");
         assert!(
-            result.contains("line") || result.contains("column"),
+            result.contains("workflow run failed"),
+            "headline missing: {result}"
+        );
+        assert!(
+            result.contains("Unexpected token"),
             "parser detail missing: {result}"
         );
     }
 
-    /// Spec-06 §5 Task 4.1 smoke test: a 1-node workflow (empty prompt ->
-    /// `NodeOutput::open()`, no provider call) runs foreground through
-    /// `run_workflow` and leaves a run log under `workflow-runs/`. Proves the
-    /// `/workflow` command's new path awaits inline instead of detaching a
-    /// thread.
+    /// A script workflow whose only step is an interactive turn with no prompt
+    /// (no provider call) runs in the foreground, leaves the run open and leaves
+    /// a run log under `workflow-runs/`: `/workflow` awaits inline instead of
+    /// detaching a thread.
     #[tokio::test]
     async fn runs_named_workflow_and_leaves_a_run_log() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1411,8 +1414,8 @@ mod run_named_workflow_tests {
             .unwrap();
         std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
         std::fs::write(
-            gait_dir.join("workflows/smoke.yaml"),
-            "name: smoke\nnodes:\n  - id: chat\n    prompt: \"\"\n",
+            gait_dir.join("workflows/smoke.js"),
+            "await gait.wf.config({ name: \"smoke\" });\nawait gait.wf.turn({ id: \"chat\" });\n",
         )
         .unwrap();
 

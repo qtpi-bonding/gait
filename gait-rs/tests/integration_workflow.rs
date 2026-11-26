@@ -1,9 +1,12 @@
+//! End-to-end coverage of the JS script workflow engine: each test writes a
+//! script into `<gait_dir>/workflows/<name>.js` and runs it through the public
+//! entry point `gait_workflow::launch::run_named`, then asserts on the run log
+//! under `<gait_dir>/workflow-runs/<run_id>/`.
+
 use gait_workflow::{
-    convert,
+    launch::{run_named, LaunchEnv},
     observer::CliObserver,
     run_log::WorkflowRunLog,
-    runner::{run_workflow, WorkflowRunOpts},
-    schema::WorkflowDef,
     state::{reconstruct_state, NodeStatus},
 };
 use tempfile::TempDir;
@@ -26,42 +29,46 @@ fn init_git_repo(dir: &std::path::Path) {
         .ok();
 }
 
+/// Write `source` as `<gait_dir>/workflows/<name>.js` and run it through the
+/// public launch entry. Returns the run id so the test can open the run log.
+async fn run_script_workflow(ws: &TempDir, name: &str, source: &str) -> String {
+    let dir = ws.path().join("workflows");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{name}.js")), source).unwrap();
+
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    let mut started = |_: &str, _: &str| {};
+    let (run_id, _outcome) = run_named(
+        name,
+        vec![],
+        LaunchEnv {
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            started: &mut started,
+            sink: &mut sink,
+            observer: &mut CliObserver,
+        },
+    )
+    .await
+    .unwrap();
+    run_id
+}
+
 #[tokio::test]
 async fn shell_only_workflow_runs_and_commits() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-    std::fs::create_dir_all(ws.path().join("workflows")).unwrap();
-
-    let yaml = r#"
-name: test-shell
-nodes:
-  - id: greet
-    shell: "echo hello"
-"#;
-    std::fs::write(ws.path().join("workflows/test-shell.yaml"), yaml).unwrap();
-
-    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let session_id = "swf_test01";
-
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    run_workflow(
-        WorkflowRunOpts {
-            workflow_def: convert::to_proto(&wf),
-            yaml_path: "workflows/test-shell.yaml".into(),
-            run_id: session_id.into(),
-            gait_dir: ws.path().to_path_buf(),
-            codebase: ws.path().to_path_buf(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
+    let session_id = run_script_workflow(
+        &ws,
+        "test-shell",
+        r#"
+        await gait.wf.config({ name: "test-shell" });
+        await gait.wf.shell({ id: "greet", script: "echo hello" });
+    "#,
     )
-    .await
-    .unwrap();
+    .await;
 
-    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), &session_id).unwrap();
     let events = run_log.read_events().unwrap();
     let state = reconstruct_state(&events);
     assert_eq!(
@@ -86,50 +93,25 @@ nodes:
 }
 
 #[tokio::test]
-async fn branch_node_routes_and_skips_inactive() {
+async fn script_if_runs_only_the_taken_step() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-
-    let yaml = r#"
-name: branch-test
-nodes:
-  - id: check
-    shell: "echo 0"
-  - id: route
-    branch:
-      on: "0 == 0"
-      then: pass-node
-      else: fail-node
-    depends_on: [check]
-  - id: pass-node
-    shell: "echo pass"
-    depends_on: [route]
-  - id: fail-node
-    shell: "echo fail"
-    depends_on: [route]
-"#;
-    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let session_id = "swf_branch01";
-
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    run_workflow(
-        WorkflowRunOpts {
-            workflow_def: convert::to_proto(&wf),
-            yaml_path: "workflows/branch-test.yaml".into(),
-            run_id: session_id.into(),
-            gait_dir: ws.path().to_path_buf(),
-            codebase: ws.path().to_path_buf(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
+    let session_id = run_script_workflow(
+        &ws,
+        "script-if-test",
+        r#"
+        await gait.wf.config({ name: "script-if-test" });
+        const check = await gait.wf.shell({ id: "check", script: "echo 0" });
+        if (check.output.trim() === "0") {
+            await gait.wf.shell({ id: "pass-node", script: "echo pass" });
+        } else {
+            await gait.wf.shell({ id: "fail-node", script: "echo fail" });
+        }
+    "#,
     )
-    .await
-    .unwrap();
+    .await;
 
-    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), &session_id).unwrap();
     let events = run_log.read_events().unwrap();
     let state = reconstruct_state(&events);
     assert_eq!(
@@ -137,60 +119,56 @@ nodes:
         NodeStatus::Done,
         "pass-node must be done"
     );
+    // Scripts have no Skipped state: the untaken branch is simply never run,
+    // so `fail-node` stays Pending and has no NodeStart/NodeComplete/NodeError
+    // events in the run log.
     assert_eq!(
         state.node_status("fail-node"),
-        NodeStatus::Skipped,
-        "fail-node must be skipped"
+        NodeStatus::Pending,
+        "fail-node must never have been run"
+    );
+    assert!(
+        events.iter().all(|ev| match &ev.kind {
+            Some(gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeStart(ns)) => {
+                ns.node_id != "fail-node"
+            }
+            Some(gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeComplete(nc)) =>
+                nc.node_id != "fail-node",
+            Some(gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeError(ne)) => {
+                ne.node_id != "fail-node"
+            }
+            _ => true,
+        }),
+        "fail-node must have no node events in the run log: {events:?}"
     );
 }
 
-/// Phase 3a proof: `run_workflow` now records its events through a `Recorder` +
-/// a spawned `StdioSink` consumer (no more `wire::emit`/`println!` to stdout).
-/// Two guarantees:
+/// Phase 3a proof: the run records its events through a `Recorder` + a spawned
+/// `StdioSink` consumer (no `println!` to stdout). Two guarantees:
 ///   1. The run's own typed run log (`workflow-runs/<run_id>/log.jsonl`) carries
 ///      `WorkflowStart`/`WorkflowComplete` — the durable transcript of the run
 ///      (item 9: sessions must not know workflows exist, so this is no longer
-///      the session's `log.jsonl` — see `session_log_purity` in gait-workflow).
+///      the session's `log.jsonl`).
 ///   2. `.await.unwrap()` returns — the run drops the `Recorder` (closing the
 ///      channel) and joins the consumer cleanly, i.e. no deadlock on exit.
 #[tokio::test]
 async fn workflow_events_recorded_through_channel_no_stdout_echo() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-    std::fs::create_dir_all(ws.path().join("workflows")).unwrap();
-
-    let yaml = r#"
-name: rec-test
-nodes:
-  - id: greet
-    shell: "echo hi"
-"#;
-    std::fs::write(ws.path().join("workflows/rec-test.yaml"), yaml).unwrap();
-    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let run_id = "swf_rec01";
-
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    run_workflow(
-        WorkflowRunOpts {
-            workflow_def: convert::to_proto(&wf),
-            yaml_path: "workflows/rec-test.yaml".into(),
-            run_id: run_id.into(),
-            gait_dir: ws.path().to_path_buf(),
-            codebase: ws.path().to_path_buf(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
+    let run_id = run_script_workflow(
+        &ws,
+        "rec-test",
+        r#"
+        await gait.wf.config({ name: "rec-test" });
+        await gait.wf.shell({ id: "greet", script: "echo hi" });
+    "#,
     )
-    .await
-    .unwrap();
+    .await;
 
     let run_log = ws
         .path()
         .join("workflow-runs")
-        .join(run_id)
+        .join(&run_id)
         .join("log.jsonl");
     let content = std::fs::read_to_string(&run_log).unwrap();
     assert!(
@@ -203,7 +181,7 @@ nodes:
     );
 
     // item 9: the session log must NOT carry workflow lifecycle events.
-    let session_log = gait_core::session::live::log_path(ws.path(), run_id);
+    let session_log = gait_core::session::live::log_path(ws.path(), &run_id);
     if session_log.exists() {
         let session_content = std::fs::read_to_string(&session_log).unwrap();
         assert!(
@@ -214,151 +192,18 @@ nodes:
     }
 }
 
-/// Phase 3b proof: a prompt node's sub-turn must publish its events to the
-/// WORKFLOW's channel (the dropped-receiver fix), not into a discarded receiver.
-/// We drive `exec_prompt_node` directly with a test-owned sender and assert at
-/// least one sub-turn event arrives on it. After Task 3, exec_prompt_node uses
-/// `run_loop` — it no longer takes a `provider` arg, but the per-turn items
-/// still flow through the workflow's channel via the capturing/forwarding sink.
-///
-/// Note: the original test used `Arc::new(EchoProvider)` to drive `run_turn`
-/// without making any network call. After the rewrite, `exec_prompt_node`
-/// resolves its own `ResolvedProfile` via `build_workflow_node_profile` (which
-/// loads the real provider from `factory::load_provider`). Without a real model
-/// API key this would attempt a network call. We therefore set a placeholder
-/// env var and rely on the test running in an environment where either:
-///   * the model returns a TurnResult::Permissions / Clarify quickly (test still
-///     asserts on the channel receiving at least one event), or
-///   * the test is allowed to fail in CI (we mark it `#[ignore]`-like — but
-///     since prompt-node network calls are CI-fragile, we keep the test as a
-///     smoke test that asserts the sub-turn publishes events when it does run).
-///
-/// The previous shape of the assertion is preserved: at least one item shows
-/// up on the workflow channel. The driver handles errors via `run_loop`'s
-/// `on_turn_error` returning `Continue`, so a network failure propagates as
-/// `Err` and the test fails clearly rather than hanging.
-#[tokio::test]
-#[ignore = "requires real network call — run manually to verify prompt sub-turn channel wiring"]
-async fn prompt_subturn_publishes_to_workflow_channel() {
-    use gait_core::proto::gait::log::v1::{event, payload, stream_item};
-    use gait_core::proto::gait::workflow::v1::node;
-    use gait_workflow::exec_prompt::exec_prompt_node;
-    use gait_workflow::exec_shell::NodeContext;
-    use gait_workflow::vars::VarContext;
-
-    std::env::set_var("MINIMAX_API_KEY", "test-key-not-used");
-
-    let ws = TempDir::new().unwrap();
-    init_git_repo(ws.path());
-
-    let yaml = "name: prompt-test\nnodes:\n  - id: p\n    prompt: \"say hi\"\n";
-    let wf_def: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let wf_proto = convert::to_proto(&wf_def);
-    let proto_node = &wf_proto.nodes[0];
-    let prompt_body = match proto_node.body.as_ref().unwrap() {
-        node::Body::Prompt(p) => p,
-        _ => panic!("expected prompt node"),
-    };
-    let session_id = "swf_prompt01";
-
-    // exec_prompt_node now runs `run_loop`, which expects the session worktree
-    // to exist before it appends the input event.
-    gait_core::git::Repos::production()
-        .traces
-        .create_session_worktree(ws.path(), session_id)
-        .unwrap();
-
-    // Test owns the channel; assert the sub-turn published to THIS sender.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<gait_core::embed::SinkFrame>();
-
-    {
-        let ctx = NodeContext {
-            env_passthrough: Vec::new(),
-            workflow_id: "wf1",
-            session_id,
-            node_session: session_id,
-            gait_dir: ws.path(),
-            codebase: ws.path(),
-            run_worktree: ws.path(),
-            workflow_tx: &tx,
-            sandbox_on: None,
-            cascade_group_arg: None,
-            cascade: None,
-            profile: None,
-            fs_delegate: None,
-            // This fixture's gait_dir and codebase are the same tempdir (test
-            // convenience) and it drives a real `run_loop`, so the in-tree
-            // safety guard (design §7 / Task 5) would otherwise refuse it.
-            allow_intree: true,
-            vars: VarContext {
-                workflow_id: "wf1".into(),
-                session_id: session_id.into(),
-                gait_dir: ws.path().to_path_buf(),
-                codebase: ws.path().to_path_buf(),
-                args: "".into(),
-                node_id: "p".into(),
-                node_outputs: Default::default(),
-                node_exit: None,
-                failed_node: None,
-            },
-        };
-        // exec_prompt_node signature: (node, prompt_node, ctx, wf, input)
-        exec_prompt_node(proto_node, prompt_body, &ctx, &wf_proto, None)
-            .await
-            .unwrap();
-    } // ctx drops here, releasing the &tx borrow
-
-    let mut saw_event = false;
-    while let Ok(frame) = rx.try_recv() {
-        if let gait_core::embed::SinkFrame::Item(item) = frame {
-            if let Some(stream_item::Item::Event(ev)) = item.item {
-                if let Some(event::Body::Payload(p)) = ev.body {
-                    if matches!(
-                        p.kind,
-                        Some(payload::Kind::UserText(_))
-                            | Some(payload::Kind::AssistantText(_))
-                            | Some(payload::Kind::ToolCall(_))
-                    ) {
-                        saw_event = true;
-                    }
-                }
-            }
-        }
-    }
-    assert!(
-        saw_event,
-        "prompt sub-turn must publish events to the workflow channel (3b)"
-    );
-}
-
 #[tokio::test]
 async fn smoke_parallel_workflow_completes() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-
-    let yaml = include_str!("fixtures/workflows/smoke-parallel.yaml");
-    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let session_id = "swf_smoke_parallel";
-
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    run_workflow(
-        WorkflowRunOpts {
-            workflow_def: convert::to_proto(&wf),
-            yaml_path: "smoke-parallel.yaml".into(),
-            run_id: session_id.into(),
-            gait_dir: ws.path().to_path_buf(),
-            codebase: ws.path().to_path_buf(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
+    let session_id = run_script_workflow(
+        &ws,
+        "smoke-parallel",
+        include_str!("fixtures/workflows/smoke-parallel.js"),
     )
-    .await
-    .unwrap();
+    .await;
 
-    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), &session_id).unwrap();
     let events = run_log.read_events().unwrap();
     let state = reconstruct_state(&events);
     assert_eq!(
@@ -376,100 +221,61 @@ async fn smoke_parallel_workflow_completes() {
         NodeStatus::Done,
         "join must be done"
     );
-}
 
-#[tokio::test]
-async fn smoke_cycle_workflow_via_goto() {
-    let ws = TempDir::new().unwrap();
-    init_git_repo(ws.path());
-
-    let yaml = include_str!("fixtures/workflows/smoke-cycle.yaml");
-    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let session_id = "swf_smoke_cycle";
-
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    run_workflow(
-        WorkflowRunOpts {
-            workflow_def: convert::to_proto(&wf),
-            yaml_path: "smoke-cycle.yaml".into(),
-            run_id: session_id.into(),
-            gait_dir: ws.path().to_path_buf(),
-            codebase: ws.path().to_path_buf(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
-    )
-    .await
-    .unwrap();
-
-    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
-    let events = run_log.read_events().unwrap();
-    let state = reconstruct_state(&events);
-    assert_eq!(
-        state.node_status("producer"),
-        NodeStatus::Done,
-        "producer must be done"
+    // join's NodeStart must come after BOTH branches' NodeComplete.
+    let mut branch_a_complete = None;
+    let mut branch_b_complete = None;
+    let mut join_start = None;
+    for (i, ev) in events.iter().enumerate() {
+        match &ev.kind {
+            Some(gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeComplete(nc))
+                if nc.node_id == "branch-a" =>
+            {
+                branch_a_complete = Some(i);
+            }
+            Some(gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeComplete(nc))
+                if nc.node_id == "branch-b" =>
+            {
+                branch_b_complete = Some(i);
+            }
+            Some(gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeStart(ns))
+                if ns.node_id == "join" =>
+            {
+                join_start = Some(i);
+            }
+            _ => {}
+        }
+    }
+    let (a, b, j) = (
+        branch_a_complete.unwrap(),
+        branch_b_complete.unwrap(),
+        join_start.unwrap(),
     );
-    assert_eq!(
-        state.node_status("consumer"),
-        NodeStatus::Done,
-        "consumer must be done"
+    assert!(
+        j > a && j > b,
+        "join must start after both branches complete"
     );
 }
 
-// Regression test for `on_error.retry_times`. The previous version of this
-// test (`smoke_retry_on_error_goto`) relied on `goto: recovery`, a fixture
-// field `OnErrorConfig` never actually parses into anything (there is no
-// `goto` routing in the scheduler at all — it was silently dropped by serde
-// as an unknown field), and on a `sleep 10` node with a 100ms timeout to
-// force a failure. Two problems: (1) it asserted behavior
-// (`log.contains("on_error goto")`) that no code path ever produces, so it
-// could never actually pass once it reached that assertion; in practice it
-// always failed earlier, at the `run_workflow(...).unwrap()` call, because
-// `on_error.continue`/`goto` being absent meant the exhausted-retries error
-// aborted the whole run. (2) even that abort depended on a real wall-clock
-// race between a `sleep 10` timing out at exactly 100ms and a sibling node's
-// `echo` finishing first — exactly the kind of timing-dependent setup that
-// makes a test flaky under load. This version tests the actually-implemented
-// mechanism deterministically: a node whose command result depends only on
-// whether it has already run once (a marker file), not on wall-clock timing,
-// so retry_times actually recovering the node is exercised without any
-// timeout/sleep race, and a downstream `depends_on` node correctly waits for
-// that recovery instead of running unconditionally in parallel.
+// Regression test for retry recovery. The flaky node's command result depends
+// only on a marker file (deterministic: first attempt fails, retry succeeds),
+// so the retry budget is exercised with no wall-clock/timing race, and the
+// downstream `recovery` step still waits for the recovery.
 #[tokio::test]
 async fn retry_recovers_from_transient_failure() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-
-    let yaml = include_str!("fixtures/workflows/smoke-retry.yaml");
-    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let session_id = "swf_smoke_retry";
-
-    let mut sink = gait_core::embed::CliSink::stdio(true);
-    run_workflow(
-        WorkflowRunOpts {
-            workflow_def: convert::to_proto(&wf),
-            yaml_path: "smoke-retry.yaml".into(),
-            run_id: session_id.into(),
-            gait_dir: ws.path().to_path_buf(),
-            codebase: ws.path().to_path_buf(),
-            args: vec![],
-            ..Default::default()
-        },
-        &mut sink,
-        &mut CliObserver,
-        None,
+    let session_id = run_script_workflow(
+        &ws,
+        "smoke-retry",
+        include_str!("fixtures/workflows/smoke-retry.js"),
     )
-    .await
-    .unwrap();
+    .await;
 
     let log = std::fs::read_to_string(
         ws.path()
             .join("workflow-runs")
-            .join(session_id)
+            .join(&session_id)
             .join("log.jsonl"),
     )
     .unwrap();
@@ -477,7 +283,7 @@ async fn retry_recovers_from_transient_failure() {
         !log.contains("\"nodeError\""),
         "a node that recovers within its retry budget must not log nodeError: {log}"
     );
-    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), &session_id).unwrap();
     let events = run_log.read_events().unwrap();
     let state = reconstruct_state(&events);
     assert_eq!(
