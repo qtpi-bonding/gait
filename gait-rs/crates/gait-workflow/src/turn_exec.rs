@@ -219,6 +219,10 @@ pub(crate) async fn drive_turn(
             ..TurnOutcome::default()
         });
     }
+    // A failed turn is an error, so `retry` and `onFail` apply to it.
+    if outcome.exit_code.is_some_and(|code| code != 0) {
+        anyhow::bail!("turn failed: {}", outcome.text.unwrap_or_default());
+    }
     Ok(TurnOutcome {
         output: outcome.text.unwrap_or_default(),
         exit: outcome.exit_code,

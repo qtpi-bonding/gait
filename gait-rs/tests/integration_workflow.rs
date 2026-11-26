@@ -3,10 +3,13 @@
 //! entry point `gait_workflow::launch::run_named`, then asserts on the run log
 //! under `<gait_dir>/workflow-runs/<run_id>/`.
 
+mod common;
+
 use gait_workflow::{
     launch::{run_named, LaunchEnv},
-    observer::CliObserver,
+    observer::{CliObserver, NullObserver},
     run_log::WorkflowRunLog,
+    runner::WorkflowOutcome,
     state::{reconstruct_state, NodeStatus},
 };
 use tempfile::TempDir;
@@ -295,5 +298,140 @@ async fn retry_recovers_from_transient_failure() {
         state.node_status("recovery"),
         NodeStatus::Done,
         "recovery must run after flaky's retry-recovery completes"
+    );
+}
+
+/// Set up a mock-brain turn workflow: `frames[N]` is written to
+/// `mock_frames.<N>.bin` (per-invocation brain output), `script` is written as
+/// `<gait_dir>/workflows/turn-retry.js`, and the run is launched. The
+/// `TempDir`s are returned so they stay alive for the caller's asserts.
+async fn run_mock_turn_workflow(
+    frames: &[Vec<u8>],
+    script: &str,
+) -> (
+    TempDir,
+    TempDir,
+    Result<(String, WorkflowOutcome), (Option<String>, gait_workflow::launch::LaunchError)>,
+) {
+    let gait = TempDir::new().unwrap();
+    let gait_dir = gait.path().to_path_buf();
+    init_git_repo(&gait_dir);
+    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
+    std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
+
+    let codebase = TempDir::new().unwrap();
+    init_git_repo(codebase.path());
+
+    std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
+    std::fs::write(
+        gait_dir.join("inferences/mock/inference.textproto"),
+        "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
+    )
+    .unwrap();
+    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
+
+    common::write_frames(&gait_dir, &[]);
+    for (n, blob) in frames.iter().enumerate() {
+        std::fs::write(gait_dir.join(format!("mock_frames.{n}.bin")), blob).unwrap();
+    }
+    std::env::set_var("GAIT_BRAIN_EXE", env!("CARGO_BIN_EXE_mock_brain"));
+
+    let wf_dir = gait_dir.join("workflows");
+    std::fs::create_dir_all(&wf_dir).unwrap();
+    std::fs::write(wf_dir.join("turn-retry.js"), script).unwrap();
+
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    let mut started = |_: &str, _: &str| {};
+    let result = run_named(
+        "turn-retry",
+        vec![],
+        LaunchEnv {
+            gait_dir: gait_dir.clone(),
+            codebase: codebase.path().to_path_buf(),
+            started: &mut started,
+            sink: &mut sink,
+            observer: &mut NullObserver,
+        },
+    )
+    .await;
+    (gait, codebase, result)
+}
+
+/// A workflow TURN step whose brain fails the first invocation must be retried
+/// (per `retry.times`) and succeed on the second attempt.
+#[tokio::test]
+async fn a_turn_step_that_fails_once_succeeds_on_retry() {
+    // Per-invocation frames: invocation 0 fails, invocation 1 succeeds.
+    let fail_frames = {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&common::frame(&common::terminated_fail("boom")));
+        blob
+    };
+    let ok_frames = {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&common::frame(&common::append_assistant("done")));
+        blob.extend_from_slice(&common::frame(&common::terminated_ok("done")));
+        blob
+    };
+    let script = r#"
+        await gait.wf.config({ name: "turn-retry" });
+        await gait.wf.turn({ id: "chat", prompt: "run the turn", retry: { times: 1, delay: 10 } });
+    "#;
+    let (gait, _codebase, result) = run_mock_turn_workflow(&[fail_frames, ok_frames], script).await;
+    let gait_dir = gait.path().to_path_buf();
+    let (run_id, outcome) = result.expect("run_named");
+
+    assert_eq!(
+        outcome,
+        WorkflowOutcome::Completed,
+        "the turn must be retried and succeed on the second attempt"
+    );
+    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
+    let state = reconstruct_state(&run_log.read_events().unwrap());
+    assert_eq!(
+        state.node_status("chat"),
+        NodeStatus::Done,
+        "`chat` must be Done after the retry"
+    );
+    assert_eq!(
+        std::fs::read_to_string(gait_dir.join("mock_step"))
+            .unwrap()
+            .trim(),
+        "2",
+        "the brain must have run exactly twice (fail, then succeed)"
+    );
+}
+
+/// A workflow TURN step whose brain fails with no `retry` configured must fail
+/// the whole run (not report success), and the brain must have run once.
+#[tokio::test]
+async fn a_turn_step_that_fails_without_retry_fails_the_run() {
+    let fail_frames = {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&common::frame(&common::terminated_fail("boom")));
+        blob
+    };
+    let script = r#"
+        await gait.wf.config({ name: "turn-retry" });
+        await gait.wf.turn({ id: "chat", prompt: "run the turn" });
+    "#;
+    let (gait, _codebase, result) = run_mock_turn_workflow(&[fail_frames], script).await;
+    let gait_dir = gait.path().to_path_buf();
+
+    let Err((Some(run_id), _)) = result else {
+        panic!("a failed turn must fail the run: {result:?}")
+    };
+    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
+    let state = reconstruct_state(&run_log.read_events().unwrap());
+    assert!(
+        matches!(state.node_status("chat"), NodeStatus::Error(msg) if msg.contains("boom")),
+        "the failure message must mention the brain's failure text"
+    );
+    assert_eq!(
+        std::fs::read_to_string(gait_dir.join("mock_step"))
+            .unwrap()
+            .trim(),
+        "1",
+        "the brain must have run exactly once (no retry)"
     );
 }
