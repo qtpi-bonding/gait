@@ -196,7 +196,6 @@ pub(crate) fn turn_run_opts(spec: TurnSpec) -> anyhow::Result<gait_turn_runner::
         }),
         fs_delegate: spec.fs_delegate,
         allow_intree: spec.allow_intree,
-        workflow_requests: None,
     })
 }
 

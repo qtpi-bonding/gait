@@ -139,7 +139,6 @@ fn test_opts(run_id: &str, session_id: &str, gait_dir: &std::path::Path) -> Turn
         profile: None,
         fs_delegate: None,
         allow_intree: true,
-        workflow_requests: None,
     }
 }
 

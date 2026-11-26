@@ -1,10 +1,8 @@
 //! Spec-06 §5 Task 4.5: guard against re-introducing the deleted `WorkflowRunner`
-//! subsystem (item 10) — the trait, the `ToolCtx::with_workflow_runner` DI hook,
-//! and the `workflow_runner::` module must never come back. The model-facing
-//! `run_workflow` tool is allowed again by the JS workflows spec section 7.1,
-//! but a brain reaching into the workflow layer by any other means is the
-//! inversion spec-04/item-9 forbids; workflows compose at the DAG level, not
-//! via a brain tool.
+//! subsystem (item 10) — the trait, the `RunWorkflowTool`, and the
+//! `ToolCtx::with_workflow_runner` DI hook must never come back. A brain
+//! reaching into the workflow layer via a tool is the inversion spec-04/item-9
+//! forbids; workflows compose at the DAG level, not via a brain tool.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -42,9 +40,10 @@ fn workflow_runner_subsystem_stays_deleted() {
     // Built via concat! so these needles don't self-match this file (which
     // legitimately mentions them in doc comments/strings elsewhere).
     let trait_needle = concat!("trait ", "WorkflowRunner");
+    let tool_needle = concat!("Run", "WorkflowTool");
     let with_runner_needle = concat!("with_", "workflow_runner");
     let module_needle = concat!("workflow_", "runner::");
-    let needles = [trait_needle, with_runner_needle, module_needle];
+    let needles = [trait_needle, tool_needle, with_runner_needle, module_needle];
 
     let mut leaks = String::new();
     for c in [

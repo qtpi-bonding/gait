@@ -348,38 +348,6 @@ pub struct TurnRunOpts {
     pub profile: Option<TurnProfileOverride>,
     pub fs_delegate: Option<Arc<dyn gait_core::embed::FsDelegate>>,
     pub allow_intree: bool,
-    /// Optional channel on which a model turn awaiting the `run_workflow`
-    /// tool sends a [`WorkflowRequest`] to the REPL driver: the driver runs
-    /// the named workflow and replies over the request's oneshot
-    /// [`WorkflowReply`] sender. `None` = unchanged behaviour (no workflow
-    /// request channel; the runner itself does not read this field).
-    pub workflow_requests: Option<tokio::sync::mpsc::Sender<WorkflowRequest>>,
-}
-
-/// A request a model turn (awaiting the `run_workflow` tool) sends to the
-/// REPL driver over the [`TurnRunOpts::workflow_requests`] channel. The
-/// driver runs the named workflow with the given args and replies over
-/// `reply` with a [`WorkflowReply`].
-pub struct WorkflowRequest {
-    /// Name of the workflow to run.
-    pub name: String,
-    /// Arguments for the workflow run.
-    pub args: Vec<String>,
-    /// Oneshot sender the driver uses to deliver the run's result back to
-    /// the awaiting turn.
-    pub reply: tokio::sync::oneshot::Sender<WorkflowReply>,
-}
-
-/// The driver's reply to a [`WorkflowRequest`], sent back to the awaiting
-/// model turn over the request's oneshot channel.
-#[derive(Debug)]
-pub struct WorkflowReply {
-    /// Run id of the workflow run.
-    pub run_id: String,
-    /// Outcome of the workflow run (e.g. "done" / "failed").
-    pub outcome: String,
-    /// Step names (or summaries) recorded by the workflow run.
-    pub steps: Vec<String>,
 }
 
 /// The outcome of one sealed turn — the runner's own result type, never a
@@ -479,7 +447,6 @@ async fn run_sealed_turn(
         profile,
         fs_delegate,
         allow_intree,
-        workflow_requests: _workflow_requests,
     } = opts;
 
     // C1: a live source is allowed to legitimately produce no terminal turn

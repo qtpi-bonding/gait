@@ -225,14 +225,13 @@ mod tests {
             ws.path().join("codebase").join("sub/worktree")
         );
         // run_id is the executor's run id; sandbox on; no cascade/delegate/
-        // intree/workflow_requests; no CLI profile.
+        // intree; no CLI profile.
         assert_eq!(opts.run_id, "run-1");
         assert_eq!(opts.sandbox_on, Some(true));
         assert!(opts.cascade.is_none());
         assert!(opts.cascade_group_arg.is_none());
         assert!(opts.fs_delegate.is_none());
         assert!(!opts.allow_intree);
-        assert!(opts.workflow_requests.is_none());
     }
 
     #[test]

@@ -525,7 +525,6 @@ pub fn build_agent_with_attestation(
                                 profile: None,
                                 fs_delegate,
                                 allow_intree: false,
-                                workflow_requests: None,
                             };
                             let outcome = local.block_on(
                                 &rt,
