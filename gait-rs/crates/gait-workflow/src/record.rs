@@ -1,14 +1,13 @@
 //! Developer-declared evidence commands and run-level record persistence.
 
-use gait_core::proto::gait::workflow::v1::{RecordCommand, Workflow};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use walkdir::WalkDir;
 
-use crate::convert::def_content_hash;
 use crate::step::build_shell_env;
+use gait_core::proto::gait::workflow::v1::{RecordCommand, RecordConfig};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecordCommandResult {
@@ -37,12 +36,13 @@ pub fn record_path(run_dir: &Path) -> PathBuf {
 
 pub async fn begin(
     run_id: &str,
-    workflow: &Workflow,
+    workflow_hash: &str,
+    config: Option<&RecordConfig>,
     worktree: &Path,
 ) -> anyhow::Result<WorkflowRecord> {
     let initial_tree_hash = tree_fingerprint(worktree)?;
     let mut commands = Vec::new();
-    if let Some(config) = &workflow.record {
+    if let Some(config) = config {
         let mut ids = std::collections::HashSet::new();
         for command in &config.commands {
             if command.id.is_empty() {
@@ -62,7 +62,7 @@ pub async fn begin(
     }
     Ok(WorkflowRecord {
         run_id: run_id.to_string(),
-        workflow_hash: def_content_hash(workflow),
+        workflow_hash: workflow_hash.to_string(),
         initial_tree_hash,
         final_tree_hash: None,
         workflow_status: "running".into(),
@@ -214,24 +214,24 @@ fn permissions_mode(_metadata: &std::fs::Metadata) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::proto::gait::workflow::v1::{RecordCommand, RecordConfig, Workflow};
     use tempfile::TempDir;
+
+    fn config(commands: Vec<RecordCommand>) -> Option<RecordConfig> {
+        Some(RecordConfig { commands })
+    }
 
     #[tokio::test]
     async fn runs_only_declared_commands_and_captures_results() {
         let dir = TempDir::new().unwrap();
-        let wf = Workflow {
-            version: 1,
-            record: Some(RecordConfig {
-                commands: vec![RecordCommand {
-                    id: "probe".into(),
-                    command: "printf observed".into(),
-                    timeout_ms: 5_000,
-                }],
-            }),
-            ..Default::default()
-        };
-        let record = begin("run-1", &wf, dir.path()).await.unwrap();
+        let cfg = config(vec![RecordCommand {
+            id: "probe".into(),
+            command: "printf observed".into(),
+            timeout_ms: 5_000,
+        }]);
+        let record = begin("run-1", "hash-1", cfg.as_ref(), dir.path())
+            .await
+            .unwrap();
+        assert_eq!(record.workflow_hash, "hash-1");
         assert_eq!(record.commands.len(), 1);
         assert_eq!(record.commands[0].stdout, "observed");
         assert_eq!(record.commands[0].exit_code, 0);
@@ -240,17 +240,14 @@ mod tests {
     #[tokio::test]
     async fn command_failure_is_captured_without_changing_workflow_status() {
         let dir = TempDir::new().unwrap();
-        let wf = Workflow {
-            record: Some(RecordConfig {
-                commands: vec![RecordCommand {
-                    id: "missing".into(),
-                    command: "exit 7".into(),
-                    timeout_ms: 5_000,
-                }],
-            }),
-            ..Default::default()
-        };
-        let record = begin("run-1", &wf, dir.path()).await.unwrap();
+        let cfg = config(vec![RecordCommand {
+            id: "missing".into(),
+            command: "exit 7".into(),
+            timeout_ms: 5_000,
+        }]);
+        let record = begin("run-1", "hash-1", cfg.as_ref(), dir.path())
+            .await
+            .unwrap();
         assert_eq!(record.commands[0].exit_code, 7);
         assert_eq!(record.workflow_status, "running");
     }
@@ -268,17 +265,14 @@ mod tests {
     #[tokio::test]
     async fn timeout_is_recorded() {
         let dir = TempDir::new().unwrap();
-        let wf = Workflow {
-            record: Some(RecordConfig {
-                commands: vec![RecordCommand {
-                    id: "slow".into(),
-                    command: "sleep 5".into(),
-                    timeout_ms: 20,
-                }],
-            }),
-            ..Default::default()
-        };
-        let record = begin("run-1", &wf, dir.path()).await.unwrap();
+        let cfg = config(vec![RecordCommand {
+            id: "slow".into(),
+            command: "sleep 5".into(),
+            timeout_ms: 20,
+        }]);
+        let record = begin("run-1", "hash-1", cfg.as_ref(), dir.path())
+            .await
+            .unwrap();
         assert!(record.commands[0].timed_out);
         assert_ne!(record.commands[0].exit_code, 0);
     }

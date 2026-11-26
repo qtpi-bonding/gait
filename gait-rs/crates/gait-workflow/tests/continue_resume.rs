@@ -2,19 +2,19 @@
 //! the SAME `run_id` (i.e. what `gait workflow continue <run_id>` does) must
 //! SUCCEED.
 //!
-//! The original YAML-engine bug was that the open-vs-create predicate for the
-//! run log keyed on the (now never-written) session-transcript path, so the
-//! second invocation always hit `WorkflowRunLog::create` (`O_CREAT | O_EXCL`)
-//! and hard-errored "workflow run log already exists". This test drives a
-//! gate script to a pause, then resumes it to completion on the same run_id.
+//! A historical bug: the open-vs-create predicate for the run log keyed on
+//! the session-transcript path, so the second invocation always hit
+//! `WorkflowRunLog::create` (`O_CREAT | O_EXCL`) and hard-errored
+//! "workflow run log already exists". This test drives a gate script to a
+//! pause, then resumes it to completion on the same run_id.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use gait_core::proto::gait::workflow::v1::workflow_event;
 use gait_workflow::observer::CliObserver;
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::state::reconstruct_state;
 use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;

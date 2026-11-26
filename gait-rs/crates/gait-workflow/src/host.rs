@@ -25,7 +25,7 @@ use crate::run_log::WorkflowRunLog;
 use crate::state::{JournalEntry, JournalState, ScriptJournal};
 use crate::step::{build_shell_env, Backoff, ConfigOpts, GateOpts, RetryOpts, ShellOpts, TurnOpts};
 use crate::turn_exec::{TurnExecutor, TurnRequest};
-use gait_core::proto::gait::workflow::v1::{NodeErrorKind, RecordCommand, RecordConfig, Workflow};
+use gait_core::proto::gait::workflow::v1::{NodeErrorKind, RecordCommand, RecordConfig};
 
 /// A step-level failure, rendered with the exact message text the JS layer
 /// has always seen (tests assert on these messages).
@@ -170,6 +170,9 @@ pub struct StepEngine<'a> {
     /// Whether the run worktree has been created (lazy, created on first
     /// shell step).
     worktree_ready: Cell<bool>,
+    /// CLI args joined by spaces (the `$ARGS` value shell steps see), owned
+    /// here so a `NodeContext` can borrow it.
+    args_joined: String,
     /// Live sink channel for shell/sub-turn frames. The receiver lives with
     /// the engine's owner; frames are currently discarded.
     _sink_tx: tokio::sync::mpsc::UnboundedSender<gait_core::embed::SinkFrame>,
@@ -237,6 +240,7 @@ impl<'a> StepEngine<'a> {
         let run_dir = run_dir.into();
         let run_worktree = run_dir.join("worktree");
         let (sink_tx, _sink_rx) = tokio::sync::mpsc::unbounded_channel();
+        let args_joined = args.join(" ");
         Self {
             run_id: run_id.into(),
             gait_dir: gait_dir.into(),
@@ -264,6 +268,7 @@ impl<'a> StepEngine<'a> {
             }),
             record: RefCell::new(None),
             worktree_ready: Cell::new(false),
+            args_joined,
             _sink_tx: sink_tx,
         }
     }
@@ -428,33 +433,29 @@ impl<'a> StepEngine<'a> {
 
         // Recording is a start-of-live-run operation.  Do it before emitting
         // WorkflowStart, and never on a resume (the journal is the authority
-        // for that distinction).  Use the canonical record implementation so
-        // script and YAML workflows have identical validation and capture.
+        // for that distinction).
         if !self.resuming() {
             if let Some(record_opts) = &config.record {
                 self.ensure_worktree().map_err(StepError::Record)?;
-                let workflow = Workflow {
-                    version: 1,
-                    name: config.name.clone(),
-                    inference: config.model.clone(),
-                    allow: config.allow.clone(),
-                    auto: config.auto.unwrap_or(false),
-                    record: Some(RecordConfig {
-                        commands: record_opts
-                            .commands
-                            .iter()
-                            .map(|command| RecordCommand {
-                                id: command.id.clone(),
-                                command: command.command.clone(),
-                                timeout_ms: command.timeout.unwrap_or(120_000),
-                            })
-                            .collect(),
-                    }),
-                    ..Default::default()
+                let config_value = RecordConfig {
+                    commands: record_opts
+                        .commands
+                        .iter()
+                        .map(|command| RecordCommand {
+                            id: command.id.clone(),
+                            command: command.command.clone(),
+                            timeout_ms: command.timeout.unwrap_or(120_000),
+                        })
+                        .collect(),
                 };
-                let captured = record::begin(&self.run_id, &workflow, &self.run_worktree)
-                    .await
-                    .map_err(StepError::Record)?;
+                let captured = record::begin(
+                    &self.run_id,
+                    &self.script_sha256,
+                    Some(&config_value),
+                    &self.run_worktree,
+                )
+                .await
+                .map_err(StepError::Record)?;
                 record::write(&captured, &record::record_path(&self.run_dir))
                     .map_err(StepError::Record)?;
                 *self.record.borrow_mut() = Some(captured);
@@ -553,8 +554,7 @@ impl<'a> StepEngine<'a> {
         Ok(())
     }
 
-    /// Backoff delay before retry attempt N (1-based), mirroring the YAML
-    /// engine's semantics (`runner::backoff_delay_ms`).
+    /// Backoff delay before retry attempt N (1-based).
     fn retry_delay_ms(attempt: u32, retry: &RetryOpts) -> u64 {
         match retry.backoff {
             Backoff::Exponential => retry
@@ -1399,35 +1399,17 @@ impl<'a> StepEngine<'a> {
     }
 
     /// Build the `NodeContext` for a shell step (same shape as
-    /// tests/shell_env.rs: workflow/session ids are the run id, node session
-    /// is empty, args joined by spaces).
+    /// tests/shell_env.rs: workflow/session ids are the run id, args joined
+    /// by spaces).
     fn build_node_context<'s>(&'s self, node_id: &'s str) -> NodeContext<'s> {
         NodeContext {
             workflow_id: &self.run_id,
             session_id: &self.run_id,
-            node_session: "",
+            node_id,
+            args: &self.args_joined,
             gait_dir: &self.gait_dir,
             codebase: &self.codebase,
             run_worktree: &self.run_worktree,
-            vars: crate::vars::VarContext {
-                workflow_id: self.run_id.clone(),
-                session_id: self.run_id.clone(),
-                gait_dir: self.gait_dir.clone(),
-                codebase: self.codebase.clone(),
-                args: self.args.join(" "),
-                node_id: node_id.to_string(),
-                node_outputs: Default::default(),
-                node_exit: None,
-                failed_node: None,
-            },
-            workflow_tx: &self._sink_tx,
-            sandbox_on: None,
-            cascade_group_arg: None,
-            cascade: None,
-            profile: None,
-            fs_delegate: None,
-            allow_intree: false,
-            env_passthrough: Vec::new(),
         }
     }
 }

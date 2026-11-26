@@ -82,7 +82,7 @@ async fn workflow_run_creates_no_bookkeeping_session_and_leaks_no_raws() {
     let outcome = run_script(opts, &mut sink, &mut gait_workflow::observer::NullObserver)
         .await
         .expect("run should succeed");
-    assert_eq!(outcome, gait_workflow::runner::WorkflowOutcome::Completed);
+    assert_eq!(outcome, gait_workflow::outcome::WorkflowOutcome::Completed);
 
     // (1) No bookkeeping session directory (live worktree mount) for the run.
     let run_session_dir = gait_core::session::live::worktree_dir(&gait_dir, &run_id);

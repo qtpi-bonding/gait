@@ -1,15 +1,21 @@
 #[test]
-fn no_thread_spawn_in_workflow_runner() {
-    let runner_src = include_str!("../src/runner.rs");
-    let exec_prompt_src = include_str!("../src/exec_prompt.rs");
+fn no_thread_spawn_in_workflow_engine() {
+    let script_src = include_str!("../src/script.rs");
+    let host_src = include_str!("../src/host.rs");
+    let script_turns_src = include_str!("../src/script_turns.rs");
+    let turn_exec_src = include_str!("../src/turn_exec.rs");
+    let capturing_sink_src = include_str!("../src/capturing_sink.rs");
+    let launch_src = include_str!("../src/launch.rs");
     let observer_src = include_str!("../src/observer.rs");
-    let convert_src = include_str!("../src/convert.rs");
 
     let sources = [
-        ("runner.rs", runner_src),
-        ("exec_prompt.rs", exec_prompt_src),
+        ("script.rs", script_src),
+        ("host.rs", host_src),
+        ("script_turns.rs", script_turns_src),
+        ("turn_exec.rs", turn_exec_src),
+        ("capturing_sink.rs", capturing_sink_src),
+        ("launch.rs", launch_src),
         ("observer.rs", observer_src),
-        ("convert.rs", convert_src),
     ];
 
     for (name, src) in &sources {

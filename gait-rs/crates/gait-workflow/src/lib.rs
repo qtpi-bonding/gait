@@ -1,22 +1,16 @@
-//! Graph-based workflow orchestrator for gait.
+//! Script workflow engine for gait.
 
 pub use gait_core::embed::{TurnDriver, TurnSink, TurnSource};
 
-pub mod exec_branch;
-pub mod exec_gate;
-pub mod exec_prompt;
 pub mod exec_shell;
 pub mod hooks;
 pub mod host;
 pub mod launch;
-pub mod runner;
-pub mod schema;
 pub mod state;
-pub mod validate;
-pub mod vars;
 
-pub mod convert;
+pub mod capturing_sink;
 pub mod observer;
+pub mod outcome;
 pub mod output;
 pub mod record;
 pub mod run_log;
@@ -28,7 +22,7 @@ pub mod types;
 
 pub mod status;
 
-pub use runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
+pub use outcome::WorkflowOutcome;
 
 pub use script::{run_script, ScriptRunOpts};
 

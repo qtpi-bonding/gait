@@ -76,7 +76,7 @@ pub enum TurnStart {
 /// `tokio::spawn`ed across threads, so no `Send` bound is needed anywhere in the
 /// turn/workflow path: the REPL's view state is single-threaded (`Rc<RefCell>`),
 /// and the workflow runner handles interactive nodes sequentially with automated
-/// work (see `runner::handle_open_node`). **Invariant a maintainer must not
+/// work inline. **Invariant a maintainer must not
 /// break:** do not spawn a `TurnSource`/`TurnDriver` onto another thread — drive
 /// them inline. If you ever need cross-thread execution, revisit
 // the must_use comes from the async_trait expansion

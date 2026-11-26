@@ -25,35 +25,14 @@ fn set_fake_key() {
 
 fn ctx(ws: &std::path::Path) -> NodeContext<'static> {
     let ws: &'static std::path::Path = Box::leak(Box::new(ws.to_path_buf()));
-    let tx: &'static _ = Box::leak(Box::new(
-        tokio::sync::mpsc::unbounded_channel::<gait_core::embed::SinkFrame>().0,
-    ));
     NodeContext {
         workflow_id: "wf1",
         session_id: "run1",
-        node_session: "",
+        node_id: "sh1",
+        args: "a b",
         gait_dir: ws,
         codebase: ws,
         run_worktree: ws,
-        vars: gait_workflow::vars::VarContext {
-            workflow_id: "wf1".into(),
-            session_id: "run1".into(),
-            gait_dir: ws.to_path_buf(),
-            codebase: ws.to_path_buf(),
-            args: "a b".into(),
-            node_id: "sh1".into(),
-            node_outputs: Default::default(),
-            node_exit: None,
-            failed_node: None,
-        },
-        workflow_tx: tx,
-        sandbox_on: None,
-        cascade_group_arg: None,
-        cascade: None,
-        profile: None,
-        fs_delegate: None,
-        allow_intree: false,
-        env_passthrough: Vec::new(),
     }
 }
 

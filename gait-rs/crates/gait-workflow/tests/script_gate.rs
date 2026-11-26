@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use gait_core::proto::gait::workflow::v1::workflow_event;
 use gait_core::proto::gait::workflow::v1::NodeErrorKind;
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 use tempfile::TempDir;

@@ -1,6 +1,6 @@
 //! `gait workflow run|continue|abort|list` wiring through
-//! `gait_workflow::launch` — engine choice (script vs YAML), drift handling,
-//! and log round-trips, driven directly through the CLI command functions.
+//! `gait_workflow::launch` — script workflow runs, drift handling, and log
+//! round-trips, driven directly through the CLI command functions.
 
 use std::path::Path;
 
@@ -114,13 +114,11 @@ fn workflow_types_writes_dts_into_workflows_dir() {
     assert_eq!(written, gait_workflow::types::render_dts());
 }
 
-/// The script engine is chosen whenever `<name>.js` exists — even when a
-/// `<name>.yaml` also exists. A YAML-only name uses the YAML engine. The
-/// engine choice is made at run time from the files present, not cached, so
-/// after the YAML is deleted the finished script run still resumes as a
-/// script run.
+/// Only script workflows run: `<name>.js` runs and writes its marker; a name
+/// that has only a `.yaml` file fails with `LaunchError::NotFound`; a
+/// finished script run resumes successfully.
 #[tokio::test]
-async fn engine_chosen_by_script_source_presence() {
+async fn only_script_workflows_run_and_resume() {
     let td = tempfile::TempDir::new().unwrap();
     let gait_dir = td.path().to_path_buf();
     init_git_repo(&gait_dir);
@@ -141,25 +139,23 @@ async fn engine_chosen_by_script_source_presence() {
     let from_script = std::fs::read_to_string(&marker_x).unwrap();
     assert_eq!(from_script, "from-script");
 
-    // YAML-only name: the YAML engine runs, and its shell node writes the
-    // YAML marker to prove it actually executed.
-    let marker_y = td.path().join("marker-y");
+    // YAML-only name: no engine runs it — the launch refuses with NotFound.
     std::fs::write(
         gait_dir.join("workflows").join("y.yaml"),
-        format!(
-            "name: y\nnodes:\n  - id: a\n    shell: \"printf %s from-yaml > '{}'\"\n",
-            marker_y.display()
-        ),
+        "name: y\nnodes:\n  - id: a\n    shell: \"echo from-yaml\"\n",
     )
     .unwrap();
-    cmd_workflow_run(&["y".to_string()], gait_dir.clone())
+    let err = cmd_workflow_run(&["y".to_string()], gait_dir.clone())
         .await
-        .expect("YAML-only name runs the YAML engine");
-    let from_yaml = std::fs::read_to_string(&marker_y).unwrap();
-    assert_eq!(from_yaml, "from-yaml");
+        .expect_err("a YAML-only name is not runnable");
+    assert!(
+        matches!(
+            coded_error::downcast_ref::<gait_workflow::launch::LaunchError>(&err),
+            Some(gait_workflow::launch::LaunchError::NotFound { .. })
+        ),
+        "YAML-only name fails with LaunchError::NotFound, got: {err:#}"
+    );
 
-    // Finished script run resumes as a script run after the yaml is deleted.
-    std::fs::remove_file(gait_dir.join("workflows").join("x.yaml")).unwrap();
     let ids = run_ids(&gait_dir);
     let x_id = ids
         .iter()

@@ -13,9 +13,9 @@ use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
 use crate::host::{PauseKind, StepEngine, StepRequest, WorkflowHost};
 use crate::observer::WorkflowObserver;
+use crate::outcome::WorkflowOutcome;
 use crate::record;
 use crate::run_log::WorkflowRunLog;
-use crate::runner::WorkflowOutcome;
 use crate::state::ScriptJournal;
 use crate::turn_exec::TurnExecutor;
 use sha2::{Digest, Sha256};
@@ -727,18 +727,18 @@ mod tests {
         );
     }
 
-    /// A log with a WorkflowStart but no script source (the definition lives
-    /// in `def`) is refused as not-a-script-run.
+    /// A log with a WorkflowStart but no script source is refused as
+    /// not-a-script-run.
     #[test]
     fn resolve_continue_refuses_a_log_without_script_source() {
         let dir = tempfile::tempdir().expect("tempdir should work");
         let runs_dir = dir.path().join("workflow-runs");
-        let log = WorkflowRunLog::create(&runs_dir, "run-yaml").expect("create should work");
-        log.workflow_start("run-yaml", "wf", "wf.yaml", &[], &Default::default())
-            .expect("yaml start should write");
+        let log = WorkflowRunLog::create(&runs_dir, "run-def").expect("create should work");
+        log.workflow_start("run-def", "wf", "wf.yaml", &[], &Default::default())
+            .expect("start event should write");
         let events = log.read_events().expect("events should read back");
         let err = resolve_script_continue(&events, None, false)
-            .expect_err("a YAML log has no script source");
+            .expect_err("a log without a script source is refused");
         assert!(matches!(err, ScriptContinueError::NotAScriptRun));
     }
 

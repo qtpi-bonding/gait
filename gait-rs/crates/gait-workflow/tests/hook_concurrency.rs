@@ -91,7 +91,7 @@ await Promise.all([slowHook("a"), slowHook("b")]);
     assert!(
         matches!(
             warmup_outcome,
-            gait_workflow::runner::WorkflowOutcome::Completed
+            gait_workflow::outcome::WorkflowOutcome::Completed
         ),
         "warm-up run must complete: {warmup_outcome:?}"
     );
@@ -107,7 +107,7 @@ await Promise.all([slowHook("a"), slowHook("b")]);
     let elapsed = start.elapsed();
 
     assert!(
-        matches!(outcome, gait_workflow::runner::WorkflowOutcome::Completed),
+        matches!(outcome, gait_workflow::outcome::WorkflowOutcome::Completed),
         "the run must complete: {outcome:?}"
     );
     assert!(

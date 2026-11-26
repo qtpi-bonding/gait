@@ -177,7 +177,7 @@ impl WorkflowRunLog {
     }
 
     /// Append a workflow start event for a script (JS) workflow. The workflow
-    /// has no YAML definition and no path: the script's path, sha256, and full
+    /// carries no `def` and no path: the script's path, sha256, and full
     /// source text are recorded instead.
     pub fn script_workflow_start(
         &self,
@@ -442,7 +442,7 @@ mod tests {
         assert_eq!(start.run_id, "run-script");
         assert_eq!(start.workflow, "my-script-wf");
         assert_eq!(start.yaml_path, "", "a script workflow has no yaml path");
-        assert!(start.def.is_none(), "a script workflow has no yaml def");
+        assert!(start.def.is_none(), "a script workflow has no def");
         assert_eq!(start.script_path, "scripts/wf.js");
         assert_eq!(start.script_sha256, "deadbeef");
         assert_eq!(start.script_source, "export default async () => {}");

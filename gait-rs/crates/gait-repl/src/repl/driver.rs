@@ -1321,7 +1321,7 @@ fn one_off_schema() -> serde_json::Value {
     serde_json::json!({ "oneOf": [str_obj("cmd"), str_obj("output")] })
 }
 
-/// Run a named workflow (`workflows/<name>.yaml`) for the REPL `/workflow`
+/// Run a named workflow (`workflows/<name>.js`) for the REPL `/workflow`
 /// command — awaits `launch::run_named` inline (spec-06 §5 Task 4.1).
 ///
 /// The old `GaitWorkflowRunner` replacement spawned a detached `std::thread` +

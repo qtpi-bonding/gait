@@ -1,92 +1,15 @@
 use crate::step::{build_shell_env, ShellOpts, StepResult};
-use crate::vars::{substitute_shell, NodeOutput, VarContext};
-use gait_core::embed::SinkFrame;
-use gait_core::proto::gait::workflow::v1::ShellNode;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 pub struct NodeContext<'a> {
     pub workflow_id: &'a str,
     pub session_id: &'a str,
-    /// This node's effective turn session id (item 13b/13c) — fresh per default
-    /// prompt node, or the named `continue_session`; "" for shell/branch/gate.
-    pub node_session: &'a str,
+    pub node_id: &'a str,
+    pub args: &'a str,
     pub gait_dir: &'a Path,
     pub codebase: &'a Path,
     pub run_worktree: &'a Path,
-    pub vars: VarContext,
-    /// Live channel sender for the workflow run. Sub-turns (prompt nodes) clone
-    /// this so their deltas/events reach the workflow's consumer (Phase 3b). It is
-    /// a borrow of the run's owning `Recorder` sender — never a long-lived clone —
-    /// so dropping that `Recorder` remains the single point that closes the channel.
-    pub workflow_tx: &'a tokio::sync::mpsc::UnboundedSender<SinkFrame>,
-    /// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2). `None`/absent
-    /// for every real workflow node — the now-deleted `single_prompt_run`'s
-    /// one node was the only production caller that ever set these (Task 3
-    /// moved the CLI/REPL off `WorkflowRunOpts` entirely); `exec_prompt_node`
-    /// still prefers them over disk config when present.
-    pub sandbox_on: Option<bool>,
-    pub cascade_group_arg: Option<String>,
-    pub cascade: Option<&'a gait_core::embed::CascadeKillHandle>,
-    pub profile: Option<&'a gait_turn_runner::TurnProfileOverride>,
-    /// Optional editor-buffer delegate injected by a workflow-level consumer
-    /// (e.g. a future ACP adapter). `None` for every real workflow node.
-    pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
-    /// Launcher-set override for the in-tree safety guard (design §7), sourced
-    /// from the CLI's `--allow-intree` flag. `false` for every real workflow node.
-    pub allow_intree: bool,
-    /// Extra env var names forwarded from gait's environment to shell steps and
-    /// hooks (config supplied). Empty for every YAML node.
-    pub env_passthrough: Vec<String>,
-}
-
-pub async fn exec_shell_node(
-    shell: &ShellNode,
-    ctx: &NodeContext<'_>,
-    output_schema_json: &str,
-) -> anyhow::Result<NodeOutput> {
-    let cmd_str = substitute_shell(&shell.command, &ctx.vars);
-    let timeout_ms: u64 = shell.timeout_ms.unwrap_or(120_000);
-    let cwd = ctx.run_worktree;
-
-    let mut cmd = tokio::process::Command::new("sh");
-    cmd.arg("-c").arg(&cmd_str).current_dir(cwd);
-    // Without this, a timeout only bounds the *wait* — tokio's default is to
-    // NOT kill the child on drop, so dropping the timed-out output() future
-    // (or the whole scheduler task pool on a sibling node's failure, see
-    // runner.rs's FuturesUnordered teardown on anyhow::bail!) leaves `sh` and
-    // whatever it spawned running as an orphan. Same fix as grep.rs/ls.rs.
-    cmd.kill_on_drop(true);
-
-    let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
-        .await
-        .map_err(|_| anyhow::anyhow!("shell timed out after {}ms", timeout_ms))?
-        .map_err(|e| anyhow::anyhow!("shell exec error: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    let json = if output_schema_json.is_empty() {
-        None
-    } else {
-        Some(serde_json::from_str(stdout.trim()).map_err(|e| {
-            anyhow::anyhow!(
-                "node output_schema requires JSON stdout, but shell stdout was invalid JSON: {e}"
-            )
-        })?)
-    };
-    let combined = if stderr.is_empty() {
-        stdout
-    } else {
-        format!("{}{}", stdout, stderr)
-    };
-
-    Ok(NodeOutput {
-        text: combined.trim_end().to_string(),
-        exit_code: result.status.code(),
-        json,
-        routed_to: None,
-        session_id: String::new(),
-    })
 }
 
 /// Run a typed shell step (`argv` directly, or `script` via `sh -c`) with the
@@ -117,10 +40,10 @@ pub async fn exec_shell_opts_with_host_env(
     let well_known: BTreeMap<String, String> = [
         ("WORKFLOW_ID".to_string(), ctx.workflow_id.to_string()),
         ("SESSION_ID".to_string(), ctx.session_id.to_string()),
-        ("NODE_ID".to_string(), ctx.vars.node_id.clone()),
+        ("NODE_ID".to_string(), ctx.node_id.to_string()),
         ("CODEBASE".to_string(), ctx.codebase.display().to_string()),
         ("WORKSPACE".to_string(), ctx.gait_dir.display().to_string()),
-        ("ARGS".to_string(), ctx.vars.args.clone()),
+        ("ARGS".to_string(), ctx.args.to_string()),
     ]
     .into_iter()
     .collect();
@@ -157,26 +80,12 @@ pub async fn exec_shell_opts_with_host_env(
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
     // outputSchema: validate the shell's stdout JSON against the schema with
-    // the shared node-boundary validator (`output::validate_node_output`) —
-    // the same check a YAML node's output contract goes through. A violation
-    // is an error (a retryable failed attempt), never a non-zero-exit result.
+    // the shared step-boundary validator (`output::validate_output`). A
+    // violation is an error (a retryable failed attempt), never a
+    // non-zero-exit result.
     let json = match &opts.output_schema {
         None => None,
-        Some(schema) => {
-            let node = gait_core::proto::gait::workflow::v1::Node {
-                id: opts.id.clone(),
-                output_schema_json: serde_json::to_string(schema).unwrap_or_default(),
-                ..Default::default()
-            };
-            let out = crate::vars::NodeOutput {
-                text: stdout.trim().to_string(),
-                exit_code: result.status.code(),
-                json: None,
-                routed_to: None,
-                session_id: String::new(),
-            };
-            crate::output::validate_node_output(&node, &out)?.json
-        }
+        Some(schema) => Some(crate::output::validate_output(&opts.id, schema, &stdout)?),
     };
     let combined = format!("{stdout}{stderr}");
 
@@ -194,29 +103,16 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn shell_captures_output_and_exit() {
-        let ws = TempDir::new().unwrap();
-        let shell = ShellNode {
-            command: "echo hello".into(),
-            timeout_ms: None,
-        };
-        let ctx = make_test_ctx(ws.path());
-        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
-        assert_eq!(out.text.trim(), "hello");
-        assert_eq!(out.exit_code, Some(0));
-    }
-
-    #[tokio::test]
-    async fn shell_nonzero_exit_ok() {
-        let ws = TempDir::new().unwrap();
-        let shell = ShellNode {
-            command: "exit 1".into(),
-            timeout_ms: None,
-        };
-        let ctx = make_test_ctx(ws.path());
-        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
-        assert_eq!(out.exit_code, Some(1));
+    fn make_test_ctx(ws: &'static std::path::Path) -> NodeContext<'static> {
+        NodeContext {
+            workflow_id: "wf1",
+            session_id: "s1",
+            node_id: "n",
+            args: "",
+            gait_dir: ws,
+            codebase: ws,
+            run_worktree: ws,
+        }
     }
 
     #[tokio::test]
@@ -226,131 +122,84 @@ mod tests {
         std::fs::create_dir_all(&run_wt).unwrap();
         std::fs::write(run_wt.join("marker"), "x").unwrap();
 
-        let shell = ShellNode {
-            command: "ls".into(),
-            timeout_ms: None,
+        let opts = ShellOpts {
+            id: "s1".into(),
+            argv: None,
+            script: Some("ls".into()),
+            env: BTreeMap::new(),
+            timeout: None,
+            output_schema: None,
+            retry: None,
+            on_fail: None,
+            hooks: None,
         };
-        let mut ctx = make_test_ctx(ws.path());
-        let leaked: &'static Path = Box::leak(Box::new(run_wt.clone()));
-        ctx.run_worktree = leaked; // shell must cwd here, not ctx.codebase
-        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
+        let leaked: &'static Path = Box::leak(Box::new(run_wt));
+        let ctx = NodeContext {
+            run_worktree: leaked, // shell must cwd here, not ctx.codebase
+            ..make_test_ctx(Box::leak(Box::new(ws.path().to_path_buf())))
+        };
+        let out = exec_shell_opts(&opts, &ctx, &[]).await.unwrap();
         assert!(
-            out.text.contains("marker"),
+            out.output.contains("marker"),
             "shell cwd must be the run worktree; got: {}",
-            out.text
+            out.output
         );
     }
 
     #[tokio::test]
     async fn shell_timeout_still_produces_the_correct_error() {
         let ws = TempDir::new().unwrap();
-        let shell = ShellNode {
-            command: "sleep 5".into(),
-            timeout_ms: Some(50),
+        let opts = ShellOpts {
+            id: "s1".into(),
+            argv: None,
+            script: Some("sleep 5".into()),
+            env: BTreeMap::new(),
+            timeout: Some(50),
+            output_schema: None,
+            retry: None,
+            on_fail: None,
+            hooks: None,
         };
-        let ctx = make_test_ctx(ws.path());
-        let err = exec_shell_node(&shell, &ctx, "").await.unwrap_err();
+        let ctx = make_test_ctx(Box::leak(Box::new(ws.path().to_path_buf())));
+        let err = exec_shell_opts(&opts, &ctx, &[]).await.unwrap_err();
         assert_eq!(err.to_string(), "shell timed out after 50ms");
     }
 
     #[tokio::test]
-    async fn shell_node_output_cannot_inject_a_second_command() {
+    async fn output_schema_validates_stdout() {
         let ws = TempDir::new().unwrap();
-        let shell = ShellNode {
-            command: "echo $mal.output".into(),
-            timeout_ms: None,
+        let opts = ShellOpts {
+            id: "s1".into(),
+            argv: None,
+            script: Some(r#"echo '{"ok":true}'"#.into()),
+            env: BTreeMap::new(),
+            timeout: None,
+            output_schema: Some(serde_json::json!({
+                "type": "object",
+                "required": ["ok"],
+                "properties": {"ok": {"type": "boolean"}}
+            })),
+            retry: None,
+            on_fail: None,
+            hooks: None,
         };
-        let mut ctx = make_test_ctx(ws.path());
-        ctx.vars.node_outputs.insert(
-            "mal".into(),
-            crate::vars::NodeOutput {
-                text: "; touch injected_marker".into(),
-                exit_code: Some(0),
-                json: None,
-                routed_to: None,
-                session_id: String::new(),
-            },
-        );
-        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
-        assert_eq!(
-            out.text, "; touch injected_marker",
-            "the malicious text must come back as echo's literal argument, not run as a second command"
-        );
-        assert!(
-            !ws.path().join("injected_marker").exists(),
-            "injected command must not have executed"
-        );
-    }
-
-    fn make_test_ctx(ws: &std::path::Path) -> NodeContext<'static> {
-        let ws = Box::leak(Box::new(ws.to_path_buf()));
-        // Leak a sender so the ctx is 'static; the receiver is dropped, so sends are
-        // silently ignored (these tests don't assert on the channel).
-        let tx: &'static _ = Box::leak(Box::new(
-            tokio::sync::mpsc::unbounded_channel::<SinkFrame>().0,
-        ));
-        NodeContext {
-            workflow_id: "wf1",
-            session_id: "s1",
-            node_session: "",
-            gait_dir: ws,
-            codebase: ws,
-            run_worktree: ws,
-            workflow_tx: tx,
-            sandbox_on: None,
-            cascade_group_arg: None,
-            cascade: None,
-            profile: None,
-            fs_delegate: None,
-            allow_intree: false,
-            env_passthrough: Vec::new(),
-            vars: crate::vars::VarContext {
-                workflow_id: "wf1".into(),
-                session_id: "s1".into(),
-                gait_dir: ws.clone(),
-                codebase: ws.clone(),
-                args: "".into(),
-                node_id: "n".into(),
-                node_outputs: Default::default(),
-                node_exit: None,
-                failed_node: None,
-            },
-        }
+        let ctx = make_test_ctx(Box::leak(Box::new(ws.path().to_path_buf())));
+        let res = exec_shell_opts(&opts, &ctx, &[]).await.unwrap();
+        assert_eq!(res.json, Some(serde_json::json!({"ok": true})));
     }
 
     #[tokio::test]
     async fn host_env_reaches_the_child_and_user_gait_keys_are_still_rejected() {
         let dir = TempDir::new().unwrap();
         let ws: &'static std::path::Path = Box::leak(Box::new(dir.path().to_path_buf()));
-        let tx: &'static _ = Box::leak(Box::new(
-            tokio::sync::mpsc::unbounded_channel::<SinkFrame>().0,
-        ));
         let ctx = NodeContext {
             workflow_id: "wf1",
             session_id: "run1",
-            node_session: "",
+            node_id: "sh1",
+            args: "",
             gait_dir: ws,
             codebase: ws,
             run_worktree: ws,
-            workflow_tx: tx,
-            sandbox_on: None,
-            cascade_group_arg: None,
-            cascade: None,
-            profile: None,
-            fs_delegate: None,
-            allow_intree: false,
-            env_passthrough: Vec::new(),
-            vars: crate::vars::VarContext {
-                workflow_id: "wf1".into(),
-                session_id: "run1".into(),
-                gait_dir: ws.to_path_buf(),
-                codebase: ws.to_path_buf(),
-                args: String::new(),
-                node_id: "sh1".into(),
-                node_outputs: Default::default(),
-                node_exit: None,
-                failed_node: None,
-            },
         };
 
         // A host-provided GAIT_ARG_<n> entry must reach the child.

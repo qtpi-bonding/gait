@@ -1,11 +1,10 @@
-//! Task 6a slice A1 (js-workflows): the real turn executor for script runs.
+//! The real turn executor for script runs.
 //!
-//! `run_script` takes an `Arc<dyn TurnExecutor>`; until now only the scripted
-//! fake existed for that slot. [`ScriptTurnExecutor`] is the real one: it
-//! fills the crate-internal [`crate::turn_exec::TurnSpec`] from a script
-//! request and hands it to the same `turn_run_opts` / `drive_turn` pair the
-//! YAML proto-node executor uses — exactly one place builds
-//! `TurnRunOpts`, exactly one place runs a turn and maps its outcome.
+//! `run_script` takes an `Arc<dyn TurnExecutor>`. [`ScriptTurnExecutor`] is
+//! the real one: it fills the crate-internal [`crate::turn_exec::TurnSpec`]
+//! from a script request and hands it to `turn_run_opts` / `drive_turn` —
+//! exactly one place builds `TurnRunOpts`, exactly one place runs a turn and
+//! maps its outcome.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -75,10 +74,6 @@ impl ScriptTurnExecutor {
             None => self.codebase.clone(),
         };
         turn_run_opts(TurnSpec {
-            // No consumer layer for a script run: the script's own request
-            // fields are the per-call layer.
-            consumer_inference: None,
-            consumer_allow: None,
             per_call_inference: req.model.clone(),
             per_call_allow: if req.allow.is_empty() {
                 None
@@ -93,13 +88,6 @@ impl ScriptTurnExecutor {
             continue_session,
             run_id: self.run_id.clone(),
             gait_dir: self.gait_dir.clone(),
-            // No CLI profile layer for a script run.
-            profile: None,
-            sandbox_on: true,
-            cascade_group_arg: None,
-            cascade: None,
-            fs_delegate: None,
-            allow_intree: false,
         })
     }
 }
@@ -225,7 +213,7 @@ mod tests {
             ws.path().join("codebase").join("sub/worktree")
         );
         // run_id is the executor's run id; sandbox on; no cascade/delegate/
-        // intree; no CLI profile.
+        // intree.
         assert_eq!(opts.run_id, "run-1");
         assert_eq!(opts.sandbox_on, Some(true));
         assert!(opts.cascade.is_none());

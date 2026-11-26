@@ -1,8 +1,8 @@
 //! Proof-of-concept for a wayfinder-esque decision-resolution workflow
 //! (docs/superpowers/specs/2026-09-05-wayfinder-grorg-workflow-design.md),
-//! ported from the YAML engine to the JavaScript script engine:
-//! one "ticket" resolved via prompt -> branch -> (gate) -> shell, with the
-//! grorg submission step stubbed as `echo grorg ...` (no real grorg calls).
+//! expressed as a JavaScript script workflow: one "ticket" resolved via
+//! prompt -> branch -> (gate) -> shell, with the grorg submission step
+//! stubbed as `echo grorg ...` (no real grorg calls).
 //!
 //! Exercises, against the real script runner: a `gait.wf.turn` forced to
 //! structured `outputSchema` JSON, a second turn continuing the first via
@@ -12,18 +12,15 @@
 //! and shell interpolation of the two turns' structured fields via JS
 //! template literals.
 //!
-//! Unlike the original YAML test, the model turns in every run here are
-//! scripted with `ScriptedTurnExecutor` (no real model calls), so the whole
-//! test runs offline: the workflow logic under test is the runner's, not the
-//! model's. (The original YAML test was gated on ANTHROPIC_API_KEY and could
-//! not have driven a live turn from this test binary anyway — there is no
-//! GAIT_BRAIN_EXE here to hand to a real executor.)
+//! The model turns in every run here are scripted with
+//! `ScriptedTurnExecutor` (no real model calls), so the whole test runs
+//! offline: the workflow logic under test is the runner's, not the model's.
 
 use std::sync::Arc;
 
 use gait_core::proto::gait::workflow::v1::workflow_event;
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::state::{reconstruct_state, NodeStatus};
 use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
@@ -74,9 +71,8 @@ async fn run_js(
     .await
 }
 
-/// The scripted JSON the `grill` turn returns. `hint` pins the model's
-/// `ticket_type` choice so the branch arm taken is deterministic instead of
-/// left to the model's judgment (the YAML test did this via the prompt).
+/// The scripted JSON the `grill` turn returns. `hint` pins the
+/// `ticket_type` choice so the branch arm taken is deterministic.
 fn grill_json(hint: &str) -> serde_json::Value {
     serde_json::json!({
         "ticket_type": hint,
@@ -93,8 +89,8 @@ fn children_json() -> serde_json::Value {
 }
 
 /// The workflow script for one wayfinder ticket. `hint` is baked into the
-/// grill prompt (as the YAML version did) and also into the scripted grill
-/// answer, so the branch is deterministic.
+/// grill prompt and also into the scripted grill answer, so the branch is
+/// deterministic.
 fn workflow_script(hint: &str) -> String {
     format!(
         r#"
@@ -253,8 +249,7 @@ async fn hitl_arm_gates_then_resumes_with_spliced_output() {
         "the HITL arm must have actually run post-resume"
     );
     // The AFK arm is a plain `else` branch in the script, so it never runs at
-    // all: no NodeStart, hence no Done. (The YAML engine logged an explicit
-    // NodeSkip for the untaken arm; the script engine has no such event.)
+    // all: no NodeStart, hence no Done.
     assert_eq!(
         state.node_status("resolve-afk"),
         NodeStatus::Pending,
@@ -310,8 +305,7 @@ async fn afk_arm_skips_gate_and_completes_in_one_run() {
 
     // The gate and the HITL arm live on the untaken `else`-complement branch
     // of a plain JS `if`, so they never run at all: no NodeStart, hence no
-    // Done. (The YAML engine logged an explicit NodeSkip; the script engine
-    // has no such event, so "skipped" is asserted as "never started".)
+    // Done ("skipped" is asserted as "never started").
     assert_eq!(
         state.node_status("gate"),
         NodeStatus::Pending,

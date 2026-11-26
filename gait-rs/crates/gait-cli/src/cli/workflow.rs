@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use crate::cli::error::{CliError, CliResult};
 use gait_workflow::observer::CliObserver;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::schema::WorkflowDef;
 use gait_workflow::state::reconstruct_state;
 use gait_workflow::types::{render_dts, DTS_FILE_NAME};
 use gait_workflow::WorkflowOutcome;
@@ -24,7 +23,7 @@ pub struct WorkflowArgs {
     /// Remaining args (workflow name, id, …)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub rest: Vec<String>,
-    /// Applies to `list`/`abort`/`validate` only — `run`/`continue` stream
+    /// Applies to `list`/`abort` only — `run`/`continue` stream
     /// turn output through `CliSink` (always compact, no pretty option) and
     /// `log` streams one compact JSON object per event (NDJSON; pretty would
     /// break line-per-event streaming).
@@ -115,10 +114,9 @@ pub async fn cmd_workflow(args: WorkflowArgs) -> anyhow::Result<u8> {
         "continue" => cmd_workflow_continue(&rest, gait_dir).await,
         "abort" => cmd_workflow_abort(&rest, gait_dir, pretty).map(|()| 0u8),
         "log" => cmd_workflow_log(&rest, gait_dir).map(|()| 0u8),
-        "validate" => cmd_workflow_validate(&rest, gait_dir, pretty).map(|()| 0u8),
         "types" => cmd_workflow_types(&rest, gait_dir, pretty).map(|()| 0u8),
         _ => Err(CliError::usage(
-            "[gait] usage: gait workflow <run|list|continue|abort|log|validate|types>",
+            "[gait] usage: gait workflow <run|list|continue|abort|log|types>",
         )),
     }
 }
@@ -197,86 +195,6 @@ fn launch_error(e: gait_workflow::launch::LaunchError) -> anyhow::Error {
         }
         e => coded_error::into_anyhow(e),
     }
-}
-
-/// Parse and structurally validate a workflow's graph without running it —
-/// no worktree, no run-log, no gait-dir session state touched. Prints the
-/// JSON verdict on stdout; an invalid graph returns an invalid_input error
-/// naming every problem found.
-/// Validate raw workflow YAML against the generated `WorkflowDef` JSON
-/// Schema, returning every violation found (not just the first). `None`
-/// means the YAML is schema-valid (or wasn't parseable YAML at all — the
-/// `serde_yaml::from_str::<WorkflowDef>` call right after this one owns
-/// reporting that case).
-fn schema_shape_errors(yaml_content: &str) -> Option<Vec<String>> {
-    let as_json = serde_yaml::from_str::<serde_json::Value>(yaml_content).ok()?;
-    let schema_value = serde_json::to_value(gait_workflow::schema::json_schema())
-        .expect("generated workflow JSON Schema always serializes");
-    let compiled = jsonschema::JSONSchema::compile(&schema_value).ok()?;
-    let errors: Vec<String> = compiled
-        .validate(&as_json)
-        .err()?
-        .map(|e| format!("{}: {}", e.instance_path, e))
-        .collect();
-    Some(errors)
-}
-
-pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) -> CliResult {
-    let name = match argv.first() {
-        Some(n) => n.clone(),
-        None => {
-            return Err(CliError::usage(
-                "[gait] usage: gait workflow validate <name>",
-            ))
-        }
-    };
-    let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
-    let yaml_content = std::fs::read_to_string(&yaml_path).map_err(|e| {
-        let message = format!("[gait] cannot read {}: {}", yaml_path.display(), e);
-        if e.kind() == std::io::ErrorKind::NotFound {
-            CliError::not_found(message)
-        } else {
-            CliError::failed(message)
-        }
-    })?;
-
-    // Schema-shape check first: reports every field-level violation (wrong
-    // type, missing required field, etc.) in one pass. The `serde_yaml`
-    // parse below stops at the first error, so this runs ahead of it.
-    if let Some(error_strings) = schema_shape_errors(&yaml_content) {
-        println!(
-            "{}",
-            gait_ops::render_json(
-                &serde_json::json!({"name": name, "valid": false, "errors": error_strings}),
-                pretty
-            )
-        );
-        return Err(CliError::invalid_input(format!(
-            "[gait] workflow {name} is not valid: {}",
-            error_strings.join("; ")
-        )));
-    }
-
-    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content)
-        .map_err(|e| CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e)))?;
-    let proto = gait_workflow::convert::to_proto(&wf);
-    let errors = gait_workflow::validate::validate_graph(&proto);
-    let valid = errors.is_empty();
-    let error_strings: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
-    println!(
-        "{}",
-        gait_ops::render_json(
-            &serde_json::json!({"name": name, "valid": valid, "errors": error_strings}),
-            pretty
-        )
-    );
-    if !valid {
-        return Err(CliError::invalid_input(format!(
-            "[gait] workflow {name} is not valid: {}",
-            error_strings.join("; ")
-        )));
-    }
-    Ok(())
 }
 
 /// One per-run summary for `workflow_list_json`.
@@ -702,84 +620,8 @@ mod list_tests {
 }
 
 #[cfg(test)]
-mod validate_tests {
+mod cli_error_tests {
     use super::*;
-
-    /// Happy path: a valid graph returns Ok(()). The invalid-graph path is
-    /// covered by `invalid_graph_is_an_invalid_input_error` below.
-    #[test]
-    fn valid_workflow_yaml_returns_ok() {
-        let td = tempfile::TempDir::new().unwrap();
-        let gait_dir = td.path().to_path_buf();
-        std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
-        std::fs::write(
-            gait_dir.join("workflows").join("good.yaml"),
-            "name: good\nnodes:\n  - id: a\n    shell: \"echo hi\"\n",
-        )
-        .unwrap();
-
-        cmd_workflow_validate(&["good".to_string()], gait_dir, false)
-            .expect("a valid workflow validates to Ok");
-    }
-
-    #[test]
-    fn invalid_graph_is_an_invalid_input_error() {
-        let td = tempfile::TempDir::new().unwrap();
-        let gait_dir = td.path().to_path_buf();
-        std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
-        std::fs::write(
-            gait_dir.join("workflows").join("bad.yaml"),
-            "name: bad\nauto: \"yes\"\nnodes: \"oops\"\n",
-        )
-        .unwrap();
-        let err = cmd_workflow_validate(&["bad".to_string()], gait_dir, false)
-            .expect_err("a schema-invalid workflow is an error");
-        assert!(matches!(
-            coded_error::downcast_ref::<CliError>(&err),
-            Some(CliError::InvalidInput(_))
-        ));
-    }
-
-    #[test]
-    fn validate_without_a_name_is_a_usage_error() {
-        let td = tempfile::TempDir::new().unwrap();
-        let err = cmd_workflow_validate(&[], td.path().to_path_buf(), false)
-            .expect_err("missing name is an error");
-        assert!(matches!(
-            coded_error::downcast_ref::<CliError>(&err),
-            Some(CliError::Usage(_))
-        ));
-    }
-
-    #[test]
-    fn validate_of_a_missing_workflow_is_a_not_found() {
-        let td = tempfile::TempDir::new().unwrap();
-        let err = cmd_workflow_validate(&["nope".to_string()], td.path().to_path_buf(), false)
-            .expect_err("missing workflow file is an error");
-        assert!(matches!(
-            coded_error::downcast_ref::<CliError>(&err),
-            Some(CliError::NotFound(_))
-        ));
-    }
-
-    #[test]
-    fn validate_with_unparseable_yaml_is_an_invalid_input_error() {
-        // Passes the schema-shape check (a bare scalar is not an object, so
-        // schema_shape_errors returns None) and then fails serde_yaml parsing.
-        let td = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(td.path().join("workflows")).unwrap();
-        std::fs::write(
-            td.path().join("workflows").join("junk.yaml"),
-            "- [unclosed\n",
-        )
-        .unwrap();
-        let err = cmd_workflow_validate(&["junk".to_string()], td.path().to_path_buf(), false)
-            .expect_err("unparseable workflow is an error");
-        assert!(matches!(
-            coded_error::downcast_ref::<CliError>(&err),
-            Some(CliError::InvalidInput(_))
-        ));
-    }
 
     #[tokio::test]
     async fn run_without_a_name_is_a_usage_error() {
@@ -868,30 +710,5 @@ mod validate_tests {
             coded_error::downcast_ref::<CliError>(&err),
             Some(CliError::Usage(_))
         ));
-    }
-
-    #[test]
-    fn schema_shape_errors_reports_every_violation_at_once() {
-        // Two independent shape errors: `nodes` is a string instead of a
-        // list, and `auto` is a string instead of a bool. A bare
-        // `serde_yaml::from_str::<WorkflowDef>` would only ever surface the
-        // first one it happens to hit.
-        let yaml = "name: bad\nauto: \"yes\"\nnodes: \"oops\"\n";
-        let errors = super::schema_shape_errors(yaml).expect("schema violations expected");
-        assert_eq!(errors.len(), 2, "expected both violations, got: {errors:?}");
-        assert!(
-            errors.iter().any(|e| e.contains("/nodes")),
-            "missing /nodes violation: {errors:?}"
-        );
-        assert!(
-            errors.iter().any(|e| e.contains("/auto")),
-            "missing /auto violation: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn schema_shape_errors_is_none_for_valid_workflow_yaml() {
-        let yaml = "name: good\nnodes:\n  - id: a\n    shell: \"echo hi\"\n";
-        assert_eq!(super::schema_shape_errors(yaml), None);
     }
 }

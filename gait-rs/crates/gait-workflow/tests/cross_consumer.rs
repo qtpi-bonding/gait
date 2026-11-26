@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use gait_workflow::observer::{ChannelObserver, CliObserver};
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::state::{reconstruct_state, NodeStatus};
 use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;

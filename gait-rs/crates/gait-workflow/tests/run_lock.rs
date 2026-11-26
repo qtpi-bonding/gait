@@ -80,7 +80,7 @@ async fn run_script_creates_run_branch_and_worktree() {
     .await
     .unwrap();
 
-    assert_eq!(outcome, gait_workflow::runner::WorkflowOutcome::Completed);
+    assert_eq!(outcome, gait_workflow::outcome::WorkflowOutcome::Completed);
 
     let run_dir = gait_dir.join("workflow-runs").join(&run_id);
     let worktree = run_dir.join("worktree");

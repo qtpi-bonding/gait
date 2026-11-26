@@ -6,10 +6,10 @@
 mod common;
 
 use gait_workflow::{
+    gait_workflow::outcome::WorkflowOutcome,
     launch::{run_named, LaunchEnv},
     observer::{CliObserver, NullObserver},
     run_log::WorkflowRunLog,
-    runner::WorkflowOutcome,
     state::{reconstruct_state, NodeStatus},
 };
 use tempfile::TempDir;

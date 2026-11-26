@@ -10,7 +10,7 @@
 //! - [`NullObserver`]: discards every event (used by the REPL).
 //!
 //! Turn output (deltas/events/results) no longer flows here — it goes through
-//! the caller-supplied [`gait_core::embed::TurnSink`] handed to `run_workflow`.
+//! the caller-supplied [`gait_core::embed::TurnSink`] handed to `run_script`.
 
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 

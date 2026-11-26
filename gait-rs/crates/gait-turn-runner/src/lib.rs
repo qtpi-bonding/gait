@@ -322,7 +322,7 @@ pub struct TurnRunOpts {
     /// Run identity, carried through unchanged for the caller's own
     /// bookkeeping (workflow run-id/worktree derivation, audit logging,
     /// etc.) — REPL passes `chat-<session>`; CLI mints via
-    /// `convert::mint_run_id`; `gait-workflow`'s adapter passes the
+    /// `gait_turn_runner::mint_run_id`; `gait-workflow`'s adapter passes the
     /// workflow run's own id. This crate does NOT read it: `session_id`
     /// alone is the authoritative session identity `run_loop`/`Session::open`
     /// use to open or attach a session and to spawn each turn.
@@ -336,8 +336,7 @@ pub struct TurnRunOpts {
     /// `Session::open` is idempotent (loads the session log at `session_id`
     /// if one exists, creates a fresh one otherwise). A caller that needs
     /// fresh-vs-attach semantics resolves `session_id` itself before
-    /// constructing `TurnRunOpts` — see `gait-workflow::runner::node_session_id`
-    /// for the resolution this crate's callers inherited it from.
+    /// constructing `TurnRunOpts`.
     pub continue_session: String,
     pub gait_dir: PathBuf,
     pub codebase: PathBuf,
@@ -593,11 +592,8 @@ pub async fn run_turn_source(
 /// `{name}-{unixsecs}-{subsec_nanos:09}-{counter}` — human-readable AND
 /// collision-free. Full subsec nanos makes cross-process same-instant collision
 /// astronomically unlikely; a process-local atomic counter guarantees uniqueness
-/// for repeated in-process calls. Moved from `gait_workflow::convert::mint_run_id`
-/// (Task 3) — it has no DAG dependency, so every caller of a sealed turn (CLI,
-/// REPL, ACP, and `gait-workflow`'s own real-DAG run ids) can mint through here.
-/// `gait_workflow::convert::mint_run_id` re-exports this for the workflow
-/// crate's own callers.
+/// for repeated in-process calls. Every caller of a sealed turn (CLI,
+/// REPL, ACP, and `gait-workflow`'s own script run ids) mints through here.
 pub fn mint_run_id(name: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);

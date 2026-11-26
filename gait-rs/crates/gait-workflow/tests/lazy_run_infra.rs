@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use gait_workflow::observer::NullObserver;
-use gait_workflow::runner::WorkflowOutcome;
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 
@@ -27,9 +27,9 @@ fn init_git_repo(gait_dir: &std::path::Path) {
         .unwrap();
 }
 
-/// The degenerate workflow from the YAML original, expressed as a script:
-/// one node whose turn carries no prompt, which leaves the run open
-/// (`WorkflowOutcome::NodeOpen`) before any model turn is executed.
+/// A degenerate script workflow: one step whose turn carries no prompt,
+/// which leaves the run open (`WorkflowOutcome::NodeOpen`) before any model
+/// turn is executed.
 fn degenerate_script() -> String {
     r#"
         const cfg = await gait.wf.config({ name: "chat" });

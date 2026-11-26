@@ -1,4 +1,3 @@
-use crate::vars::NodeOutput;
 use gait_core::proto::gait::workflow::v1::{workflow_event, NodeErrorKind, WorkflowEvent};
 use std::collections::HashMap;
 
@@ -16,15 +15,10 @@ pub enum NodeStatus {
 pub struct WorkflowState {
     pub workflow_id: String,
     pub workflow_name: String,
-    pub node_outputs: HashMap<String, NodeOutput>,
     node_statuses: HashMap<String, NodeStatus>,
     pub failed_node: Option<String>,
     pub gate_paused: Option<String>,
     workflow_status: String,
-    /// Per-node effective session id (item 13b/13c), keyed by node id. Recorded
-    /// at a node's first `NodeStart` (live or replayed) and reused on every
-    /// later resume — see `resolve_node_session`.
-    pub node_sessions: HashMap<String, String>,
 }
 
 impl WorkflowState {
@@ -77,12 +71,10 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
     let mut state = WorkflowState {
         workflow_id: String::new(),
         workflow_name: String::new(),
-        node_outputs: HashMap::new(),
         node_statuses: HashMap::new(),
         failed_node: None,
         gate_paused: None,
         workflow_status: "running".to_string(),
-        node_sessions: HashMap::new(),
     };
     for event in events {
         let Some(kind) = &event.kind else {
@@ -96,49 +88,10 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
             workflow_event::Kind::NodeStart(ns) => {
                 state.set_status(&ns.node_id, NodeStatus::Running);
                 state.workflow_status = "running".to_string();
-                if !ns.session_id.is_empty() {
-                    state
-                        .node_sessions
-                        .insert(ns.node_id.clone(), ns.session_id.clone());
-                }
             }
             workflow_event::Kind::NodeComplete(nc) => {
                 state.set_status(&nc.node_id, NodeStatus::Done);
                 state.workflow_status = "running".to_string();
-                let json = if nc.json_output.is_empty() {
-                    None
-                } else {
-                    match serde_json::from_str(&nc.json_output) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            eprintln!(
-                                "[gait workflow] node '{}': dropping unparseable json_output: {}",
-                                nc.node_id, e
-                            );
-                            None
-                        }
-                    }
-                };
-                let routed_to = if nc.routed_to.is_empty() {
-                    None
-                } else {
-                    Some(nc.routed_to.clone())
-                };
-                let session_id = state
-                    .node_sessions
-                    .get(&nc.node_id)
-                    .cloned()
-                    .unwrap_or_default();
-                state.node_outputs.insert(
-                    nc.node_id.clone(),
-                    NodeOutput {
-                        text: nc.output.clone(),
-                        exit_code: nc.exit_code,
-                        json,
-                        routed_to,
-                        session_id,
-                    },
-                );
             }
             workflow_event::Kind::NodeSkip(ns) => {
                 state.set_status(&ns.node_id, NodeStatus::Skipped);
@@ -177,7 +130,7 @@ pub enum JournalState {
         json_output: String,
     },
     /// NodeError with kind FAILED or CONTINUED: replays as an `{error}`
-    /// result (a failed node counts as finished, as the YAML engine does).
+    /// result (a failed node counts as finished).
     Errored { error: String },
     /// NodeError with kind CANCELLED: not terminal; the step runs again.
     Cancelled,
@@ -412,8 +365,6 @@ mod tests {
         assert_eq!(state.node_status("n1"), NodeStatus::Done);
         assert_eq!(state.node_status("n2"), NodeStatus::Skipped);
         assert_eq!(state.node_status("n3"), NodeStatus::Pending);
-        let out = state.node_outputs.get("n1").unwrap();
-        assert_eq!(out.exit_code, Some(0));
         assert_eq!(state.open_node(), None); // all nodes completed or skipped
     }
 
@@ -456,38 +407,6 @@ mod tests {
             ..Default::default()
         }))]);
         assert_eq!(failed.workflow_status(), "failed");
-    }
-
-    #[test]
-    fn corrupt_json_output_falls_back_to_none_not_a_panic() {
-        let evs = vec![
-            we(workflow_event::Kind::WorkflowStart(WorkflowStart {
-                run_id: "r".into(),
-                workflow: "t".into(),
-                ..Default::default()
-            })),
-            we(workflow_event::Kind::NodeStart(NodeStart {
-                node_id: "a".into(),
-                ..Default::default()
-            })),
-            we(workflow_event::Kind::NodeComplete(NodeComplete {
-                node_id: "a".into(),
-                output: "ok".into(),
-                json_output: "{not valid json".into(),
-                ..Default::default()
-            })),
-        ];
-        let st = reconstruct_state(&evs);
-        assert_eq!(st.node_status("a"), NodeStatus::Done);
-        let out = st.node_outputs.get("a").unwrap();
-        assert_eq!(
-            out.json, None,
-            "a corrupt json_output must still fall back to None, exactly as before this fix"
-        );
-        assert_eq!(
-            out.text, "ok",
-            "the rest of the NodeComplete payload must still fold in normally"
-        );
     }
 
     #[test]

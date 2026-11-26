@@ -146,8 +146,8 @@ pub struct ShellOpts {
 }
 
 impl ShellOpts {
-    /// Validate argv/script exclusivity. Called by `exec_shell_opts` so both
-    /// the YAML path and future script path share one check.
+    /// Validate argv/script exclusivity. Called by `exec_shell_opts` so all
+    /// shell-step paths share one check.
     pub fn validate(&self) -> anyhow::Result<()> {
         match (&self.argv, &self.script) {
             (Some(_), Some(_)) => anyhow::bail!(

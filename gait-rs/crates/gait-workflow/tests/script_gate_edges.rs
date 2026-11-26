@@ -4,8 +4,8 @@ use std::sync::Arc;
 use gait_core::embed::{RecordingSink, SinkFrame};
 use gait_core::proto::gait::log::v1::{stream_item, StreamItem, TextDelta};
 use gait_core::proto::gait::workflow::v1::workflow_event;
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::turn_exec::{
     testing::ScriptedTurnExecutor, TurnExecutor, TurnOutcome, TurnRequest,

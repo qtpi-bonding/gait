@@ -25,10 +25,10 @@ use gait_core::proto::gait::log::v1::{stream_item, StreamItem, TextDelta};
 use gait_proto::gait::sandbox::v1::{signal, Signal, StreamForward};
 
 use gait_workflow::{
+    gait_workflow::outcome::WorkflowOutcome,
     launch::{run_named, LaunchEnv},
     observer::NullObserver,
     run_log::WorkflowRunLog,
-    runner::WorkflowOutcome,
     state::{reconstruct_state, NodeStatus},
 };
 

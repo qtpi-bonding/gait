@@ -9,7 +9,7 @@
 //! permission preview, a diagnostic, structured-done, cancel) and plays it
 //! into (a) a direct `RecordingSink` and (b) a `CapturingSink` whose channel
 //! is drained via `SinkFrame::replay` into a second `RecordingSink` — this is
-//! precisely the round-trip Task 2.2's runner change introduced.
+//! precisely the round-trip Task 2.2's capturing_sink change introduced.
 
 use gait_core::embed::{Diag, RecordingSink, SinkFrame, TurnSink};
 use gait_core::proto::envelope::{mint, EventScope};
@@ -108,7 +108,7 @@ async fn channel_routed_output_matches_direct_output() {
 
     // (b) Channel-routed path — CapturingSink forwards every call as a
     // SinkFrame; drain replays each frame onto a second sink, exactly as
-    // `run_workflow`'s pool `select!` does (runner.rs, post-Task-2.2).
+    // `run_script`'s pool `select!` does (capturing_sink.rs, post-Task-2.2).
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SinkFrame>();
     {
         let mut cap_sink = ChannelSink { tx };
@@ -135,7 +135,7 @@ async fn channel_routed_output_matches_direct_output() {
 }
 
 /// Minimal `TurnSink` that forwards every call as a `SinkFrame`, mirroring
-/// `exec_prompt::CapturingSink` without depending on its private type.
+/// `capturing_sink::CapturingSink` without depending on its private type.
 struct ChannelSink {
     tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>,
 }

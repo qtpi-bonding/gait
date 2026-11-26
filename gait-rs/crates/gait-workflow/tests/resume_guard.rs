@@ -1,6 +1,6 @@
 //! Integration test: a shell step left `Running` by an interrupted workflow
 //! is not silently re-run on a plain script resume — the fix for audit
-//! finding #2 (resume idempotency). Ported from the YAML `run_workflow` API
+//! finding #2 (resume idempotency). Ported from the earlier `run_workflow` API
 //! to the JS script engine (`run_script`): the interrupted log is simulated
 //! by running a script and truncating its log right after a `NodeStart`, the
 //! same hand-truncation pattern used in `script_gate.rs`'s
@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use gait_workflow::observer::NullObserver;
-use gait_workflow::runner::WorkflowOutcome;
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use tempfile::TempDir;
 

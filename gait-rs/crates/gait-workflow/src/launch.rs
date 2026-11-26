@@ -1,7 +1,6 @@
-//! The ONE place that decides which workflow engine runs a named workflow
-//! (`<name>.js` → the script engine, else `<name>.yaml` → the YAML DAG
+//! The ONE place that runs a named workflow (`<name>.js` → the script
 //! engine) and how a run log is resumed (a `WorkflowStart` with a non-empty
-//! `script_source` → the script engine, else the YAML engine).
+//! `script_source` → the script engine).
 //!
 //! Both the CLI (`gait workflow run|continue`) and the REPL
 //! (`/workflow` → `run_named_workflow`) go through this module, so the two
@@ -14,8 +13,7 @@ use gait_core::embed::TurnSink;
 use gait_core::proto::gait::workflow::v1::workflow_event;
 
 use crate::observer::WorkflowObserver;
-use crate::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use crate::schema::WorkflowDef;
+use crate::outcome::WorkflowOutcome;
 use crate::script::{
     load_script, resolve_script_continue, run_script, ScriptContinueError, ScriptRunOpts,
 };
@@ -24,12 +22,9 @@ use crate::script::{
 #[derive(Debug, thiserror::Error, coded_error::CodedError)]
 #[coded(namespace = "gait.workflow.launch")]
 pub enum LaunchError {
-    /// Neither `<name>.js` nor `<name>.yaml` exists (run), or no run log
-    /// exists for the run id (continue).
-    #[error(
-        "[gait] cannot read {workflows_dir}/{name}: no such workflow (looked for \
-         {workflows_dir}/{name}.js and {workflows_dir}/{name}.yaml)"
-    )]
+    /// `<name>.js` does not exist (run), or no run log exists for the run
+    /// id (continue).
+    #[error("[gait] cannot read {workflows_dir}/{name}.js: no such workflow")]
     #[coded(code = "not_found", class = Logical)]
     NotFound {
         workflows_dir: PathBuf,
@@ -41,11 +36,6 @@ pub enum LaunchError {
     )]
     #[coded(code = "invalid_name", class = Logical)]
     InvalidName { name: String },
-    /// The YAML is not parseable. The serde_yaml error is the `source`, so
-    /// its text is rendered once, by the chain — not repeated here.
-    #[error("[gait] invalid workflow YAML")]
-    #[coded(code = "invalid_yaml", class = Logical)]
-    InvalidYaml(#[from] serde_yaml::Error),
     /// The script changed on disk since the run started and `--force` was
     /// not passed.
     #[error(
@@ -54,17 +44,8 @@ pub enum LaunchError {
     )]
     #[coded(code = "script_drift", class = Logical)]
     ScriptDrift,
-    /// The YAML graph changed on disk since the run started and `--force`
-    /// was not passed.
-    #[error(
-        "[gait] {} changed since this run started; start a new run, \
-         or pass --force to resume the original graph",
-        path.display()
-    )]
-    #[coded(code = "yaml_drift", class = Logical)]
-    YamlDrift { path: PathBuf },
     /// The run log carries no usable start event.
-    #[error("[gait] run log for {run_id} has no workflow start event")]
+    #[error("[gait] run log for {run_id} has no workflow script to resume")]
     #[coded(code = "no_start", class = Infrastructure)]
     NoStart { run_id: String },
     /// The engine itself failed after starting (or loading failed in a way
@@ -100,8 +81,8 @@ pub struct LaunchEnv<'a, 's> {
     pub observer: &'a mut dyn WorkflowObserver,
 }
 
-/// Run a named workflow by file name: `<gait_dir>/workflows/<name>.js` wins
-/// over `<name>.yaml`. Calls `started` with the run id BEFORE the engine
+/// Run a named workflow by file name: `<gait_dir>/workflows/<name>.js`.
+/// Calls `started` with the run id BEFORE the engine
 /// starts. On failure the run id (if one was minted) is returned alongside
 /// the error so the caller can still reference the run.
 pub async fn run_named(
@@ -115,16 +96,12 @@ pub async fn run_named(
     let workflows_dir = env.gait_dir.join("workflows");
     let script_path = workflows_dir.join(format!("{name}.js"));
     if script_path.is_file() {
-        let run_id = crate::convert::mint_run_id(name);
+        let run_id = gait_turn_runner::mint_run_id(name);
         (env.started)(&run_id, name);
         return run_script_engine(script_path, run_id.clone(), args, false, vec![], env)
             .await
             .map(|outcome| (run_id.clone(), outcome))
             .map_err(|e| (Some(run_id), LaunchError::Failed(e)));
-    }
-    let yaml_path = workflows_dir.join(format!("{name}.yaml"));
-    if yaml_path.is_file() {
-        return run_yaml_engine(name, yaml_path, args, env).await;
     }
     Err((
         None,
@@ -173,47 +150,10 @@ async fn run_script_engine(
     .await
 }
 
-/// The YAML engine for a fresh named run (today's CLI wording and behavior).
-async fn run_yaml_engine(
-    name: &str,
-    yaml_path: PathBuf,
-    args: Vec<String>,
-    env: LaunchEnv<'_, '_>,
-) -> Result<(String, WorkflowOutcome), (Option<String>, LaunchError)> {
-    let yaml_content =
-        std::fs::read_to_string(&yaml_path).map_err(|e| (None, LaunchError::Failed(e.into())))?;
-    let wf: WorkflowDef =
-        serde_yaml::from_str(&yaml_content).map_err(|e| (None, LaunchError::InvalidYaml(e)))?;
-
-    let run_id = crate::convert::mint_run_id(&wf.name);
-    (env.started)(&run_id, name);
-
-    let outcome = run_workflow(
-        WorkflowRunOpts {
-            workflow_def: crate::convert::to_proto(&wf),
-            yaml_path: yaml_path.to_string_lossy().to_string(),
-            run_id: run_id.clone(),
-            gait_dir: env.gait_dir,
-            codebase: env.codebase,
-            args,
-            ..Default::default()
-        },
-        env.sink,
-        env.observer,
-        None,
-    )
-    .await;
-    match outcome {
-        Ok(outcome) => Ok((run_id, outcome)),
-        Err(e) => Err((Some(run_id), LaunchError::Failed(e))),
-    }
-}
-
 /// Resume a run by id, choosing the engine from the run log itself: a
 /// `WorkflowStart` with a non-empty `script_source` resumes as a script run
-/// (with a drift check against the logged script path), anything else
-/// resumes through the YAML path. Calls `started` with the run id before the
-/// engine starts.
+/// (with a drift check against the logged script path). Calls `started` with
+/// the run id before the engine starts.
 pub async fn continue_run(
     run_id: &str,
     force: bool,
@@ -234,10 +174,7 @@ pub async fn continue_run(
         });
     };
 
-    if !start.script_source.is_empty() {
-        return continue_script_run(run_id, force, force_rerun, start, &events, env).await;
-    }
-    continue_yaml_run(run_id, force, force_rerun, events, env).await
+    continue_script_run(run_id, force, force_rerun, start, &events, env).await
 }
 
 /// Resume a script run: drift-check the disk script against the logged source
@@ -274,73 +211,6 @@ async fn continue_script_run(
         force,
         force_rerun,
         env,
-    )
-    .await
-    .map_err(LaunchError::Failed)
-}
-
-/// Resume a YAML run: today's `convert::resolve_continue_def` path, unchanged.
-async fn continue_yaml_run(
-    run_id: &str,
-    force: bool,
-    force_rerun: Vec<String>,
-    events: Vec<gait_core::proto::gait::workflow::v1::WorkflowEvent>,
-    env: LaunchEnv<'_, '_>,
-) -> Result<WorkflowOutcome, LaunchError> {
-    let logged_yaml_path = events
-        .iter()
-        .find_map(|e| match &e.kind {
-            Some(workflow_event::Kind::WorkflowStart(s)) => Some(s.yaml_path.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| LaunchError::NoStart {
-            run_id: run_id.into(),
-        })?;
-    let disk_yaml = std::fs::read_to_string(&logged_yaml_path).ok();
-
-    let resolved = match crate::convert::resolve_continue_def(&events, disk_yaml.as_deref(), force)
-    {
-        Ok(r) => r,
-        Err(crate::convert::ContinueError::Drift { .. }) => {
-            return Err(LaunchError::YamlDrift {
-                path: PathBuf::from(logged_yaml_path),
-            });
-        }
-        Err(crate::convert::ContinueError::NoStart) => {
-            return Err(LaunchError::NoStart {
-                run_id: run_id.into(),
-            });
-        }
-    };
-
-    if force && disk_yaml.is_some() {
-        eprintln!(
-            "[gait workflow] --force: resuming the ORIGINAL logged graph (ignoring on-disk YAML edits)"
-        );
-    }
-    let logged_name = events
-        .iter()
-        .find_map(|e| match &e.kind {
-            Some(workflow_event::Kind::WorkflowStart(s)) => Some(s.workflow.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    (env.started)(run_id, &logged_name);
-
-    run_workflow(
-        WorkflowRunOpts {
-            workflow_def: resolved.def,
-            yaml_path: resolved.yaml_path,
-            run_id: run_id.to_string(),
-            gait_dir: env.gait_dir,
-            codebase: env.codebase,
-            args: resolved.args,
-            force_rerun_nodes: force_rerun,
-            ..Default::default()
-        },
-        env.sink,
-        env.observer,
-        None,
     )
     .await
     .map_err(LaunchError::Failed)

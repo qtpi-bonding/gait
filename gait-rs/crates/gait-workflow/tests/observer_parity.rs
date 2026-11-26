@@ -10,8 +10,8 @@
 use std::path::Path;
 
 use gait_core::proto::gait::workflow::v1::workflow_event;
+use gait_workflow::outcome::WorkflowOutcome;
 use gait_workflow::run_log::WorkflowRunLog;
-use gait_workflow::runner::WorkflowOutcome;
 use gait_workflow::script::{run_script, ScriptRunOpts};
 use gait_workflow::state::{reconstruct_state, NodeStatus};
 use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
@@ -161,7 +161,7 @@ async fn observer_parity_shell_workflow() {
 /// a real (offline, shell) workflow to completion with both nodes Done. This
 /// exercises the `sink` parameter and the event drain loop end-to-end.
 #[tokio::test]
-async fn run_workflow_accepts_recording_sink() {
+async fn run_script_accepts_recording_sink() {
     use gait_core::embed::RecordingSink;
     let dir = TempDir::new().unwrap();
     let gait_dir = dir.path().to_path_buf();

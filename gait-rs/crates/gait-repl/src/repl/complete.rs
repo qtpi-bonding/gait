@@ -27,8 +27,8 @@ impl Completer for GaitCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let head = &line[..pos];
 
-        // `/workflow <prefix>` → workflow names under <gait-dir>/workflows/
-        // (both `.yaml` and `.js` script workflows; deduplicated by stem).
+        // `/workflow <prefix>` → script workflow names (`.js`) under
+        // <gait-dir>/workflows/.
         if let Some(rest) = head.strip_prefix("/workflow ") {
             let start = pos - rest.len();
             let span = Span::new(start, pos);
@@ -36,9 +36,7 @@ impl Completer for GaitCompleter {
             if let Ok(rd) = std::fs::read_dir(self.gait_dir.join("workflows")) {
                 for e in rd.flatten() {
                     let name = e.file_name().to_string_lossy().to_string();
-                    let stem = name
-                        .strip_suffix(".yaml")
-                        .or_else(|| name.strip_suffix(".js"));
+                    let stem = name.strip_suffix(".js");
                     if let Some(stem) = stem {
                         if stem.starts_with(rest) && !out.iter().any(|s| s.value == stem) {
                             out.push(suggestion(stem.to_string(), "workflow", span));
@@ -108,13 +106,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_arg_completes_yaml_names() {
+    fn workflow_arg_completes_js_names() {
         use tempfile::tempdir;
         let d = tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("workflows")).unwrap();
         std::fs::write(
-            d.path().join("workflows").join("deploy.yaml"),
-            "name: deploy",
+            d.path().join("workflows").join("deploy.js"),
+            "export default {};",
         )
         .unwrap();
         let mut c = completer(d.path().to_path_buf());
@@ -136,7 +134,7 @@ mod tests {
             "export default {};",
         )
         .unwrap();
-        // Same stem as an existing yaml — must not produce a duplicate.
+        // A `.yaml` file is not offered — only `.js` scripts complete.
         std::fs::write(
             d.path().join("workflows").join("deploy.yaml"),
             "name: deploy",

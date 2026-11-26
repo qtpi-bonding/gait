@@ -1,10 +1,8 @@
-//! Task 3 (js-workflows): the `TurnExecutor` abstraction over a single model
-//! turn. `RealTurnExecutor` owns the turn-driving logic that used to live in
-//! `exec_prompt.rs` (moved, not copied): config resolution, CLI-override
-//! folding, `TurnRunOpts` construction and the `gait-turn-runner` call.
-//! `exec_prompt_node` now builds a `TurnRequest` and calls the executor for
-//! its literal-prompt branch, and shares the same opts builder for its
-//! live-source branch — one path, no duplication.
+//! The `TurnExecutor` abstraction over a single model turn, the shared
+//! `TurnSpec`/`turn_run_opts` builder, and the shared `drive_turn` runner.
+//! `turn_run_opts` and `drive_turn` are each the single path used by the
+//! script turn executor (`script_turns::ScriptTurnExecutor`) — one path, no
+//! duplication.
 //!
 //! `testing::ScriptedTurnExecutor` is a public fake returning scripted
 //! outcomes per request; exhausting the script is a hard error, never a
@@ -16,8 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
-
-use crate::exec_shell::NodeContext;
 
 /// A request for one model turn, in the shape script/JS workflow steps author
 /// against (mirrors `step::TurnOpts`, with substitution already applied by the
@@ -71,31 +67,16 @@ pub trait TurnExecutor: Send + Sync {
     }
 }
 
-/// The real executor: drives one sealed turn through `gait-turn-runner`
-/// exactly the way `exec_prompt_node` did pre-task-3.
-pub struct RealTurnExecutor<'a> {
-    node: &'a gait_core::proto::gait::workflow::v1::Node,
-    prompt: &'a gait_core::proto::gait::workflow::v1::PromptNode,
-    workflow: &'a gait_core::proto::gait::workflow::v1::Workflow,
-    ctx: &'a NodeContext<'a>,
-}
-
-/// Everything `turn_run_opts` needs to build one turn's `TurnRunOpts`,
-/// independent of whether the caller is the YAML proto node or a script run.
-/// The proto-node executor fills this from its node/workflow/ctx; the script
-/// executor fills it from a `TurnRequest`.
+/// Everything `turn_run_opts` needs to build one turn's `TurnRunOpts`.
+/// The script turn executor fills this from a `TurnRequest`.
 pub(crate) struct TurnSpec {
-    /// Consumer layer (workflow fields for YAML; none for a script run).
-    pub consumer_inference: Option<String>,
-    pub consumer_allow: Option<Vec<String>>,
-    /// Per-call layer (node fields for YAML; the request's fields for a
-    /// script run).
+    /// The script request's fields.
     pub per_call_inference: Option<String>,
     /// `Some` only when the per-call allow list is non-empty (an empty
-    /// per-call list must not clobber the resolved default).
+    /// allow list must not clobber the resolved default).
     pub per_call_allow: Option<Vec<String>>,
     pub per_call_agent: Option<String>,
-    /// Final effective `auto` (node/workflow/request default already folded).
+    /// The request's effective `auto` (request default already folded).
     pub auto: bool,
     /// Caller-supplied result schema (already parsed where an error message
     /// with context is required).
@@ -105,29 +86,15 @@ pub(crate) struct TurnSpec {
     pub continue_session: String,
     pub run_id: String,
     pub gait_dir: PathBuf,
-    /// CLI-only override layer (`ctx.profile` for YAML; none for a script run).
-    pub profile: Option<gait_turn_runner::TurnProfileOverride>,
-    pub sandbox_on: bool,
-    pub cascade_group_arg: Option<String>,
-    pub cascade: Option<gait_core::embed::CascadeKillHandle>,
-    pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
-    pub allow_intree: bool,
 }
 
 /// The single place that builds a `gait_turn_runner::TurnRunOpts`: config
-/// loading, `ConfigResolver` resolution (consumer < per-call), CLI-profile
-/// override folding, and the `TurnRunOpts` literal. Shared by
-/// `RealTurnExecutor` and the script executor — one path, not two.
+/// loading, `ConfigResolver` resolution, and the `TurnRunOpts` literal.
+/// Used by the script turn executor — one path, not two.
 pub(crate) fn turn_run_opts(spec: TurnSpec) -> anyhow::Result<gait_turn_runner::TurnRunOpts> {
     use gait_core::config::resolver::{ConfigResolver, Overrides};
     let loaded = gait_core::config::load_config(&spec.gait_dir);
-    // consumer layer
-    let consumer = Overrides {
-        inference: spec.consumer_inference.clone(),
-        allow: spec.consumer_allow.clone(),
-        ..Overrides::empty()
-    };
-    // per-call layer (higher priority)
+    // per-call layer
     let per_call = Overrides {
         inference: spec.per_call_inference.clone(),
         allow: spec.per_call_allow.clone(),
@@ -135,7 +102,6 @@ pub(crate) fn turn_run_opts(spec: TurnSpec) -> anyhow::Result<gait_turn_runner::
         ..Overrides::empty()
     };
     let resolved_cfg = ConfigResolver::new(loaded)
-        .with(consumer)
         .with(per_call)
         .resolve_checked()?;
     let inference = resolved_cfg
@@ -144,72 +110,47 @@ pub(crate) fn turn_run_opts(spec: TurnSpec) -> anyhow::Result<gait_turn_runner::
         .expect("resolve_checked guarantees inference is Some");
     let allow = resolved_cfg.allow.clone();
 
-    // spec-06 §3 Task 3.2 (the C1 fix): a CLI-only override, when present,
-    // takes priority over the disk-resolved config above — this is what makes
-    // `gait run --model/--allow/--deny/--agent/--max-iter/--result-schema`
-    // still work now that `cmd_run` is routed through this same function
-    // instead of building its own driver directly. Every real workflow node
-    // has `ctx.profile == None` and is unaffected.
-    let ov = spec.profile.as_ref();
-    let session_updates = ov.map(|p| p.session_updates.clone()).unwrap_or_default();
-    let inference = ov.and_then(|p| p.inference.clone()).unwrap_or(inference);
-    let explicit_inference_override = ov.map(|p| p.explicit_inference_override).unwrap_or(false);
-    let allow = ov
-        .filter(|p| !p.allow.is_empty())
-        .map(|p| p.allow.clone())
-        .unwrap_or(allow);
-    let deny = ov.map(|p| p.deny.clone()).unwrap_or_default();
-    let agent_name = ov.and_then(|p| p.agent.clone()).or(spec.per_call_agent);
-    let max_iter = ov.and_then(|p| p.max_iter);
-    let result_schema = ov
-        .and_then(|p| p.result_schema.clone())
-        .or(spec.result_schema);
-    // Effective `auto`: the caller's folded default, overridden by a CLI
-    // `--auto` (spec-06's degenerate-node override).
-    let auto = ov.and_then(|p| p.auto).unwrap_or(spec.auto);
-
     Ok(gait_turn_runner::TurnRunOpts {
         // The workflow run's own id (doubles as SESSION_ID env /
-        // workflow_id default — see `runner::run_workflow`), threaded
-        // through as the turn's run identity.
+        // workflow_id default), threaded through as the turn's run identity.
         run_id: spec.run_id,
         session_id: spec.session_id,
         continue_session: spec.continue_session,
         gait_dir: spec.gait_dir,
         codebase: spec.codebase,
         args: Vec::new(),
-        sandbox_on: Some(spec.sandbox_on),
-        cascade_group_arg: spec.cascade_group_arg,
-        cascade: spec.cascade,
+        sandbox_on: Some(true),
+        cascade_group_arg: None,
+        cascade: None,
         profile: Some(gait_turn_runner::TurnProfileOverride {
             verified_goal: None,
             inference: Some(inference),
-            explicit_inference_override,
-            session_updates,
+            explicit_inference_override: false,
+            session_updates: Default::default(),
             allow,
-            deny,
-            agent: agent_name,
-            max_iter,
-            result_schema,
-            auto: Some(auto),
+            deny: Vec::new(),
+            agent: spec.per_call_agent,
+            max_iter: None,
+            result_schema: spec.result_schema,
+            auto: Some(spec.auto),
             status_block: None,
         }),
-        fs_delegate: spec.fs_delegate,
-        allow_intree: spec.allow_intree,
+        fs_delegate: None,
+        allow_intree: false,
     })
 }
 
 /// The single place that runs one turn and maps its outcome to a
 /// `TurnOutcome`: capture the sink frames onto `frames`, drive
-/// `run_single_prompt`, and translate the runner's outcome. Shared by
-/// `RealTurnExecutor` and the script executor — one path, not two.
+/// `run_single_prompt`, and translate the runner's outcome. Shared by all
+/// turn executors — one path, not two.
 pub(crate) async fn drive_turn(
     opts: gait_turn_runner::TurnRunOpts,
     task: String,
     frames: tokio::sync::mpsc::UnboundedSender<gait_core::embed::SinkFrame>,
 ) -> anyhow::Result<TurnOutcome> {
     let session_id = opts.session_id.clone();
-    let mut sink = crate::exec_prompt::CapturingSink::new(frames);
+    let mut sink = crate::capturing_sink::CapturingSink::new(frames);
     let outcome = gait_turn_runner::run_single_prompt(opts, Some(task), &mut sink).await?;
     if outcome.opened {
         return Ok(TurnOutcome {
@@ -229,112 +170,6 @@ pub(crate) async fn drive_turn(
         session_id: Some(session_id),
         open: false,
     })
-}
-
-impl<'a> RealTurnExecutor<'a> {
-    pub fn new(
-        node: &'a gait_core::proto::gait::workflow::v1::Node,
-        prompt: &'a gait_core::proto::gait::workflow::v1::PromptNode,
-        workflow: &'a gait_core::proto::gait::workflow::v1::Workflow,
-        ctx: &'a NodeContext<'a>,
-    ) -> Self {
-        Self {
-            node,
-            prompt,
-            workflow,
-            ctx,
-        }
-    }
-
-    /// The task text for the turn: the request's (already-substituted) prompt
-    /// when given, else the proto node's prompt substituted as before.
-    pub(crate) fn task_text(&self, req: &TurnRequest) -> String {
-        match &req.prompt {
-            Some(p) => p.clone(),
-            None => crate::vars::substitute(&self.prompt.prompt, &self.ctx.vars),
-        }
-    }
-
-    /// Build `TurnRunOpts` for a turn off this node — config resolution,
-    /// CLI-override folding, sandbox/cascade/delegate plumbing. This is the
-    /// single owner of that construction: `exec_prompt_node` calls it (with a
-    /// default `TurnRequest`) for its live-source and literal-prompt branches,
-    /// and `run_turn` calls it for the script/JS path — one path, not two.
-    pub(crate) fn build_turn_opts(
-        &self,
-        req: &TurnRequest,
-    ) -> anyhow::Result<gait_turn_runner::TurnRunOpts> {
-        // output_schema_json: parse non-empty string to Value (the error
-        // message carries the node id, so the parse stays on this side of the
-        // spec boundary).
-        let result_schema: Option<Value> = if self.node.output_schema_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(&self.node.output_schema_json).map_err(|e| {
-                    anyhow::anyhow!("node '{}': invalid output_schema_json: {}", self.node.id, e)
-                })?,
-            )
-        };
-
-        let codebase = self
-            .prompt
-            .codebase
-            .as_deref()
-            .map(|cb| PathBuf::from(crate::vars::substitute(cb, &self.ctx.vars)))
-            .unwrap_or_else(|| self.ctx.codebase.to_path_buf());
-
-        let session_id = self.ctx.node_session.to_string();
-        // A request-level output schema (script path) overrides the node's.
-        let result_schema = req.output_schema.clone().or(result_schema);
-        // The scripted path can override the continue session per request; the
-        // proto node's `continue_session` stays the default.
-        let continue_session = match &req.continue_session {
-            Some(cs) => cs.clone(),
-            None => self.prompt.continue_session.clone(),
-        };
-        let _ = req.model; // model routing goes through inference/profile today
-
-        turn_run_opts(TurnSpec {
-            // consumer layer: Workflow fields
-            consumer_inference: self.workflow.inference.clone(),
-            consumer_allow: Some(self.workflow.allow.clone()),
-            // per-call layer: Node fields (higher priority)
-            per_call_inference: self.node.inference.clone(),
-            per_call_allow: if self.node.allow.is_empty() {
-                None
-            } else {
-                Some(self.node.allow.clone())
-            },
-            per_call_agent: self.node.agent.clone(),
-            // Effective `auto`: node/workflow default, overridden by a CLI
-            // `--auto` inside `turn_run_opts` (spec-06's degenerate-node
-            // override).
-            auto: self.node.auto.unwrap_or(self.workflow.auto),
-            result_schema,
-            codebase,
-            session_id,
-            continue_session,
-            run_id: self.ctx.session_id.to_string(),
-            gait_dir: self.ctx.gait_dir.to_path_buf(),
-            profile: self.ctx.profile.cloned(),
-            // workflow nodes default sandboxed
-            sandbox_on: self.ctx.sandbox_on.unwrap_or(true),
-            cascade_group_arg: self.ctx.cascade_group_arg.clone(),
-            cascade: self.ctx.cascade.cloned(),
-            fs_delegate: self.ctx.fs_delegate.clone(),
-            allow_intree: self.ctx.allow_intree,
-        })
-    }
-}
-
-#[async_trait(?Send)]
-impl TurnExecutor for RealTurnExecutor<'_> {
-    async fn run_turn(&self, req: TurnRequest) -> anyhow::Result<TurnOutcome> {
-        let turn_opts = self.build_turn_opts(&req)?;
-        let task = self.task_text(&req);
-        drive_turn(turn_opts, task, self.ctx.workflow_tx.clone()).await
-    }
 }
 
 // ── Scripted fake (public, for tests and dry-run paths) ────────────────────
