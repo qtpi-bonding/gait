@@ -1349,14 +1349,42 @@ pub(crate) async fn run_named_workflow(
     };
     match gait_workflow::launch::run_named(name, args, env).await {
         Ok((run_id, outcome)) => format!("workflow {run_id}: {outcome:?}"),
-        Err((Some(run_id), e)) => format!("workflow error: {run_id}: {e}"),
-        Err((None, e)) => format!("workflow error: {e}"),
+        Err((Some(run_id), e)) => {
+            format!("workflow error: {run_id}: {e:#}", e = anyhow::Error::new(e))
+        }
+        Err((None, e)) => format!("workflow error: {e:#}", e = anyhow::Error::new(e)),
     }
 }
 
 #[cfg(all(test, feature = "workflow"))]
 mod run_named_workflow_tests {
     use super::run_named_workflow;
+
+    /// Invalid YAML in the workflow file must surface both the headline and
+    /// the parser's detail (line/column), not just the top-level text.
+    #[tokio::test]
+    async fn invalid_yaml_reports_headline_and_parser_detail() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gait_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
+        std::fs::write(
+            gait_dir.join("workflows/bad.yaml"),
+            "name: bad\nnodes:\n  - id: [unclosed\n",
+        )
+        .unwrap();
+
+        let result = run_named_workflow("bad", vec![], gait_dir.clone(), gait_dir.clone()).await;
+
+        assert!(
+            result.starts_with("workflow error:"),
+            "unexpected result: {result}"
+        );
+        assert!(result.contains("invalid workflow YAML"), "{result}");
+        assert!(
+            result.contains("line") || result.contains("column"),
+            "parser detail missing: {result}"
+        );
+    }
 
     /// Spec-06 §5 Task 4.1 smoke test: a 1-node workflow (empty prompt ->
     /// `NodeOutput::open()`, no provider call) runs foreground through

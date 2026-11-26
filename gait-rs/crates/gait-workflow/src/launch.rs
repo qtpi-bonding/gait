@@ -75,8 +75,6 @@ pub enum LaunchError {
     Failed(#[source] anyhow::Error),
 }
 
-impl LaunchError {}
-
 /// Reject a workflow name that is not a plain file name: not empty, not `.`
 /// or `..`, and containing no path separators.
 fn validate_name(name: &str) -> Result<(), LaunchError> {
@@ -158,7 +156,7 @@ async fn run_script_engine(
         codebase.clone(),
         run_id.clone(),
     ));
-    let outcome = run_script(
+    run_script(
         ScriptRunOpts {
             script_path,
             run_id: run_id.clone(),
@@ -172,8 +170,7 @@ async fn run_script_engine(
         sink,
         observer,
     )
-    .await;
-    outcome
+    .await
 }
 
 /// The YAML engine for a fresh named run (today's CLI wording and behavior).

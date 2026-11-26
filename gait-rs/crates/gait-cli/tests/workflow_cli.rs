@@ -158,20 +158,18 @@ async fn continue_of_changed_script_is_drift_without_force() {
 
 /// Script runs through the CLI: gate pause (exit 2) + resume, list shows the
 /// runs, abort folds a run to failed, and the log records it all.
-/// Gate/interactive script support is landing separately (task 5a) — the gate
-/// assertions below need it, so this test stays ignored until then.
 #[tokio::test]
-#[ignore = "needs script gate support (task 5a)"]
 async fn run_list_continue_abort_log_roundtrip() {
     let td = tempfile::TempDir::new().unwrap();
     let gait_dir = td.path().to_path_buf();
     init_git_repo(&gait_dir);
+    init_codebase(&gait_dir);
 
+    std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
     std::fs::write(
         gait_dir.join("workflows").join("g.js"),
         r#"
         await gait.wf.config({ name: "g" });
-        await gait.wf.shell({ id: "s", script: "echo hi" });
         await gait.wf.gate({ id: "g", message: "m" });
     "#,
     )
@@ -214,8 +212,8 @@ async fn run_list_continue_abort_log_roundtrip() {
         "aborted run shows failed: {runs:?}"
     );
 
-    // A script that asks for a model turn is refused in this wiring (no
-    // turn executor wired through the CLI launch path yet).
+    // A promptless turn is an interactive step: the script run suspends as
+    // NodeOpen, which the CLI reports as exit 0.
     std::fs::write(
         gait_dir.join("workflows").join("chat.js"),
         r#"
