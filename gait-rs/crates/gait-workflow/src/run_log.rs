@@ -22,8 +22,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use gait_core::proto::gait::workflow::v1::{
-    NodeComplete, NodeError, NodeSkip, NodeStart, Workflow, WorkflowComplete, WorkflowError,
-    WorkflowEvent, WorkflowGate, WorkflowStart,
+    NodeComplete, NodeError, NodeErrorKind, NodeSkip, NodeStart, Workflow, WorkflowComplete,
+    WorkflowError, WorkflowEvent, WorkflowGate, WorkflowStart,
 };
 
 /// Current format generation for the workflow run log. Mirrors the contract
@@ -287,6 +287,23 @@ impl WorkflowRunLog {
         }))
     }
 
+    /// Append a node error event with kind CANCELLED (an in-flight step that
+    /// was cancelled, e.g. by a sibling failure or an interrupted run).
+    pub fn node_cancelled(
+        &self,
+        node_id: &str,
+        reason: &str,
+        attempt: u32,
+    ) -> anyhow::Result<WorkflowEvent> {
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::NodeError(NodeError {
+            node_id: node_id.to_string(),
+            error: reason.to_string(),
+            attempt,
+            kind: NodeErrorKind::Cancelled as i32,
+        }))
+    }
+
     /// Append a node skip event (e.g. inactive branch path).
     pub fn node_skip(&self, node_id: &str, reason: &str) -> anyhow::Result<WorkflowEvent> {
         use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
@@ -529,6 +546,25 @@ mod tests {
             exit_code: 0,
         });
         assert!(matches!(k, Kind::HookRun(_)));
+    }
+
+    #[test]
+    fn node_cancelled_writes_a_cancelled_kind_node_error() {
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        let dir = TempDir::new().unwrap();
+        let log = WorkflowRunLog::create(dir.path(), "run-cancel").unwrap();
+        log.node_start("a", "shell", 1, "").unwrap();
+        log.node_cancelled("a", "workflow run interrupted", 1)
+            .unwrap();
+        let evs = log.read_events().unwrap();
+        assert_eq!(evs.len(), 2);
+        let Kind::NodeError(ne) = &evs[1].kind.as_ref().unwrap() else {
+            panic!("expected a NodeError event");
+        };
+        assert_eq!(ne.node_id, "a");
+        assert_eq!(ne.error, "workflow run interrupted");
+        assert_eq!(ne.attempt, 1);
+        assert_eq!(ne.kind, NodeErrorKind::Cancelled as i32);
     }
 
     #[test]
