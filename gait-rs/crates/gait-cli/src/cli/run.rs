@@ -459,8 +459,8 @@ pub async fn cmd_run(
     // `GatePaused`/gate concepts don't exist for a bare sealed turn (no gate
     // node in play). `!outcome.completed && !outcome.opened` would mean the
     // turn produced neither a terminal result nor stayed open — treat that as
-    // a failure, mirroring the old `WorkflowOutcome` mapping's implicit
-    // "anything else is fine" behavior for `Completed`/`NodeOpen`.
+    // a failure, mirroring the workflow mapping's "anything else is fine"
+    // behavior for `Completed`.
     if !outcome.completed && !outcome.opened {
         return Err(CliError::failed("[gait] turn did not complete"));
     }

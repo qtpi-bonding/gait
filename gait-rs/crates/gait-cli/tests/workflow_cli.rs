@@ -255,19 +255,4 @@ async fn run_list_continue_abort_log_roundtrip() {
                 && r["status"].as_str() == Some("failed")),
         "aborted run shows failed: {runs:?}"
     );
-
-    // A promptless turn is an interactive step: the script run suspends as
-    // NodeOpen, which the CLI reports as exit 0.
-    std::fs::write(
-        gait_dir.join("workflows").join("chat.js"),
-        r#"
-        await gait.wf.config({ name: "chat" });
-        await gait.wf.turn({ id: "chat" });
-    "#,
-    )
-    .unwrap();
-    let code = cmd_workflow_run(&["chat".to_string()], gait_dir.clone())
-        .await
-        .expect("turn-only script ends as a command result");
-    assert_eq!(code, 0u8);
 }

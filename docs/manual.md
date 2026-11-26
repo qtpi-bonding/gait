@@ -235,7 +235,8 @@ file on disk has changed; without it an edited script is a hard error.
 `--force-rerun <step-id>` accepts re-running a step that was still running when the
 run was interrupted; its earlier side effects are not undone. `gait workflow list`
 and `log` only see workflow runs, never ordinary tasks or REPL turns. `gait workflow
-run` exits 2 when paused at a gate and 0 when paused at a turn without a prompt.
+run` exits 2 when paused at a gate. Every turn needs a prompt; use `gate` to wait
+for a person.
 
 `enable`/`disable`/`register`/`unregister`/`load`/`unload` also accept a `skill` kind —
 that usage works in every Gait build (see the Skills guide), since skills are not part of

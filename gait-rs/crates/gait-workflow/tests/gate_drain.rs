@@ -1,15 +1,13 @@
-//! Regression test for item 8: in-flight steps must fully drain before an
-//! interactive (absent-prompt) step suspends the run and it returns
-//! NodeOpen; calls issued after the pause are held until the run resumes.
+//! In-flight steps must fully drain before a gate pauses the run and it
+//! returns GatePaused; the gate step has NodeStart and no NodeComplete.
 //!
 //! Script: two shell steps a and b started together (each `sleep 1; echo ...`,
-//! so both are genuinely in flight), then an independent interactive node h
-//! started while a and b are still running, all three awaited together, no
-//! live input source.
+//! so both are genuinely in flight), then an independent gate h started while
+//! a and b are still running, all three awaited together.
 //! Expectation: start:h is recorded BEFORE complete:a and complete:b —
 //! proving a and b were still executing when h was reached — yet
 //! NodeComplete for a and b are both recorded before the run returns
-//! NodeOpen for h, proving the in-flight steps drain before suspension.
+//! GatePaused, proving the in-flight steps drain before the pause.
 
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 use gait_workflow::observer::CliObserver;
@@ -21,10 +19,10 @@ use gait_workflow::turn_exec::testing::ScriptedTurnExecutor;
 use tempfile::TempDir;
 
 const WORKFLOW_JS: &str = r#"
-await gait.wf.config({ name: "interactive-suspension-test" });
+await gait.wf.config({ name: "gate-drain-test" });
 const a = gait.wf.shell({ id: "a", script: "sleep 1; echo alpha" });
 const b = gait.wf.shell({ id: "b", script: "sleep 1; echo beta" });
-const h = gait.wf.turn({ id: "h" });
+const h = gait.wf.gate({ id: "h", message: "waiting for a person" });
 await Promise.all([a, b, h]);
 "#;
 
@@ -91,19 +89,19 @@ fn node_event_label(e: &WorkflowEvent) -> Option<String> {
 }
 
 #[tokio::test]
-async fn automated_nodes_drain_before_interactive_suspension() {
+async fn automated_nodes_drain_before_gate_pause() {
     let tmp = TempDir::new().unwrap();
     let gait_dir = tmp.path().to_path_buf();
     setup_gait_dir(&gait_dir);
 
-    let run_id = "test-interactive-suspension-001".to_string();
+    let run_id = "test-gate-drain-001".to_string();
 
     let outcome = run_js(&tmp, &run_id, WORKFLOW_JS).await.unwrap();
 
     assert_eq!(
         outcome,
-        WorkflowOutcome::NodeOpen,
-        "run must suspend at the interactive node"
+        WorkflowOutcome::GatePaused,
+        "run must pause at the gate"
     );
 
     let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
@@ -139,10 +137,7 @@ async fn automated_nodes_drain_before_interactive_suspension() {
         h_start < a_done && h_start < b_done,
         "h must start while a and b are still executing: {order:?}"
     );
-    // h itself must be left open, not completed.
+    // The gate step itself must have NodeStart and no NodeComplete.
     let h_done = order.iter().any(|e| e == "complete:h");
-    assert!(
-        !h_done,
-        "interactive node h must not be completed: {order:?}"
-    );
+    assert!(!h_done, "gate node h must not be completed: {order:?}");
 }

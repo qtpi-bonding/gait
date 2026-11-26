@@ -93,11 +93,15 @@ pub struct StepHooks {
 }
 
 /// A prompt (model turn) step.
+///
+/// A `turn` step always executes a model turn, so `prompt` is required: a
+/// turn whose prompt is missing or blank fails the step. Use a `gate` step to
+/// wait for a person instead.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TurnOpts {
     pub id: String,
-    #[serde(default)]
+    #[schemars(required)]
     pub prompt: Option<String>,
     #[serde(default)]
     pub model: Option<String>,

@@ -67,6 +67,8 @@ interface StepHooks {
 
 /**
  * A prompt (model turn) step.
+ *
+ * A `turn` step always executes a model turn, so `prompt` is required: a turn whose prompt is missing or blank fails the step. Use a `gate` step to wait for a person instead.
  */
 interface TurnOpts {
     agent?: string;
@@ -79,7 +81,7 @@ interface TurnOpts {
     model?: string;
     onFail?: OnFail;
     outputSchema?: unknown;
-    prompt?: string;
+    prompt: string;
     retry?: RetryOpts;
 }
 
@@ -131,8 +133,8 @@ declare namespace gait {
          * other step; may only be called once. */
         function config(opts: ConfigOpts): Promise<{ runId: string }>;
 
-        /** Run a prompt (model turn) step. A `prompt`-less turn suspends the
-         * run for interactive input. */
+        /** Run a prompt (model turn) step. `prompt` is required: a turn
+         * without a prompt fails the step. Use `gate` to wait for a person. */
         function turn(opts: TurnOpts): Promise<StepResult>;
 
         /**

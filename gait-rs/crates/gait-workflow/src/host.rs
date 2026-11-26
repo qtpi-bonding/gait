@@ -62,8 +62,8 @@ enum StepError {
         id: String,
         source: serde_json::Error,
     },
-    #[error("step '{id}': retry, onFail and hooks do not apply to a turn without a prompt")]
-    InteractiveTurnOpts { id: String },
+    #[error("gait.wf.turn step '{id}': a turn needs a prompt; use gate() to wait for a person")]
+    TurnNeedsPrompt { id: String },
     #[error("gait.wf.shell step '{id}': {source}")]
     ShellArgs {
         id: String,
@@ -106,19 +106,11 @@ impl StepError {
     }
 }
 
-/// A requested suspension of the run, waiting for the engine to be quiescent.
-#[derive(Debug, Clone)]
-pub enum PauseKind {
-    /// A gate with a human-facing message.
-    Gate { message: String },
-    /// An interactive step (promptless turn) waiting for input.
-    Open,
-}
-
-/// A suspension request: which kind, and the step id that requested it.
+/// A gate's suspension request: the gate message and step id.
 #[derive(Debug, Clone)]
 pub struct PauseRequest {
-    pub kind: PauseKind,
+    /// The gate's human-facing message.
+    pub message: String,
     pub id: String,
 }
 
@@ -564,12 +556,11 @@ impl<'a> StepEngine<'a> {
         let opts: TurnOpts =
             serde_json::from_value(args).map_err(|e| StepError::turn_args(id.clone(), e))?;
 
-        // A promptless turn is an INTERACTIVE step: it suspends the run with
-        // an Open journal state instead of executing. Its replay rules differ
-        // from a prompt turn's, so it is handled separately below.
-        if opts.prompt.is_none() {
-            return self.handle_interactive_turn(&id, &opts).await;
-        }
+        // A turn whose prompt is missing or blank can never execute: fail the
+        // step outright, before anything is logged and before any hook runs.
+        let Some(prompt) = opts.prompt.clone().filter(|p| !p.trim().is_empty()) else {
+            return Err(StepError::TurnNeedsPrompt { id });
+        };
 
         // Replay check comes BEFORE accept_step's cap check: a replayed step
         // neither executes nor counts toward the cap.
@@ -714,7 +705,7 @@ impl<'a> StepEngine<'a> {
         let req = TurnRequest {
             id: id.clone(),
             session_id,
-            prompt: opts.prompt.clone(),
+            prompt,
             model,
             auto,
             allow,
@@ -817,122 +808,6 @@ impl<'a> StepEngine<'a> {
         }
     }
 
-    /// Handle an INTERACTIVE turn step (`gait.wf.turn({ id })` with no
-    /// prompt): it suspends the run with an Open journal state and never
-    /// resolves. Replays follow the usual turn rules; an Open journal entry
-    /// is NOT an OpenStep error — the continue re-suspends the same step.
-    async fn handle_interactive_turn(
-        &self,
-        id: &str,
-        opts: &TurnOpts,
-    ) -> Result<serde_json::Value, StepError> {
-        // Retry, onFail and hooks are defined against a turn's execution;
-        // a promptless (interactive) turn never executes, so they would be
-        // silently ignored — refuse them instead, before anything is logged.
-        if opts.retry.is_some() || opts.on_fail.is_some() || opts.hooks.is_some() {
-            return Err(StepError::InteractiveTurnOpts { id: id.to_string() });
-        }
-        let entry = self.journal.get(id);
-        match entry {
-            Some(entry) if entry.state != JournalState::Cancelled => {
-                if entry.kind != "turn" {
-                    return Err(StepError::KindChanged {
-                        id: id.to_string(),
-                        old: entry.kind.clone(),
-                        new: "turn".to_string(),
-                    });
-                }
-                match &entry.state {
-                    JournalState::Complete { .. } => {
-                        self.record_seen(id)?;
-                        let (session, output, exit, json_output) = match &entry.state {
-                            JournalState::Complete {
-                                session_id,
-                                output,
-                                exit_code,
-                                json_output,
-                            } => (session_id, output, exit_code, json_output),
-                            _ => unreachable!("checked above"),
-                        };
-                        let json: Option<serde_json::Value> = if json_output.is_empty() {
-                            None
-                        } else {
-                            serde_json::from_str(json_output).ok()
-                        };
-                        let session = if session.is_empty() {
-                            None
-                        } else {
-                            Some(session.clone())
-                        };
-                        return Ok(serde_json::json!({
-                            "output": output,
-                            "exit": exit,
-                            "json": json,
-                            "sessionId": session,
-                            "error": null,
-                        }));
-                    }
-                    JournalState::Errored { error } => {
-                        self.record_seen(id)?;
-                        let session = if entry.session_id.is_empty() {
-                            None
-                        } else {
-                            Some(entry.session_id.clone())
-                        };
-                        return Ok(serde_json::json!({
-                            "output": "",
-                            "exit": null,
-                            "json": null,
-                            "sessionId": session,
-                            "error": error,
-                        }));
-                    }
-                    JournalState::Open => {
-                        if !self.force_rerun.iter().any(|f| f == id) {
-                            self.record_seen(id)?;
-                            // The interactive step is still open: re-suspend
-                            // it (exempt from the crash guard; the OpenStep
-                            // error stays narrow to prompt turns).
-                            if self.is_held() {
-                                return Ok(pending::<serde_json::Value>().await);
-                            }
-                            self.request_pause(PauseRequest {
-                                kind: PauseKind::Open,
-                                id: id.to_string(),
-                            });
-                            return Ok(pending::<serde_json::Value>().await);
-                        }
-                        // force-rerun: fall through to the live path.
-                    }
-                    JournalState::Cancelled => unreachable!("handled above"),
-                }
-            }
-            _ => {}
-        }
-
-        // Check the live call even when another interactive call has already
-        // requested the pause: a second id is still a duplicate in this run.
-        self.record_seen(id)?;
-
-        // Live: held calls never resolve and write no log event.
-        if self.is_held() {
-            return Ok(pending::<serde_json::Value>().await);
-        }
-
-        let ev = self
-            .run_log
-            .node_start_interactive(id, 1, opts.continue_session.as_deref().unwrap_or(""))
-            .map_err(StepError::LogWrite)?;
-        self.observer.borrow_mut().on_event(&ev);
-        self.request_pause(PauseRequest {
-            kind: PauseKind::Open,
-            id: id.to_string(),
-        });
-        // The interactive step never resolves; the run suspends with the
-        // step's journal state Open (it is exempt from the crash guard).
-        Ok(pending::<serde_json::Value>().await)
-    }
-
     /// Handle a `gate` step: parse, check, and either replay or request a
     /// pause that suspends the run until a human continues it. A gate call
     /// NEVER resolves: a first-run gate suspends the run; on the continue
@@ -972,9 +847,7 @@ impl<'a> StepEngine<'a> {
                                 // resolved by continue.
                                 self.record_seen(&id)?;
                                 self.request_pause(PauseRequest {
-                                    kind: PauseKind::Gate {
-                                        message: opts.message,
-                                    },
+                                    message: opts.message,
                                     id: id.clone(),
                                 });
                                 return Ok(pending::<serde_json::Value>().await);
@@ -1013,9 +886,7 @@ impl<'a> StepEngine<'a> {
             .map_err(StepError::LogWrite)?;
         self.observer.borrow_mut().on_event(&ev);
         self.request_pause(PauseRequest {
-            kind: PauseKind::Gate {
-                message: opts.message,
-            },
+            message: opts.message,
             id: id.clone(),
         });
         // The gate never resolves: the run suspends once the in-flight
@@ -1629,35 +1500,6 @@ mod tests {
         (dir, engine)
     }
 
-    /// Build a StepEngine over an EXISTING run log: the journal is rebuilt
-    /// from that log's events, and further appends go to the same file.
-    fn make_engine_on_existing_log(
-        script: ScriptedTurnExecutor,
-        runs_dir: &std::path::Path,
-        run_id: &str,
-    ) -> StepEngine<'static> {
-        let log = WorkflowRunLog::open(runs_dir, run_id).unwrap();
-        let run_dir = runs_dir.join(run_id);
-        let journal_events = log.read_events().unwrap();
-        let observer: &'static mut dyn crate::observer::WorkflowObserver =
-            Box::leak(Box::new(NullObserver));
-        StepEngine::new(
-            run_id.to_string(),
-            runs_dir.parent().unwrap(),
-            runs_dir.parent().unwrap(),
-            Vec::new(),
-            "wf.js",
-            "deadbeef",
-            "export default async () => {}",
-            log,
-            run_dir,
-            Arc::new(script),
-            ScriptJournal::from_events(&journal_events),
-            Vec::new(),
-            observer,
-        )
-    }
-
     #[tokio::test]
     async fn config_must_come_first() {
         let (_dir, engine) = make_engine(ScriptedTurnExecutor::new(), None);
@@ -2037,7 +1879,6 @@ mod tests {
                 node_type: "turn".into(),
                 attempt: 1,
                 session_id: "sess-old".into(),
-                ..Default::default()
             })),
             journal_event(workflow_event::Kind::NodeError(NodeError {
                 node_id: "t1".into(),
@@ -2125,7 +1966,7 @@ mod tests {
         assert_eq!(starts, vec!["__now_1".to_string(), "__now_2".to_string()]);
     }
 
-    // ── Gates, interactive steps, cancellation (task JS-5a) ─────────────────
+    // ── Gates, cancellation (task JS-5a) ────────────────────────────────────
 
     /// The ids of NodeError events in the engine's log, with their kinds.
     fn node_errors(dir: &TempDir) -> Vec<(String, i32)> {
@@ -2232,10 +2073,7 @@ mod tests {
         assert!(engine.pause_ready());
         let pause = engine.take_pause().expect("the gate must set a pause");
         assert_eq!(pause.id, "review");
-        assert!(
-            matches!(&pause.kind, PauseKind::Gate { message } if message == "look"),
-            "the pause must carry the gate message: {pause:?}"
-        );
+        assert_eq!(pause.message, "look");
     }
 
     /// A gate whose journal entry is Open (reached on the previous run)
@@ -2277,122 +2115,6 @@ mod tests {
         assert_eq!(
             completes, 1,
             "the gate resolves with exactly one NodeComplete"
-        );
-    }
-
-    /// An interactive (promptless) turn writes NodeStart once, sets an Open
-    /// pause, and a re-call over the Open journal re-suspends without writing
-    /// a second NodeStart or an OpenStep error.
-    #[tokio::test]
-    async fn interactive_turn_sets_open_pause_and_node_start_once_across_re_call() {
-        let mut script = ScriptedTurnExecutor::new();
-        script.script_text("unused");
-        let (_dir, engine) = make_engine(script, None);
-        engine
-            .handle("config", json!({ "name": "test-wf" }))
-            .await
-            .unwrap();
-
-        let first = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            engine.handle("turn", json!({ "id": "chat" })),
-        )
-        .await;
-        assert!(first.is_err(), "a live interactive turn must never resolve");
-        assert!(engine.pause_ready());
-        let pause = engine.take_pause().unwrap();
-        assert_eq!(pause.id, "chat");
-        assert!(matches!(pause.kind, PauseKind::Open));
-        assert_eq!(
-            all_events(&_dir)
-                .into_iter()
-                .filter(
-                    |k| matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat")
-                )
-                .count(),
-            1,
-            "the first call writes exactly one NodeStart"
-        );
-        assert!(all_events(&_dir).into_iter().any(|k| {
-            matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat" && ns.interactive)
-        }));
-
-        // Re-call over the Open journal: re-suspend, no new NodeStart.
-        // Reuse the SAME run log (the second engine appends to it) and
-        // rebuild the journal from the log's actual events, exactly as a
-        // resumed run would.
-        let runs_dir = _dir.path().join("workflow-runs");
-        let engine2 =
-            make_engine_on_existing_log(ScriptedTurnExecutor::new(), &runs_dir, "run-test");
-        engine2
-            .handle("config", json!({ "name": "test-wf" }))
-            .await
-            .unwrap();
-        let second = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            engine2.handle("turn", json!({ "id": "chat" })),
-        )
-        .await;
-        assert!(second.is_err(), "the re-call must re-suspend, not error");
-        assert!(
-            engine2.pause_ready(),
-            "the re-call must set the Open pause again"
-        );
-        assert_eq!(
-            all_events(&_dir)
-                .into_iter()
-                .filter(
-                    |k| matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat")
-                )
-                .count(),
-            1,
-            "the re-call must NOT write a second NodeStart"
-        );
-    }
-
-    /// A promptless (interactive) turn rejects `retry`, `onFail` and `hooks`
-    /// instead of silently ignoring them, and before anything is logged.
-    #[tokio::test]
-    async fn interactive_turn_rejects_retry_on_fail_and_hooks() {
-        let mut script = ScriptedTurnExecutor::new();
-        script.script_text("unused");
-        let (_dir, engine) = make_engine(script, None);
-        engine
-            .handle("config", json!({ "name": "test-wf" }))
-            .await
-            .unwrap();
-
-        let err = engine
-            .handle(
-                "turn",
-                json!({ "id": "chat", "hooks": { "before": "true" } }),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("do not apply to a turn without a prompt"),
-            "hooks must be rejected: {err}"
-        );
-
-        let err = engine
-            .handle("turn", json!({ "id": "chat", "retry": { "times": 1 } }))
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("do not apply to a turn without a prompt"),
-            "retry must be rejected: {err}"
-        );
-
-        let err = engine
-            .handle("turn", json!({ "id": "chat", "onFail": "continue" }))
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("do not apply to a turn without a prompt"),
-            "onFail must be rejected: {err}"
         );
     }
 

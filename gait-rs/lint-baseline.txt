@@ -90,7 +90,7 @@
 2	crates/gait-watch/src/hub.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
 1	crates/gait-watch/src/tail.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-watch/src/tail.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
-6	crates/gait-workflow/src/exec_prompt.rs: ratchet.dropped_result: result is discarded
+6	crates/gait-workflow/src/capturing_sink.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-workflow/src/hooks.rs: ratchet.error_to_string: error formatted as string
 6	crates/gait-workflow/src/host.rs: ratchet.error_to_string: error converted to string
 1	crates/gait-workflow/src/host.rs: ratchet.raw_channel: raw tokio channel

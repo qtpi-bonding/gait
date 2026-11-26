@@ -205,7 +205,7 @@ async fn scripted_turn_executor_returns_scripted_outcomes() {
 
     let req1 = TurnRequest {
         id: "n1".into(),
-        prompt: Some("do one".into()),
+        prompt: "do one".into(),
         ..Default::default()
     };
     let out1 = fake.run_turn(req1).await.unwrap();
@@ -214,7 +214,7 @@ async fn scripted_turn_executor_returns_scripted_outcomes() {
 
     let req2 = TurnRequest {
         id: "n2".into(),
-        prompt: Some("do two".into()),
+        prompt: "do two".into(),
         ..Default::default()
     };
     let err = fake.run_turn(req2).await.unwrap_err().to_string();
@@ -222,7 +222,7 @@ async fn scripted_turn_executor_returns_scripted_outcomes() {
 
     let req3 = TurnRequest {
         id: "n3".into(),
-        prompt: Some("do three".into()),
+        prompt: "do three".into(),
         ..Default::default()
     };
     let out3 = fake.run_turn(req3).await.unwrap();
@@ -231,7 +231,7 @@ async fn scripted_turn_executor_returns_scripted_outcomes() {
     // Exhausting the script is a hard error, not a silent empty output.
     let req4 = TurnRequest {
         id: "n4".into(),
-        prompt: Some("do four".into()),
+        prompt: "do four".into(),
         ..Default::default()
     };
     assert!(fake.run_turn(req4).await.is_err());

@@ -273,8 +273,8 @@ declare namespace gait {
          * other step; may only be called once. */
         function config(opts: ConfigOpts): Promise<{ runId: string }>;
 
-        /** Run a prompt (model turn) step. A `prompt`-less turn suspends the
-         * run for interactive input. */
+        /** Run a prompt (model turn) step. `prompt` is required: a turn
+         * without a prompt fails the step. Use `gate` to wait for a person. */
         function turn(opts: TurnOpts): Promise<StepResult>;
 
         /**
@@ -386,7 +386,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(body.contains("    id: string;\n"), "{body}");
-        assert!(body.contains("    prompt?: string;\n"), "{body}");
+        assert!(body.contains("    prompt: string;\n"), "{body}");
         assert!(body.contains("    retry?: RetryOpts;\n"), "{body}");
     }
 

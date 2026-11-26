@@ -1390,10 +1390,10 @@ mod run_named_workflow_tests {
         );
     }
 
-    /// A script workflow whose only step is an interactive turn with no prompt
-    /// (no provider call) runs in the foreground, leaves the run open and leaves
-    /// a run log under `workflow-runs/`: `/workflow` awaits inline instead of
-    /// detaching a thread.
+    /// A script workflow whose only step is a gate (no provider call) runs in
+    /// the foreground, pauses at the gate and leaves a run log under
+    /// `workflow-runs/`: `/workflow` awaits inline instead of detaching a
+    /// thread.
     #[tokio::test]
     async fn runs_named_workflow_and_leaves_a_run_log() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1415,7 +1415,7 @@ mod run_named_workflow_tests {
         std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
         std::fs::write(
             gait_dir.join("workflows/smoke.js"),
-            "await gait.wf.config({ name: \"smoke\" });\nawait gait.wf.turn({ id: \"chat\" });\n",
+            "await gait.wf.config({ name: \"smoke\" });\nawait gait.wf.gate({ id: \"review\", message: \"look\" });\n",
         )
         .unwrap();
 

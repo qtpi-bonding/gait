@@ -135,7 +135,6 @@ pub struct JournalEntry {
     pub kind: String,
     /// Session id recorded by `NodeStart` (or a later `NodeComplete`).
     pub session_id: String,
-    pub interactive: bool,
     /// Whether a WorkflowGate event was recorded after this gate's NodeStart.
     /// An open gate without this event was interrupted while draining and has
     /// not yet been shown to the user.
@@ -174,7 +173,6 @@ impl ScriptJournal {
                         JournalEntry {
                             kind: ns.node_type.clone(),
                             session_id: ns.session_id.clone(),
-                            interactive: ns.interactive,
                             gate_announced: false,
                             state: JournalState::Open,
                         },
@@ -296,18 +294,6 @@ mod tests {
     }
 
     #[test]
-    fn journal_preserves_interactive_flag() {
-        let events = vec![we(workflow_event::Kind::NodeStart(NodeStart {
-            node_id: "chat".into(),
-            node_type: "turn".into(),
-            interactive: true,
-            ..Default::default()
-        }))];
-        let journal = ScriptJournal::from_events(&events);
-        assert!(journal.get("chat").unwrap().interactive);
-    }
-
-    #[test]
     fn journal_marks_gate_as_announced_only_after_workflow_gate() {
         let start = we(workflow_event::Kind::NodeStart(NodeStart {
             node_id: "review".into(),
@@ -408,7 +394,7 @@ mod tests {
                 node_id: "a".into(),
                 node_type: "shell".into(),
                 session_id: "s1".into(),
-                ..Default::default()
+                attempt: 1,
             })),
             we(workflow_event::Kind::NodeComplete(NodeComplete {
                 node_id: "a".into(),
@@ -416,7 +402,6 @@ mod tests {
                 output: "ok".into(),
                 exit_code: Some(0),
                 json_output: "{\"v\":1}".into(),
-                ..Default::default()
             })),
         ];
         let j = ScriptJournal::from_events(&evs);

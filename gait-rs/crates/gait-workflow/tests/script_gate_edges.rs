@@ -160,51 +160,18 @@ async fn crashed_prompt_turn_refused_before_script_runs_unless_force_rerun() {
 }
 
 #[tokio::test]
-async fn open_interactive_turn_is_not_refused_on_continue() {
+async fn duplicate_turn_id_is_rejected() {
     let tmp = TempDir::new().unwrap();
     init_git_repo(tmp.path());
-    let source = r#"await gait.wf.config({name:"t"}); await gait.wf.turn({id:"chat"});"#;
-    assert!(matches!(
-        run(
-            &tmp,
-            "open-interactive",
-            source,
-            vec![],
-            Arc::new(ScriptedTurnExecutor::new())
-        )
-        .await,
-        Ok(WorkflowOutcome::NodeOpen)
-    ));
-    assert!(matches!(
-        run(
-            &tmp,
-            "open-interactive",
-            source,
-            vec![],
-            Arc::new(ScriptedTurnExecutor::new())
-        )
-        .await,
-        Ok(WorkflowOutcome::NodeOpen)
-    ));
-}
-
-#[tokio::test]
-async fn duplicate_interactive_turn_id_is_rejected() {
-    let tmp = TempDir::new().unwrap();
-    init_git_repo(tmp.path());
+    let mut e = ScriptedTurnExecutor::new();
+    e.script_text("one");
     // Keep the run's in-flight registry non-empty so both Promise.all arms
-    // reach the host before the first interactive pause is ready.
-    let source = r#"await gait.wf.config({name:"t"}); await Promise.all([gait.wf.shell({id:"keep-alive", script:"sleep 1"}), gait.wf.turn({id:"same"}), gait.wf.turn({id:"same"})]);"#;
-    let err = run(
-        &tmp,
-        "duplicate-interactive",
-        source,
-        vec![],
-        Arc::new(ScriptedTurnExecutor::new()),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
+    // reach the host before the first turn completes.
+    let source = r#"await gait.wf.config({name:"t"}); await Promise.all([gait.wf.shell({id:"keep-alive", script:"sleep 1"}), gait.wf.turn({id:"same", prompt:"p"}), gait.wf.turn({id:"same", prompt:"p"})]);"#;
+    let err = run(&tmp, "duplicate-turn", source, vec![], Arc::new(e))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(
         err.to_lowercase().contains("duplicate") && err.contains("same"),
         "{err}"

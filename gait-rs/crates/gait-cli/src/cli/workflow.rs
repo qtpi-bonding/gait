@@ -179,10 +179,6 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Res
             eprintln!("[gait workflow] paused at gate");
             Ok(2u8)
         }
-        Ok((_run_id, WorkflowOutcome::NodeOpen)) => {
-            eprintln!("[gait workflow] paused at open node");
-            Ok(0u8)
-        }
         Err((_run_id, e)) => Err(launch_error(e)),
     }
 }
@@ -342,10 +338,6 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
             Ok(2u8)
-        }
-        Ok(WorkflowOutcome::NodeOpen) => {
-            eprintln!("[gait workflow] paused at open node");
-            Ok(0u8)
         }
         Err(e) => Err(launch_error(e)),
     }

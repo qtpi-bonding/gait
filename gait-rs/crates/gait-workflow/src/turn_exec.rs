@@ -25,7 +25,7 @@ pub struct TurnRequest {
     /// the freshly generated id the host chose for this step (chosen once,
     /// before any retry attempt, so retries reuse it).
     pub session_id: String,
-    pub prompt: Option<String>,
+    pub prompt: String,
     pub model: Option<String>,
     pub auto: Option<bool>,
     pub allow: Vec<String>,
@@ -42,10 +42,6 @@ pub struct TurnOutcome {
     pub exit: Option<i32>,
     pub json: Option<Value>,
     pub session_id: Option<String>,
-    /// True when the turn came back "open" (interactive suspension): no
-    /// terminal advance was signalled and the caller must treat the node as
-    /// still open.
-    pub open: bool,
 }
 
 /// One model turn, behind a trait so a scripted fake can stand in for the
@@ -152,13 +148,6 @@ pub(crate) async fn drive_turn(
     let session_id = opts.session_id.clone();
     let mut sink = crate::capturing_sink::CapturingSink::new(frames);
     let outcome = gait_turn_runner::run_single_prompt(opts, Some(task), &mut sink).await?;
-    if outcome.opened {
-        return Ok(TurnOutcome {
-            session_id: Some(session_id),
-            open: true,
-            ..TurnOutcome::default()
-        });
-    }
     // A failed turn is an error, so `retry` and `onFail` apply to it.
     if outcome.exit_code.is_some_and(|code| code != 0) {
         anyhow::bail!("turn failed: {}", outcome.text.unwrap_or_default());
@@ -168,7 +157,6 @@ pub(crate) async fn drive_turn(
         exit: outcome.exit_code,
         json: outcome.json,
         session_id: Some(session_id),
-        open: false,
     })
 }
 
@@ -267,7 +255,6 @@ impl TurnExecutor for ScriptedTurnExecutor {
                 exit: Some(0),
                 json: Some(json),
                 session_id,
-                ..TurnOutcome::default()
             }),
             Some(ScriptedOutcome::Failure(msg)) => anyhow::bail!("{msg}"),
             None => {

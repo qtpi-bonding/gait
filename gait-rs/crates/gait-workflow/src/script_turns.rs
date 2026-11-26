@@ -95,13 +95,7 @@ impl ScriptTurnExecutor {
 #[async_trait::async_trait(?Send)]
 impl TurnExecutor for ScriptTurnExecutor {
     async fn run_turn(&self, req: TurnRequest) -> anyhow::Result<TurnOutcome> {
-        // A request without a prompt runs nothing and leaves the node open.
-        let Some(prompt) = req.prompt.clone() else {
-            return Ok(TurnOutcome {
-                open: true,
-                ..TurnOutcome::default()
-            });
-        };
+        let prompt = req.prompt.clone();
         // No output channel attached is a wiring bug in the run driver, not a
         // condition to paper over: surface it instead of silently dropping
         // the turn's sink output.
@@ -164,7 +158,7 @@ mod tests {
     fn base_req() -> TurnRequest {
         TurnRequest {
             id: "t1".to_string(),
-            prompt: Some("do the thing".to_string()),
+            prompt: "do the thing".to_string(),
             ..TurnRequest::default()
         }
     }

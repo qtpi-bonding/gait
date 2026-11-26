@@ -7,8 +7,4 @@ pub enum WorkflowOutcome {
     Completed,
     /// Workflow paused at a gate node, awaiting external input to resume.
     GatePaused,
-    /// Workflow paused at an open (absent-prompt) node awaiting interactive input.
-    /// The node was started (`NodeStart` recorded) but not completed. Resume with
-    /// an input source to continue from this point.
-    NodeOpen,
 }

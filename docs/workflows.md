@@ -55,9 +55,8 @@ gait workflow types                       # write workflows/gait.d.ts
 
 In the REPL, `/workflow <name> [args...]` runs a workflow.
 
-`run` and `continue` exit 0 when the run completes, 2 when it pauses at a gate, and 0
-when it pauses at a turn without a prompt. `list` and `log` only see workflow runs,
-never ordinary tasks or REPL turns.
+`run` and `continue` exit 0 when the run completes and 2 when it pauses at a gate.
+`list` and `log` only see workflow runs, never ordinary tasks or REPL turns.
 
 ## The script API
 
@@ -102,7 +101,7 @@ One gait turn: its own session, log and permission checks.
 | Field | Meaning |
 |---|---|
 | `id` | Step id (required) |
-| `prompt` | What to ask. See below for a turn without one |
+| `prompt` | What to ask (required) |
 | `model` | Name of a gait inference (an entry under `inferences/`), not a provider model string. An unknown name fails the step |
 | `auto` | Auto-approve this turn |
 | `allow` | Permission patterns; when empty, the `config` list applies |
@@ -112,9 +111,7 @@ One gait turn: its own session, log and permission checks.
 | `outputSchema` | JSON Schema for a structured result, returned as `json` |
 | `retry`, `onFail`, `hooks` | See [Failures](#failures-retries-and-hooks) |
 
-A turn without a `prompt` pauses the run. Gait does not yet have a way to give such a
-step its input, so `continue` pauses at the same step again. Use `gate` to wait for a
-person.
+A turn with no prompt, or a blank one, fails. To wait for a person, use `gate`.
 
 ### `shell`
 

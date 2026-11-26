@@ -1,9 +1,7 @@
-//! Task JS-5a (edit-only, red step): tests for script-run GATES, interactive
-//! steps (`gait.wf.turn({ id })` with no prompt), cancellation kinds, and the
-//! crash guard. These are written BEFORE the implementation: today
-//! `gait.wf.gate` and promptless `gait.wf.turn` do not exist, so the tests
-//! fail at run time until the gate implementation lands. They must COMPILE
-//! against the current public API.
+//! Task JS-5a (edit-only): tests for script-run GATES (`gait.wf.gate`),
+//! cancellation kinds, and the crash guard. The only pause is a gate; a turn
+//! with no prompt fails the step (see `a_turn_without_a_prompt_fails_the_step`
+//! below). The tests must COMPILE against the current public API.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -129,6 +127,55 @@ fn shell_step(id: &str, marker: &Path) -> String {
 }
 
 // ── 1 ───────────────────────────────────────────────────────────────────────
+
+/// A promptless `gait.wf.turn({ id })` — or one with a blank prompt — must
+/// fail the step outright with an explanatory error, and must not log any
+/// event for the step.
+#[tokio::test]
+async fn a_turn_without_a_prompt_fails_the_step() {
+    let tmp = TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    let source = r#"
+        await gait.wf.config({ name: "t" });
+        await gait.wf.turn({ id: "chat" });
+    "#;
+
+    let first = continue_js(
+        &tmp,
+        "no-prompt-001",
+        source,
+        Arc::new(ScriptedTurnExecutor::new()),
+    )
+    .await;
+    let text = err_text(first);
+    assert!(
+        text.contains("a turn needs a prompt; use gate() to wait for a person"),
+        "the promptless turn must fail with the explanatory error: {text}"
+    );
+    assert!(
+        !log_events(tmp.path(), "no-prompt-001")
+            .iter()
+            .any(|k| matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat")),
+        "the run log must have no event for node id chat"
+    );
+
+    let blank = r#"
+        await gait.wf.config({ name: "t" });
+        await gait.wf.turn({ id: "blank", prompt: "   " });
+    "#;
+    let second = continue_js(
+        &tmp,
+        "no-prompt-002",
+        blank,
+        Arc::new(ScriptedTurnExecutor::new()),
+    )
+    .await;
+    let text = err_text(second);
+    assert!(
+        text.contains("a turn needs a prompt; use gate() to wait for a person"),
+        "a blank-prompt turn must fail with the same error: {text}"
+    );
+}
 
 /// A gate pauses the run: earlier steps ran, later steps did not, the log has
 /// NodeStart/WorkflowGate but no NodeComplete for the gate and no
@@ -361,70 +408,9 @@ async fn gate_waits_for_running_siblings_and_starts_no_new_steps() {
 
 // ── 4 ───────────────────────────────────────────────────────────────────────
 
-/// A promptless `gait.wf.turn({ id })` is an interactive step: it suspends the
-/// run with NodeOpen (not Completed, not GatePaused), leaves the step open in
-/// the log, and a plain continue re-suspends with NodeOpen instead of tripping
-/// the crash guard.
-#[tokio::test]
-async fn interactive_step_returns_node_open_and_is_exempt_from_guard() {
-    let tmp = TempDir::new().unwrap();
-    init_git_repo(tmp.path());
-    let marker = tmp.path().join("MARKER");
-    let source = format!(
-        r#"
-        await gait.wf.config({{ name: "t" }});
-        await gait.wf.turn({{ id: "chat" }});
-        await {};
-    "#,
-        shell_step("after", &marker),
-    );
-    let run_id = "interactive-001";
-
-    let first = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
-    assert!(
-        matches!(first, Ok(WorkflowOutcome::NodeOpen)),
-        "the first run must suspend with NodeOpen: {first:?}"
-    );
-    assert_eq!(
-        marker_lines(&marker),
-        0,
-        "the step after the chat must not run"
-    );
-
-    let events = log_events(tmp.path(), run_id);
-    assert!(
-        events
-            .iter()
-            .any(|k| matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat" && ns.node_type == "turn")),
-        "the interactive step must log NodeStart with node_type turn"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|k| matches!(k, workflow_event::Kind::NodeComplete(nc) if nc.node_id == "chat")),
-        "the interactive step must not complete while suspended"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|k| matches!(k, workflow_event::Kind::NodeError(ne) if ne.node_id == "chat")),
-        "the interactive step must not error while suspended"
-    );
-
-    let second = continue_js(&tmp, run_id, &source, Arc::new(ScriptedTurnExecutor::new())).await;
-    assert!(
-        matches!(second, Ok(WorkflowOutcome::NodeOpen)),
-        "a plain continue over a still-open interactive step must re-suspend with NodeOpen, not hit the crash guard: {second:?}"
-    );
-    assert_eq!(marker_lines(&marker), 0);
-}
-
-// ── 5 ───────────────────────────────────────────────────────────────────────
-
 /// A turn WITH a prompt is a normal step: if it crashed (NodeStart with no
 /// terminal event) a plain continue trips the crash guard and names the step
-/// and the remedy. This passes already today; it pins that the interactive
-/// exemption stays narrow.
+/// and the remedy.
 #[tokio::test]
 async fn crashed_prompt_turn_is_still_guarded() {
     let tmp = TempDir::new().unwrap();
@@ -433,7 +419,7 @@ async fn crashed_prompt_turn_is_still_guarded() {
         await gait.wf.config({ name: "t" });
         await gait.wf.turn({ id: "t1", prompt: "do it" });
     "#;
-    let run_id = "interactive-guard-001";
+    let run_id = "turn-guard-001";
 
     let mut exec = ScriptedTurnExecutor::new();
     exec.script_text("done");
@@ -458,7 +444,7 @@ async fn crashed_prompt_turn_is_still_guarded() {
     );
 }
 
-// ── 6 ───────────────────────────────────────────────────────────────────────
+// ── 5 ───────────────────────────────────────────────────────────────────────
 
 /// When one step of a Promise.all fails, its still-running siblings are
 /// cancelled with NodeErrorKind::Cancelled (the failing step keeps its real
@@ -524,7 +510,7 @@ async fn failure_cancels_siblings_with_cancelled_kind_and_continue_reruns_them()
     assert_eq!(marker_lines(&marker_a), 1, "the re-run sibling must write");
 }
 
-// ── 7 ───────────────────────────────────────────────────────────────────────
+// ── 6 ───────────────────────────────────────────────────────────────────────
 
 /// A step created but never awaited before the script ends is an error, and
 /// that orphan step is cancelled.
@@ -566,7 +552,7 @@ async fn unawaited_step_at_script_end_is_an_error_and_cancelled() {
     );
 }
 
-// ── 8 ───────────────────────────────────────────────────────────────────────
+// ── 7 ───────────────────────────────────────────────────────────────────────
 
 /// A step promise whose rejection happens late but is still handled by a
 /// try/catch must not fail the run: the run ends Completed.
@@ -597,7 +583,7 @@ async fn handled_late_rejection_is_not_a_failure() {
     );
 }
 
-// ── 9 ───────────────────────────────────────────────────────────────────────
+// ── 8 ───────────────────────────────────────────────────────────────────────
 
 /// Ctrl-C is modelled as the caller dropping the `run_script` future
 /// mid-run: the in-flight step must be recorded as cancelled in the log, and

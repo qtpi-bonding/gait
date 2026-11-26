@@ -192,24 +192,6 @@ impl WorkflowRunLog {
             node_type: node_type.to_string(),
             attempt,
             session_id: session_id.to_string(),
-            interactive: false,
-        }))
-    }
-
-    /// Append a promptless interactive turn start event.
-    pub fn node_start_interactive(
-        &self,
-        node_id: &str,
-        attempt: u32,
-        session_id: &str,
-    ) -> anyhow::Result<WorkflowEvent> {
-        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
-        self.emit(Kind::NodeStart(NodeStart {
-            node_id: node_id.to_string(),
-            node_type: "turn".to_string(),
-            attempt,
-            session_id: session_id.to_string(),
-            interactive: true,
         }))
     }
 

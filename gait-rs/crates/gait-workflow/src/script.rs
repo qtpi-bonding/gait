@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use gait_codemode::{ApiSurface, CodeModeError, LimitsMode, RunOptions, WorkflowLimits};
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
-use crate::host::{PauseKind, StepEngine, StepRequest, WorkflowHost};
+use crate::host::{StepEngine, StepRequest, WorkflowHost};
 use crate::observer::WorkflowObserver;
 use crate::outcome::WorkflowOutcome;
 use crate::record;
@@ -255,15 +255,11 @@ pub async fn run_script(
         let open_ids = journal.open_ids();
         let stuck: Vec<String> = open_ids
             .iter()
-            // Gates and promptless (interactive) turns are EXEMPT: a gate
-            // pause and an interactive suspension both leave their step
-            // Open by design, and a plain continue is the normal path. An
-            // interactive turn's prompt-lessness can only be judged at the
-            // call site, so its crash (a crashed PROMPT turn stays guarded)
-            // is caught there instead of here.
+            // Gates are EXEMPT: a gate pause leaves its step Open by design,
+            // and a plain continue is the normal path.
             .filter(|id| {
                 let entry = journal.get(id).expect("open id must have an entry");
-                let exempt = entry.kind == "gate" || entry.interactive;
+                let exempt = entry.kind == "gate";
                 !exempt
             })
             .cloned()
@@ -461,11 +457,9 @@ pub async fn run_script(
             // checks).
             // The registry is empty (pause_ready), so no cancel is needed.
             let pause = engine.take_pause().expect("a ready pause must be takeable");
-            match pause.kind {
-                PauseKind::Gate { message } => RunEnd::Paused {
-                    gate: Some((pause.id, message)),
-                },
-                PauseKind::Open => RunEnd::Paused { gate: None },
+            RunEnd::Paused {
+                id: pause.id,
+                message: pause.message,
             }
         } else {
             match finished.take() {
@@ -525,14 +519,11 @@ pub async fn run_script(
         &run_worktree,
     )?;
     match outcome {
-        RunEnd::Paused { gate } => match gate {
-            None => Ok(WorkflowOutcome::NodeOpen),
-            Some((id, message)) => {
-                let ev = run_log.workflow_gate(&id, &message)?;
-                observer.on_event(&ev);
-                Ok(WorkflowOutcome::GatePaused)
-            }
-        },
+        RunEnd::Paused { id, message } => {
+            let ev = run_log.workflow_gate(&id, &message)?;
+            observer.on_event(&ev);
+            Ok(WorkflowOutcome::GatePaused)
+        }
         RunEnd::Completed => {
             // A completed run is replayed from its existing journal.  Do
             // not append another terminal event (or notify observers of
@@ -572,8 +563,7 @@ fn finish_record(
     }
     let status = match outcome {
         RunEnd::Completed => "completed",
-        RunEnd::Paused { gate: Some(_) } => "paused",
-        RunEnd::Paused { gate: None } => "open",
+        RunEnd::Paused { .. } => "paused",
         RunEnd::Failed { .. } => "failed",
     };
     if let Some(record) = record.as_mut() {
@@ -584,10 +574,12 @@ fn finish_record(
 
 /// How the script loop ended, decided inside the engine's scope.
 enum RunEnd {
-    /// The run suspended: a gate (with id + message) or an interactive step.
+    /// The run suspended at a gate (id + message).
     Paused {
-        /// `Some((id, message))` for a gate pause, `None` for an Open one.
-        gate: Option<(String, String)>,
+        /// The gate's step id.
+        id: String,
+        /// The gate's human-facing message.
+        message: String,
     },
     /// The script ran to the end successfully.
     Completed,

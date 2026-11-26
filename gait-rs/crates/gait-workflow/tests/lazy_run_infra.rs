@@ -1,4 +1,4 @@
-//! Spec-06 §2 (script engine): a degenerate single-prompt script run creates
+//! Spec-06 §2 (script engine): a degenerate single-gate script run creates
 //! run_id + run log only — no run worktree, no run lock. (The positive/shell
 //! case lives in run_lock.rs.)
 use std::sync::Arc;
@@ -27,13 +27,13 @@ fn init_git_repo(gait_dir: &std::path::Path) {
         .unwrap();
 }
 
-/// A degenerate script workflow: one step whose turn carries no prompt,
-/// which leaves the run open (`WorkflowOutcome::NodeOpen`) before any model
-/// turn is executed.
+/// A degenerate script workflow: one gate step, which pauses the run
+/// (`WorkflowOutcome::GatePaused`) before any model turn or shell step is
+/// executed.
 fn degenerate_script() -> String {
     r#"
         const cfg = await gait.wf.config({ name: "chat" });
-        const t = await gait.wf.turn({ id: "chat" });
+        const t = await gait.wf.gate({ id: "chat", message: "waiting" });
     "#
     .to_string()
 }
@@ -66,7 +66,7 @@ async fn degenerate_single_prompt_run_creates_no_run_worktree_or_lock() {
     init_git_repo(&gait_dir);
     let run_id = "chat-lazy-001".to_string();
     let outcome = run_js(&tmp, &run_id, &degenerate_script()).await.unwrap();
-    assert_eq!(outcome, WorkflowOutcome::NodeOpen);
+    assert_eq!(outcome, WorkflowOutcome::GatePaused);
     let run_dir = gait_dir.join("workflow-runs").join(&run_id);
     assert!(run_dir.join("log.jsonl").exists(), "run log must exist");
     assert!(
