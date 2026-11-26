@@ -255,7 +255,7 @@ pub async fn run_script(
         // Crash guard: refuse to resume while steps are still Open, unless
         // each such id was explicitly passed in `force_rerun_nodes`.
         let open_ids = journal.open_ids();
-        let unaccepted: Vec<String> = open_ids
+        let stuck: Vec<String> = open_ids
             .iter()
             // Gates and promptless (interactive) turns are EXEMPT: a gate
             // pause and an interactive suspension both leave their step
@@ -266,17 +266,21 @@ pub async fn run_script(
             .filter(|id| {
                 let entry = journal.get(id).expect("open id must have an entry");
                 let exempt = entry.kind == "gate" || entry.interactive;
-                !exempt && !opts.force_rerun_nodes.contains(id)
+                !exempt
             })
             .cloned()
             .collect();
-        if !unaccepted.is_empty() {
+        if stuck.iter().any(|id| !opts.force_rerun_nodes.contains(id)) {
             anyhow::bail!(
                 "the following step(s) were still running when this workflow was \
                  interrupted and may have partially or fully executed: {}. \
                  Re-running them may repeat side effects. Pass --force-rerun <id> \
                  once per step to accept this and resume.",
-                unaccepted.join(", ")
+                stuck
+                    .iter()
+                    .map(|id| format!("'{}'", id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
 
