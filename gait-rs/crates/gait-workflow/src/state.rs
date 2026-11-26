@@ -190,6 +190,11 @@ pub struct JournalEntry {
     pub kind: String,
     /// Session id recorded by `NodeStart` (or a later `NodeComplete`).
     pub session_id: String,
+    pub interactive: bool,
+    /// Whether a WorkflowGate event was recorded after this gate's NodeStart.
+    /// An open gate without this event was interrupted while draining and has
+    /// not yet been shown to the user.
+    pub gate_announced: bool,
     /// What the log's last terminal event for this id says.
     pub state: JournalState,
 }
@@ -224,6 +229,8 @@ impl ScriptJournal {
                         JournalEntry {
                             kind: ns.node_type.clone(),
                             session_id: ns.session_id.clone(),
+                            interactive: ns.interactive,
+                            gate_announced: false,
                             state: JournalState::Open,
                         },
                     );
@@ -254,6 +261,16 @@ impl ScriptJournal {
                             error: ne.error.clone(),
                         },
                     };
+                }
+                workflow_event::Kind::WorkflowGate(wg) => {
+                    // Only mark the current open entry.  In particular, a
+                    // stale/malformed gate event must not announce a later
+                    // NodeStart for the same id.
+                    if let Some(entry) = journal.entries.get_mut(&wg.node_id) {
+                        if entry.state == JournalState::Open && entry.kind == "gate" {
+                            entry.gate_announced = true;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -331,6 +348,38 @@ mod tests {
         let st = reconstruct_state(&evs);
         assert_eq!(st.node_status("a"), NodeStatus::Done);
         assert_eq!(st.open_node(), Some("b")); // started, no complete => the open node
+    }
+
+    #[test]
+    fn journal_preserves_interactive_flag() {
+        let events = vec![we(workflow_event::Kind::NodeStart(NodeStart {
+            node_id: "chat".into(),
+            node_type: "turn".into(),
+            interactive: true,
+            ..Default::default()
+        }))];
+        let journal = ScriptJournal::from_events(&events);
+        assert!(journal.get("chat").unwrap().interactive);
+    }
+
+    #[test]
+    fn journal_marks_gate_as_announced_only_after_workflow_gate() {
+        let start = we(workflow_event::Kind::NodeStart(NodeStart {
+            node_id: "review".into(),
+            node_type: "gate".into(),
+            ..Default::default()
+        }));
+        let unannounced = ScriptJournal::from_events(std::slice::from_ref(&start));
+        assert!(!unannounced.get("review").unwrap().gate_announced);
+
+        let announced = ScriptJournal::from_events(&[
+            start,
+            we(workflow_event::Kind::WorkflowGate(WorkflowGate {
+                node_id: "review".into(),
+                ..Default::default()
+            })),
+        ]);
+        assert!(announced.get("review").unwrap().gate_announced);
     }
 
     #[test]

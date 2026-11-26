@@ -1494,6 +1494,7 @@ mod tests {
                 node_type: "prompt".into(),
                 attempt: 1,
                 session_id: first.clone(),
+                ..Default::default()
             })),
             ..Default::default()
         };

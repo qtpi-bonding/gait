@@ -156,13 +156,27 @@ pub async fn exec_shell_opts_with_host_env(
 
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    // outputSchema: validate the shell's stdout JSON against the schema with
+    // the shared node-boundary validator (`output::validate_node_output`) —
+    // the same check a YAML node's output contract goes through. A violation
+    // is an error (a retryable failed attempt), never a non-zero-exit result.
     let json = match &opts.output_schema {
         None => None,
-        Some(_) => Some(serde_json::from_str(stdout.trim()).map_err(|e| {
-            anyhow::anyhow!(
-                "node output_schema requires JSON stdout, but shell stdout was invalid JSON: {e}"
-            )
-        })?),
+        Some(schema) => {
+            let node = gait_core::proto::gait::workflow::v1::Node {
+                id: opts.id.clone(),
+                output_schema_json: serde_json::to_string(schema).unwrap_or_default(),
+                ..Default::default()
+            };
+            let out = crate::vars::NodeOutput {
+                text: stdout.trim().to_string(),
+                exit_code: result.status.code(),
+                json: None,
+                routed_to: None,
+                session_id: String::new(),
+            };
+            crate::output::validate_node_output(&node, &out)?.json
+        }
     };
     let combined = format!("{stdout}{stderr}");
 

@@ -18,11 +18,14 @@ use async_trait::async_trait;
 use gait_codemode::{CapabilityHost, HostError};
 
 use crate::exec_shell::{exec_shell_opts_with_host_env, NodeContext};
+use crate::hooks::run_hook;
 use crate::observer::WorkflowObserver;
+use crate::record::{self, WorkflowRecord};
 use crate::run_log::WorkflowRunLog;
 use crate::state::{JournalEntry, JournalState, ScriptJournal};
-use crate::step::{ConfigOpts, GateOpts, ShellOpts, TurnOpts};
+use crate::step::{build_shell_env, Backoff, ConfigOpts, GateOpts, RetryOpts, ShellOpts, TurnOpts};
 use crate::turn_exec::{TurnExecutor, TurnRequest};
+use gait_core::proto::gait::workflow::v1::{NodeErrorKind, RecordCommand, RecordConfig, Workflow};
 
 /// A step-level failure, rendered with the exact message text the JS layer
 /// has always seen (tests assert on these messages).
@@ -42,8 +45,6 @@ enum StepError {
     ReservedId { id: String },
     #[error("step cap of {cap} reached: refusing step '{id}'")]
     StepCap { cap: usize, id: String },
-    #[error("step '{id}': retry/onFail/hooks are not supported yet")]
-    RetryUnsupported { id: String },
     #[error("workflow script changed (step {id}): logged as {old}, now {new}")]
     KindChanged {
         id: String,
@@ -57,13 +58,13 @@ enum StepError {
     OpenStep { id: String },
     #[error("gait.wf.{method} takes no arguments")]
     NoArgs { method: String },
-    #[error("step '{id}': gait.wf.{method} outputSchema is not supported yet")]
-    OutputSchemaUnsupported { id: String, method: String },
     #[error("gait.wf.turn step '{id}': {source}")]
     TurnArgs {
         id: String,
         source: serde_json::Error,
     },
+    #[error("step '{id}': retry, onFail and hooks do not apply to a turn without a prompt")]
+    InteractiveTurnOpts { id: String },
     #[error("gait.wf.shell step '{id}': {source}")]
     ShellArgs {
         id: String,
@@ -80,6 +81,8 @@ enum StepError {
     Worktree(anyhow::Error),
     #[error(transparent)]
     LogWrite(anyhow::Error),
+    #[error(transparent)]
+    Record(anyhow::Error),
     #[error("{0}")]
     TurnFailure(String),
     #[error("{0}")]
@@ -162,6 +165,8 @@ pub struct StepEngine<'a> {
     observer: RefCell<&'a mut dyn WorkflowObserver>,
     /// Mutable engine state, guarded so borrows never cross an `.await`.
     state: RefCell<EngineState>,
+    /// In-progress run-level evidence record, when configured on a fresh run.
+    record: RefCell<Option<WorkflowRecord>>,
     /// Whether the run worktree has been created (lazy, created on first
     /// shell step).
     worktree_ready: Cell<bool>,
@@ -257,6 +262,7 @@ impl<'a> StepEngine<'a> {
                 in_flight: Vec::new(),
                 pause: None,
             }),
+            record: RefCell::new(None),
             worktree_ready: Cell::new(false),
             _sink_tx: sink_tx,
         }
@@ -265,6 +271,12 @@ impl<'a> StepEngine<'a> {
     /// Whether the `config` step has been handled (WorkflowStart written).
     pub fn started(&self) -> bool {
         self.state.borrow().started
+    }
+
+    /// Take the in-progress record out of the engine for finalization by the
+    /// script runner. Resumed runs intentionally have no record here.
+    pub fn take_record(&self) -> Option<WorkflowRecord> {
+        self.record.borrow_mut().take()
     }
 
     /// The ids of the steps currently executing live, in registration order.
@@ -414,6 +426,41 @@ impl<'a> StepEngine<'a> {
         let config: ConfigOpts =
             serde_json::from_value(args.clone()).map_err(StepError::ConfigArgs)?;
 
+        // Recording is a start-of-live-run operation.  Do it before emitting
+        // WorkflowStart, and never on a resume (the journal is the authority
+        // for that distinction).  Use the canonical record implementation so
+        // script and YAML workflows have identical validation and capture.
+        if !self.resuming() {
+            if let Some(record_opts) = &config.record {
+                self.ensure_worktree().map_err(StepError::Record)?;
+                let workflow = Workflow {
+                    version: 1,
+                    name: config.name.clone(),
+                    inference: config.model.clone(),
+                    allow: config.allow.clone(),
+                    auto: config.auto.unwrap_or(false),
+                    record: Some(RecordConfig {
+                        commands: record_opts
+                            .commands
+                            .iter()
+                            .map(|command| RecordCommand {
+                                id: command.id.clone(),
+                                command: command.command.clone(),
+                                timeout_ms: command.timeout.unwrap_or(120_000),
+                            })
+                            .collect(),
+                    }),
+                    ..Default::default()
+                };
+                let captured = record::begin(&self.run_id, &workflow, &self.run_worktree)
+                    .await
+                    .map_err(StepError::Record)?;
+                record::write(&captured, &record::record_path(&self.run_dir))
+                    .map_err(StepError::Record)?;
+                *self.record.borrow_mut() = Some(captured);
+            }
+        }
+
         // On a resumed run the log already carries the WorkflowStart event;
         // writing a second one would corrupt the journal fold.
         if !self.resuming() {
@@ -506,25 +553,15 @@ impl<'a> StepEngine<'a> {
         Ok(())
     }
 
-    /// Reject retry/onFail/hooks (and shell outputSchema) until implemented.
-    fn reject_unsupported(
-        method: &str,
-        id: &str,
-        retry: bool,
-        on_fail: bool,
-        hooks: bool,
-        output_schema: bool,
-    ) -> Result<(), StepError> {
-        if retry || on_fail || hooks {
-            return Err(StepError::RetryUnsupported { id: id.to_string() });
+    /// Backoff delay before retry attempt N (1-based), mirroring the YAML
+    /// engine's semantics (`runner::backoff_delay_ms`).
+    fn retry_delay_ms(attempt: u32, retry: &RetryOpts) -> u64 {
+        match retry.backoff {
+            Backoff::Exponential => retry
+                .delay
+                .saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1))),
+            Backoff::Linear => retry.delay,
         }
-        if output_schema {
-            return Err(StepError::OutputSchemaUnsupported {
-                id: id.to_string(),
-                method: method.to_string(),
-            });
-        }
-        Ok(())
     }
 
     /// Handle a `turn` step: parse, check, run the turn, log and return.
@@ -532,14 +569,6 @@ impl<'a> StepEngine<'a> {
         let id = self.validate_common_step("turn", &args)?;
         let opts: TurnOpts =
             serde_json::from_value(args).map_err(|e| StepError::turn_args(id.clone(), e))?;
-        Self::reject_unsupported(
-            "turn",
-            &id,
-            opts.retry.is_some(),
-            opts.on_fail.is_some(),
-            opts.hooks.is_some(),
-            false,
-        )?;
 
         // A promptless turn is an INTERACTIVE step: it suspends the run with
         // an Open journal state instead of executing. Its replay rules differ
@@ -612,30 +641,121 @@ impl<'a> StepEngine<'a> {
 
         self.accept_step(&id)?;
 
+        // The step's session id is chosen ONCE, before the turn runs: the
+        // step's `continueSession` when given, else a freshly generated id
+        // (retries reuse it via `req.session_id`).
+        let session_id = match opts.continue_session.as_deref() {
+            Some(cs) if !cs.is_empty() => cs.to_string(),
+            _ => gait_core::session::new_session_id(),
+        };
         let ev = self
             .run_log
-            .node_start(
-                &id,
-                "turn",
-                1,
-                opts.continue_session.as_deref().unwrap_or(""),
-            )
+            .node_start(&id, "turn", 1, &session_id)
             .map_err(StepError::LogWrite)?;
         self.observer.borrow_mut().on_event(&ev);
         self.register_in_flight(&id, "turn");
 
+        let hook_env = |failed: &str| {
+            let well_known: BTreeMap<String, String> = [
+                ("WORKFLOW_ID".into(), self.run_id.clone()),
+                ("SESSION_ID".into(), self.run_id.clone()),
+                ("NODE_ID".into(), id.clone()),
+                ("CODEBASE".into(), self.codebase.display().to_string()),
+                ("WORKSPACE".into(), self.gait_dir.display().to_string()),
+                ("ARGS".into(), self.args.join(" ")),
+                ("FAILED_NODE".into(), failed.into()),
+            ]
+            .into_iter()
+            .collect();
+            build_shell_env(&well_known, &BTreeMap::new(), &[])
+                .map_err(|e| StepError::ShellFailure(e.to_string()))
+        };
+        if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.before.as_deref()) {
+            let env = hook_env("")?;
+            let (exit, _) = run_hook(cmd, &env, 120_000, None).await;
+            if exit != 0 {
+                let message = format!("before hook failed with exit code {exit}");
+                if let Some(error_cmd) = opts.hooks.as_ref().and_then(|h| h.error.as_deref()) {
+                    let env = hook_env(&id)?;
+                    let _ = run_hook(error_cmd, &env, 120_000, None).await;
+                }
+                let log_result = if opts.on_fail == Some(crate::step::OnFail::Continue) {
+                    self.run_log
+                        .node_error_kind(&id, &message, 1, NodeErrorKind::Continued)
+                } else {
+                    self.run_log.node_error(&id, &message, 1)
+                }
+                .map_err(StepError::LogWrite);
+                self.unregister_in_flight(&id);
+                let ev = log_result?;
+                self.observer.borrow_mut().on_event(&ev);
+                if opts.on_fail == Some(crate::step::OnFail::Continue) {
+                    return Ok(serde_json::json!({
+                        "output": "",
+                        "exit": null,
+                        "json": null,
+                        "sessionId": if session_id.is_empty() { None } else { Some(session_id.clone()) },
+                        "error": message,
+                    }));
+                }
+                return Err(StepError::TurnFailure(message));
+            }
+        }
+
+        // Config defaults (`gait.wf.config`) apply to turn steps: a step's own
+        // value wins; `allow` falls back to the config list only when the
+        // step's list is empty.
+        let config = self.state.borrow().config.clone();
+        let model = opts
+            .model
+            .clone()
+            .or_else(|| config.as_ref().and_then(|c| c.model.clone()));
+        let auto = opts.auto.or_else(|| config.as_ref().and_then(|c| c.auto));
+        let allow = if opts.allow.is_empty() {
+            config.as_ref().map(|c| c.allow.clone()).unwrap_or_default()
+        } else {
+            opts.allow.clone()
+        };
+
         let req = TurnRequest {
             id: id.clone(),
+            session_id,
             prompt: opts.prompt.clone(),
-            model: opts.model.clone(),
-            auto: opts.auto,
-            allow: opts.allow.clone(),
+            model,
+            auto,
+            allow,
             agent: opts.agent.clone(),
             codebase: opts.codebase.clone().map(PathBuf::from),
             continue_session: opts.continue_session.clone(),
             output_schema: opts.output_schema.clone(),
         };
-        match self.turns.run_turn(req).await {
+        let max_attempts = opts.retry.as_ref().map_or(1, |r| r.times as usize + 1);
+        let mut last_failure: Option<String> = None;
+        let result = {
+            let mut attempt = 1;
+            loop {
+                if attempt > 1 {
+                    let retry = opts
+                        .retry
+                        .as_ref()
+                        .expect("retry set when max_attempts > 1");
+                    let delay = Self::retry_delay_ms(attempt as u32, retry);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                match self.turns.run_turn(req.clone()).await {
+                    Ok(outcome) => break Ok(outcome),
+                    Err(e) => {
+                        last_failure = Some(e.to_string());
+                    }
+                }
+                attempt += 1;
+                if attempt > max_attempts {
+                    break Err(());
+                }
+            }
+        };
+
+        match result {
             Ok(outcome) => {
                 let session_id = outcome.session_id.clone().unwrap_or_default();
                 let json_text = match &outcome.json {
@@ -656,6 +776,10 @@ impl<'a> StepEngine<'a> {
                 self.unregister_in_flight(&id);
                 let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
+                if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.after.as_deref()) {
+                    let env = hook_env("")?;
+                    let _ = run_hook(cmd, &env, 120_000, None).await;
+                }
                 Ok(serde_json::json!({
                     "output": outcome.output,
                     "exit": outcome.exit,
@@ -664,8 +788,32 @@ impl<'a> StepEngine<'a> {
                     "error": null,
                 }))
             }
-            Err(e) => {
-                let message = e.to_string();
+            Err(()) => {
+                let message =
+                    last_failure.unwrap_or_else(|| "turn failed for an unknown reason".into());
+                // onFail: "continue" resolves the failure to the script as an
+                // error-result object; the NodeError is still logged, but with
+                // kind CONTINUED so the replay treats the step as finished.
+                if opts.on_fail == Some(crate::step::OnFail::Continue) {
+                    if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.error.as_deref()) {
+                        let env = hook_env(&id)?;
+                        let _ = run_hook(cmd, &env, 120_000, None).await;
+                    }
+                    let log_result = self
+                        .run_log
+                        .node_error_kind(&id, &message, 1, NodeErrorKind::Continued)
+                        .map_err(StepError::LogWrite);
+                    self.unregister_in_flight(&id);
+                    let ev = log_result?;
+                    self.observer.borrow_mut().on_event(&ev);
+                    return Ok(serde_json::json!({
+                        "output": "",
+                        "exit": null,
+                        "json": null,
+                        "sessionId": if req.session_id.is_empty() { None } else { Some(req.session_id.clone()) },
+                        "error": message,
+                    }));
+                }
                 let log_result = self
                     .run_log
                     .node_error(&id, &message, 1)
@@ -673,6 +821,10 @@ impl<'a> StepEngine<'a> {
                 self.unregister_in_flight(&id);
                 let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
+                if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.error.as_deref()) {
+                    let env = hook_env(&id)?;
+                    let _ = run_hook(cmd, &env, 120_000, None).await;
+                }
                 Err(StepError::TurnFailure(message))
             }
         }
@@ -687,6 +839,12 @@ impl<'a> StepEngine<'a> {
         id: &str,
         opts: &TurnOpts,
     ) -> Result<serde_json::Value, StepError> {
+        // Retry, onFail and hooks are defined against a turn's execution;
+        // a promptless (interactive) turn never executes, so they would be
+        // silently ignored — refuse them instead, before anything is logged.
+        if opts.retry.is_some() || opts.on_fail.is_some() || opts.hooks.is_some() {
+            return Err(StepError::InteractiveTurnOpts { id: id.to_string() });
+        }
         let entry = self.journal.get(id);
         match entry {
             Some(entry) if entry.state != JournalState::Cancelled => {
@@ -744,6 +902,7 @@ impl<'a> StepEngine<'a> {
                     }
                     JournalState::Open => {
                         if !self.force_rerun.iter().any(|f| f == id) {
+                            self.record_seen(id)?;
                             // The interactive step is still open: re-suspend
                             // it (exempt from the crash guard; the OpenStep
                             // error stays narrow to prompt turns).
@@ -764,6 +923,10 @@ impl<'a> StepEngine<'a> {
             _ => {}
         }
 
+        // Check the live call even when another interactive call has already
+        // requested the pause: a second id is still a duplicate in this run.
+        self.record_seen(id)?;
+
         // Live: held calls never resolve and write no log event.
         if self.is_held() {
             return Ok(pending::<serde_json::Value>().await);
@@ -771,12 +934,7 @@ impl<'a> StepEngine<'a> {
 
         let ev = self
             .run_log
-            .node_start(
-                id,
-                "turn",
-                1,
-                opts.continue_session.as_deref().unwrap_or(""),
-            )
+            .node_start_interactive(id, 1, opts.continue_session.as_deref().unwrap_or(""))
             .map_err(StepError::LogWrite)?;
         self.observer.borrow_mut().on_event(&ev);
         self.request_pause(PauseRequest {
@@ -819,6 +977,21 @@ impl<'a> StepEngine<'a> {
                     }
                     JournalState::Open => {
                         if !self.force_rerun.iter().any(|f| f == &id) {
+                            if !entry.gate_announced {
+                                // The previous run reached the gate but was
+                                // interrupted before the pause was published.
+                                // Re-publish the pause without another
+                                // NodeStart; only an announced gate can be
+                                // resolved by continue.
+                                self.record_seen(&id)?;
+                                self.request_pause(PauseRequest {
+                                    kind: PauseKind::Gate {
+                                        message: opts.message,
+                                    },
+                                    id: id.clone(),
+                                });
+                                return Ok(pending::<serde_json::Value>().await);
+                            }
                             // The gate was reached on the previous run: this
                             // continue RESOLVES it with exactly one
                             // NodeComplete.
@@ -868,14 +1041,6 @@ impl<'a> StepEngine<'a> {
         let id = self.validate_common_step("shell", &args)?;
         let opts: ShellOpts =
             serde_json::from_value(args).map_err(|e| StepError::shell_args(id.clone(), e))?;
-        Self::reject_unsupported(
-            "shell",
-            &id,
-            opts.retry.is_some(),
-            opts.on_fail.is_some(),
-            opts.hooks.is_some(),
-            opts.output_schema.is_some(),
-        )?;
         opts.validate().map_err(StepError::ShellValidation)?;
 
         // Split env: GAIT_ARG_<digits> entries come from the `gait.wf.sh`
@@ -956,8 +1121,83 @@ impl<'a> StepEngine<'a> {
         self.observer.borrow_mut().on_event(&ev);
         self.register_in_flight(&id, "shell");
 
+        let hook_env = |failed: &str| {
+            let well_known: BTreeMap<String, String> = [
+                ("WORKFLOW_ID".into(), self.run_id.clone()),
+                ("SESSION_ID".into(), self.run_id.clone()),
+                ("NODE_ID".into(), id.clone()),
+                ("CODEBASE".into(), self.codebase.display().to_string()),
+                ("WORKSPACE".into(), self.gait_dir.display().to_string()),
+                ("ARGS".into(), self.args.join(" ")),
+                ("FAILED_NODE".into(), failed.into()),
+            ]
+            .into_iter()
+            .collect();
+            build_shell_env(&well_known, &BTreeMap::new(), &[])
+                .map_err(|e| StepError::ShellFailure(e.to_string()))
+        };
+        if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.before.as_deref()) {
+            let env = hook_env("")?;
+            let (exit, _) = run_hook(cmd, &env, opts.timeout.unwrap_or(120_000), None).await;
+            if exit != 0 {
+                let message = format!("before hook failed with exit code {exit}");
+                if let Some(error_cmd) = opts.hooks.as_ref().and_then(|h| h.error.as_deref()) {
+                    let env = hook_env(&id)?;
+                    let _ = run_hook(error_cmd, &env, opts.timeout.unwrap_or(120_000), None).await;
+                }
+                let log_result = if opts.on_fail == Some(crate::step::OnFail::Continue) {
+                    self.run_log
+                        .node_error_kind(&id, &message, 1, NodeErrorKind::Continued)
+                } else {
+                    self.run_log.node_error(&id, &message, 1)
+                }
+                .map_err(StepError::LogWrite);
+                self.unregister_in_flight(&id);
+                let ev = log_result?;
+                self.observer.borrow_mut().on_event(&ev);
+                if opts.on_fail == Some(crate::step::OnFail::Continue) {
+                    return Ok(serde_json::json!({
+                        "output": "", "exit": null, "json": null,
+                        "sessionId": null, "error": message,
+                    }));
+                }
+                return Err(StepError::ShellFailure(message));
+            }
+        }
+
         let ctx = self.build_node_context(&id);
-        match exec_shell_opts_with_host_env(&opts, &ctx, &[], &host_env).await {
+        let max_attempts = opts.retry.as_ref().map_or(1, |r| r.times as usize + 1);
+        let mut last_failure: Option<String> = None;
+        let result = {
+            let mut attempt = 1;
+            loop {
+                if attempt > 1 {
+                    let retry = opts
+                        .retry
+                        .as_ref()
+                        .expect("retry set when max_attempts > 1");
+                    let delay = Self::retry_delay_ms(attempt as u32, retry);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                match exec_shell_opts_with_host_env(&opts, &ctx, &[], &host_env).await {
+                    // A non-zero exit is a RESULT, not an error: no retry.
+                    Ok(res) if res.error.is_none() => break Ok(res),
+                    Ok(res) => {
+                        last_failure =
+                            Some(res.error.clone().unwrap_or_else(|| "shell failed".into()));
+                    }
+                    Err(e) => {
+                        last_failure = Some(e.to_string());
+                    }
+                }
+                attempt += 1;
+                if attempt > max_attempts {
+                    break Err(());
+                }
+            }
+        };
+
+        match result {
             Ok(res) => {
                 let json_text = match &res.json {
                     Some(j) => serde_json::to_string(j).unwrap_or_default(),
@@ -970,10 +1210,38 @@ impl<'a> StepEngine<'a> {
                 self.unregister_in_flight(&id);
                 let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
+                if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.after.as_deref()) {
+                    let env = hook_env("")?;
+                    let _ = run_hook(cmd, &env, opts.timeout.unwrap_or(120_000), None).await;
+                }
                 serde_json::to_value(&res).map_err(|e| StepError::LogWrite(e.into()))
             }
-            Err(e) => {
-                let message = e.to_string();
+            Err(()) => {
+                let message =
+                    last_failure.unwrap_or_else(|| "shell failed for an unknown reason".into());
+                // onFail: "continue" resolves the failure to the script as an
+                // error-result object; the NodeError is still logged, but with
+                // kind CONTINUED so the replay treats the step as finished.
+                if opts.on_fail == Some(crate::step::OnFail::Continue) {
+                    if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.error.as_deref()) {
+                        let env = hook_env(&id)?;
+                        let _ = run_hook(cmd, &env, opts.timeout.unwrap_or(120_000), None).await;
+                    }
+                    let log_result = self
+                        .run_log
+                        .node_error_kind(&id, &message, 1, NodeErrorKind::Continued)
+                        .map_err(StepError::LogWrite);
+                    self.unregister_in_flight(&id);
+                    let ev = log_result?;
+                    self.observer.borrow_mut().on_event(&ev);
+                    return Ok(serde_json::json!({
+                        "output": "",
+                        "exit": null,
+                        "json": null,
+                        "sessionId": null,
+                        "error": message,
+                    }));
+                }
                 let log_result = self
                     .run_log
                     .node_error(&id, &message, 1)
@@ -981,6 +1249,10 @@ impl<'a> StepEngine<'a> {
                 self.unregister_in_flight(&id);
                 let ev = log_result?;
                 self.observer.borrow_mut().on_event(&ev);
+                if let Some(cmd) = opts.hooks.as_ref().and_then(|h| h.error.as_deref()) {
+                    let env = hook_env(&id)?;
+                    let _ = run_hook(cmd, &env, opts.timeout.unwrap_or(120_000), None).await;
+                }
                 Err(StepError::ShellFailure(message))
             }
         }
@@ -1542,7 +1814,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_on_fail_and_hooks_are_rejected() {
+    async fn retry_on_fail_and_hooks_run() {
         let mut script = ScriptedTurnExecutor::new();
         script.script_text("unused");
         let (_dir, engine) = make_engine(script, None);
@@ -1551,16 +1823,71 @@ mod tests {
             .await
             .unwrap();
 
+        let value = engine
+            .handle(
+                "turn",
+                json!({ "id": "t1", "prompt": "hi", "hooks": { "before": "true" } }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(value["output"], "unused");
+    }
+
+    #[tokio::test]
+    async fn before_hook_failure_can_continue_and_is_logged() {
+        let mut script = ScriptedTurnExecutor::new();
+        script.script_text("next step");
+        let (dir, engine) = make_engine(script, None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let failed = engine
+            .handle(
+                "turn",
+                json!({
+                    "id": "hooked",
+                    "prompt": "not run",
+                    "hooks": { "before": "exit 1" },
+                    "onFail": "continue"
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed["exit"], serde_json::Value::Null);
+        assert!(failed["error"].as_str().unwrap().contains("before hook"));
+        assert_eq!(
+            node_errors(&dir),
+            vec![("hooked".to_string(), NodeErrorKind::Continued as i32)]
+        );
+
+        let next = engine
+            .handle("turn", json!({ "id": "next", "prompt": "go" }))
+            .await
+            .unwrap();
+        assert_eq!(next["output"], "next step");
+
+        let (dir, engine) = make_engine(ScriptedTurnExecutor::new(), None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
         let err = engine
             .handle(
                 "turn",
-                json!({ "id": "t1", "prompt": "hi", "retry": { "times": 2 } }),
+                json!({
+                    "id": "hooked",
+                    "prompt": "not run",
+                    "hooks": { "before": "exit 1" }
+                }),
             )
             .await
             .unwrap_err();
-        assert!(
-            err.contains("step 't1': retry/onFail/hooks are not supported yet"),
-            "got: {err}"
+        assert!(err.contains("before hook"), "got: {err}");
+        assert_eq!(
+            node_errors(&dir),
+            vec![("hooked".to_string(), NodeErrorKind::Failed as i32)]
         );
     }
 
@@ -1647,7 +1974,7 @@ mod tests {
 
     use gait_core::proto::gait::workflow::v1::workflow_event;
     use gait_core::proto::gait::workflow::v1::{
-        NodeComplete, NodeError, NodeErrorKind, NodeStart, WorkflowEvent,
+        NodeComplete, NodeError, NodeErrorKind, NodeStart, WorkflowEvent, WorkflowGate,
     };
 
     /// A journal event with only the kind filled in.
@@ -1741,6 +2068,7 @@ mod tests {
                 node_type: "turn".into(),
                 attempt: 1,
                 session_id: "sess-old".into(),
+                ..Default::default()
             })),
             journal_event(workflow_event::Kind::NodeError(NodeError {
                 node_id: "t1".into(),
@@ -1946,12 +2274,18 @@ mod tests {
     /// call returns null.
     #[tokio::test]
     async fn gate_on_open_journal_writes_one_node_complete_and_returns_null() {
-        let events = vec![journal_event(workflow_event::Kind::NodeStart(NodeStart {
-            node_id: "review".into(),
-            node_type: "gate".into(),
-            attempt: 1,
-            ..Default::default()
-        }))];
+        let events = vec![
+            journal_event(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "review".into(),
+                node_type: "gate".into(),
+                attempt: 1,
+                ..Default::default()
+            })),
+            journal_event(workflow_event::Kind::WorkflowGate(WorkflowGate {
+                node_id: "review".into(),
+                message: "look".into(),
+            })),
+        ];
         let (_dir, engine) = make_engine_with_journal(ScriptedTurnExecutor::new(), events);
         engine
             .handle("config", json!({ "name": "test-wf" }))
@@ -2010,6 +2344,9 @@ mod tests {
             1,
             "the first call writes exactly one NodeStart"
         );
+        assert!(all_events(&_dir).into_iter().any(|k| {
+            matches!(k, workflow_event::Kind::NodeStart(ns) if ns.node_id == "chat" && ns.interactive)
+        }));
 
         // Re-call over the Open journal: re-suspend, no new NodeStart.
         // Reuse the SAME run log (the second engine appends to it) and
@@ -2041,6 +2378,52 @@ mod tests {
                 .count(),
             1,
             "the re-call must NOT write a second NodeStart"
+        );
+    }
+
+    /// A promptless (interactive) turn rejects `retry`, `onFail` and `hooks`
+    /// instead of silently ignoring them, and before anything is logged.
+    #[tokio::test]
+    async fn interactive_turn_rejects_retry_on_fail_and_hooks() {
+        let mut script = ScriptedTurnExecutor::new();
+        script.script_text("unused");
+        let (_dir, engine) = make_engine(script, None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let err = engine
+            .handle(
+                "turn",
+                json!({ "id": "chat", "hooks": { "before": "true" } }),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("do not apply to a turn without a prompt"),
+            "hooks must be rejected: {err}"
+        );
+
+        let err = engine
+            .handle("turn", json!({ "id": "chat", "retry": { "times": 1 } }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("do not apply to a turn without a prompt"),
+            "retry must be rejected: {err}"
+        );
+
+        let err = engine
+            .handle("turn", json!({ "id": "chat", "onFail": "continue" }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("do not apply to a turn without a prompt"),
+            "onFail must be rejected: {err}"
         );
     }
 
