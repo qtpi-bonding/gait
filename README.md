@@ -62,7 +62,7 @@ cargo build -p gait-bin --bin gait
 cargo build -p gait-bin --no-default-features --features min --bin gait-min
 ```
 
-Min keeps the CLI, the plain REPL, durable event-sourced sessions, the permission gate, the sandbox, and skills; it drops the `gait-workflow` DAG runner, MCP, plugins, Code Mode, the rich-TUI renderer (`termimad`/`syntect`/`termbg`), and the local model backend from its dependency tree entirely — see [gait-rs/docs/gait-min.md](gait-rs/docs/gait-min.md) for exactly what's in, what's out, and why.
+Min keeps the CLI, the plain REPL, durable event-sourced sessions, the permission gate, the sandbox, and skills; it drops the `gait-workflow` script runner, MCP, plugins, Code Mode, the rich-TUI renderer (`termimad`/`syntect`/`termbg`), and the local model backend from its dependency tree entirely — see [gait-rs/docs/gait-min.md](gait-rs/docs/gait-min.md) for exactly what's in, what's out, and why.
 
 ## Quickstart
 
@@ -126,7 +126,7 @@ Flags (`--session`, `--inference`, `--allow`, `--unlock`, `--result-schema`, and
 - **[docs/manual.md](docs/manual.md)** — every command, flag and REPL slash-command, plus input syntax, undo, and where things live. Generated from the binary.
 - **[docs/providers.md](docs/providers.md)** — provider registry, model strings, local models, named inference profiles.
 - **[docs/hooks.md](docs/hooks.md)** — lifecycle hooks, the `GAIT_*` env vars they see, event semantics.
-- **[docs/workflows.md](docs/workflows.md)** — workflow YAML reference: node types, variable substitution, loops, gates, resume.
+- **[docs/workflows.md](docs/workflows.md)** — JavaScript workflows: the script API, shell steps, gates, resume.
 - **[docs/sandbox.md](docs/sandbox.md)** — the three-layer sandbox config, `--unlock`, `awaiting-unlock`, shell whitelist.
 - **[gait-rs/docs/sandbox-security.md](gait-rs/docs/sandbox-security.md)** — brain/spine/hand process model, threat model, what's enforced vs. not.
 - **[gait-rs/docs/architecture.md](gait-rs/docs/architecture.md)** — engine internals: crate layout, event log, projections, ops boundary, embedding API.

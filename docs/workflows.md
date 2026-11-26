@@ -1,263 +1,220 @@
 # Workflows
 
-Workflows are YAML DAGs — graphs of nodes that execute in dependency order. Each `prompt` node is a full gait turn with its own session; each `shell` node is one OS subprocess; `branch` nodes route; `gate` nodes pause the workflow for human review. State is reconstructed from the run log, so workflows survive interruptions and resumes.
+A workflow is a JavaScript file that runs model turns, shell commands and approval
+gates in the order your code says. Every step is written to a run log, so a paused or
+interrupted run can be continued.
 
-The runner is `crates/gait-workflow/src/runner.rs`. The graph shape and node-type definitions are in `crates/gait-workflow/src/schema.rs`. The full audit and the design history are in `gait-rs/docs/superpowers/specs/`.
+Workflows need the full `gait` build. `gait-min` has no `workflow` command.
 
-## Defining a workflow
+## A first workflow
 
-Save a `.yaml` file in `workflows/` inside your gait-dir and run it with `gait workflow run <name>`.
+Scripts live in `<gait-dir>/workflows/<name>.js`:
 
-```yaml
-# workflows/ci.yaml
-name: ci-pipeline
-description: run tests, branch on result
-model: anthropic/claude-sonnet-4-6
-auto: true
-allow: [read, shell]
+```js
+// @ts-check
+await gait.wf.config({ name: "fix-and-check" });
 
-hooks:
-  before: "echo starting $WORKFLOW_ID"
-  after:  "echo done"
-  error:  "echo failed at $FAILED_NODE"
-  timeout_ms: 120000       # per-hook timeout (kill_on_drop); default 120s
+await gait.wf.turn({ id: "fix", prompt: "Fix the failing test.", auto: true });
 
-record:
-  commands:
-    - id: cargo
-      command: cargo --version
-    - id: rustc
-      command: rustc --version
+const test = await gait.wf.shell({
+  id: "test",
+  script: 'cd "$CODEBASE" && cargo test',
+  timeout: 600000,
+});
 
-nodes:
-  - id: test
-    shell:
-      run: "cargo test 2>&1"
-      cwd: codebase
-      timeout: 120000
+if (test.exit !== 0) {
+  await gait.wf.turn({
+    id: "fix-again",
+    prompt: `The tests still fail:\n${test.output}`,
+    auto: true,
+  });
+}
 
-  - id: route
-    branch:
-      on: "$test.exit == 0"
-      then: ship
-      else: fix
-    depends_on: [test]
-
-  - id: ship
-    prompt: "Tests passed. Output:\n$test.output\nOpen a PR with summary: $test.output"
-    depends_on: [route]
-
-  - id: fix
-    prompt: "Tests failed. Output:\n$test.output\nFix the failures and commit."
-    on_error:
-      retry_times: 3
-      delay: 1000
-      backoff: linear            # linear | exponential
-      context: carry             # carry (keep context) | fresh (new session)
-      continue: true             # continue only after retries are exhausted
-    depends_on: [route]
-
-  - id: review-gate
-    gate: "Review the changes above, then run: gait workflow continue $WORKFLOW_ID"
-    depends_on: [ship]
+await gait.wf.gate({ id: "review", message: "Review the changes, then continue." });
 ```
 
-### Workflow-level fields
-
-| Field | Default | Effect |
-|---|---|---|
-| `name` | required | Used for run-log naming. |
-| `description` | `""` | Free text. |
-| `version` | `"1"` | Reserved for future schema migration. |
-| `model` | inherits from `gait.jsonc` | The model for every `prompt` node unless overridden on the node. |
-| `allow` | inherits from `gait.jsonc` | Pre-approve tool patterns workflow-wide. |
-| `auto` | inherits from `gait.jsonc` | If `true`, all `prompt` nodes auto-approve permission requests. |
-| `hooks` | none | Workflow-scoped `before`/`after`/`error` commands run at the right point. |
-| `record` | none | Explicit commands whose results are captured in the run record. Gait does not infer tooling. |
-
-### `record` — capture developer-declared evidence
-
-`record.commands` contains arbitrary shell commands that Gait runs once at the
-start of a new workflow run, in the run worktree. Their command text, output,
-exit code, duration, and timeout status are saved in:
-
-```text
-workflow-runs/<run-id>/record.json
+```bash
+gait workflow run fix-and-check --gait-dir <path>
 ```
 
-Record commands are not graph nodes and do not determine workflow success. The
-existing node result remains authoritative: a workflow that runs tests should
-represent those tests as shell nodes (or other appropriate nodes). A failing
-record command is still captured as evidence and does not change the workflow
-result.
+The script body runs inside an async function, so top-level `await` and `return` work.
+Branches, loops and parallel steps are ordinary JavaScript (`if`, `for`,
+`Promise.all`). The script has no filesystem, network or process access of its own:
+everything it does outside the script goes through `gait.wf`.
 
-## Node types
+## Commands
 
-Source of truth: `crates/gait-workflow/src/schema.rs::NodeDef`.
-
-### `shell` — run a shell command
-
-```yaml
-- id: test
-  shell: "cargo test 2>&1"          # short form
-- id: deploy
-  shell:                            # full form
-    run: "scripts/deploy.sh"
-    cwd: codebase                   # "codebase" (default) or "workspace"
-    timeout: 120000                 # ms; default 120s; kill_on_drop
+```bash
+gait workflow run <name> [args...]        # run <gait-dir>/workflows/<name>.js
+gait workflow continue <run-id>           # resume a paused or interrupted run
+gait workflow list                        # runs and their status
+gait workflow log <run-id>                # one JSON object per logged event
+gait workflow abort <run-id>              # mark a run failed
+gait workflow types                       # write workflows/gait.d.ts
 ```
 
-Captures stdout+stderr and exit code. Output is exposed to downstream nodes as `$test.output`. Exit code as `$test.exit`.
+In the REPL, `/workflow <name> [args...]` runs a workflow.
 
-A `shell` node enrolled in the scheduler is **not** in the kernel cascade group (prompt nodes are). The runner enforces `kill_on_drop` so a timeout or sibling failure doesn't leak an orphaned process.
+`run` and `continue` exit 0 when the run completes, 2 when it pauses at a gate, and 0
+when it pauses at a turn without a prompt. `list` and `log` only see workflow runs,
+never ordinary tasks or REPL turns.
 
-### `prompt` — run one LLM turn
+## The script API
 
-```yaml
-- id: ship
-  prompt: "Tests passed. Open a PR with summary: $test.output"
-  model: anthropic/claude-sonnet-4-6    # override workflow-level model
-  auto: true                            # override workflow-level auto-approve
-  allow: [read, shell]                  # override workflow-level allow
-  agent: my-agent                      # load system prompt from agents/my-agent.md
-  system_prompt: "You are..."           # literal system-prompt override
-  codebase: /path/to/repo              # override gait-dir-relative codebase
-  files: [src/foo.rs, src/bar.rs]      # seed the agent's context with these files
-  continue_session: other-node-id      # continue a prior node's session instead of starting fresh
-  output_schema:                        # force structured JSON output
-    type: object
-    properties:
-      pr_url: { type: string }
+`gait workflow types` writes TypeScript declarations for everything below into
+`<gait-dir>/workflows/gait.d.ts`. Add `// @ts-check` at the top of a script to have
+your editor check it.
+
+`gait.wf.run` describes the current run: `runId`, `args` (the words after the workflow
+name), `codebase` and `workspace` (the gait directory).
+
+### `config`
+
+```js
+await gait.wf.config({
+  name: "release",            // required
+  description: "Cut a release",
+  model: "fast",              // default for turns
+  auto: false,                // default for turns
+  allow: ["read:*"],          // default for turns
+  maxSteps: 50,               // default 1000
+  record: { commands: [{ id: "tests", command: "make test", timeout: 600000 }] },
+});
 ```
 
-Each `prompt` node is a complete gait turn — full session, full log, full sandbox.
+Call it first, await it, and call it only once.
 
-### `branch` — route on a condition
+`record` runs each command once when the run starts and writes the results, with
+fingerprints of the run worktree at the start and end, to
+`workflow-runs/<run-id>/record.json`. The timeout is in milliseconds (default 120000).
 
-```yaml
-- id: route
-  branch:
-    on: "$test.exit == 0"
-    then: ship
-    else: fix
-```
+### Step ids
 
-`on` is a boolean expression over `$node.<field>` references. The node evaluates it at runtime; inactive paths are skipped. A multi-way form:
+`turn`, `shell` and `gate` each take an `id`. It must be unique within the run and
+stable from one execution to the next, because `continue` matches logged results to
+calls by id. In a loop, put the counter in the id (`` `fix-${i}` ``). Ids starting
+with `__now_` or `__random_` are reserved.
 
-```yaml
-- id: route
-  branch:
-    on: "$lint.score"           # the expression — must evaluate to a key
-    cases:
-      "0":    ship
-      "1-2":  fix-minor
-      "3-5":  fix-major
-    else: abort
-```
+### `turn`
 
-`eval_bool_expr` matches against the result; if no case matches and no `else` is set, the branch node fails. An unresolvable `$node.*` reference in a branch condition now fails the branch (previously it silently fell through to the `then` arm — fixed).
+One gait turn: its own session, log and permission checks.
 
-### `gate` — pause for human review
-
-```yaml
-- id: review-gate
-  gate: "Review the changes above, then run: gait workflow continue $WORKFLOW_ID"
-```
-
-```yaml
-- id: review-gate
-  gate:
-    message: "..."   # same as short form
-```
-
-A gate is an unconditional pause — it doesn't evaluate any condition, it just stops the run and prints the message. Resume with `gait workflow continue <run-id>`. Exit code on pause: 2.
-
-## Variable substitution
-
-Inside any string field, these variables are substituted at runtime. Source: `crates/gait-workflow/src/vars.rs`.
-
-| Variable | Value |
+| Field | Meaning |
 |---|---|
-| `$WORKFLOW_ID`, `$SESSION_ID` | Current workflow run id. |
-| `$WORKSPACE` | Gait-dir path. |
-| `$CODEBASE` | Codebase path. |
-| `$ARGS` | Arguments passed to `gait workflow run`. |
-| `$NODE_ID` | Current node id. |
-| `$NODE_EXIT` | Exit code of the *current* node (shell nodes). |
-| `$FAILED_NODE` | ID of the failed node (error hooks only). |
-| `$node.output` | Text output of node `node`. |
-| `$node.output.<field>` | JSON field from node `node`'s structured output. |
-| `$node.exit` | Exit code of a *named* node `node` (shell nodes). |
+| `id` | Step id (required) |
+| `prompt` | What to ask. See below for a turn without one |
+| `model` | Name of a gait inference (an entry under `inferences/`), not a provider model string. An unknown name fails the step |
+| `auto` | Auto-approve this turn |
+| `allow` | Permission patterns; when empty, the `config` list applies |
+| `agent` | Agent to run as |
+| `codebase` | Directory to work in; a relative path is resolved against the run's codebase |
+| `continueSession` | Session id to continue instead of starting a new one |
+| `outputSchema` | JSON Schema for a structured result, returned as `json` |
+| `retry`, `onFail`, `hooks` | See [Failures](#failures-retries-and-hooks) |
 
-`$node.*` references in `shell` commands are POSIX single-quote-wrapped before splicing (so an LLM's freeform output can't break out of the shell). Well-known vars (`$CODEBASE`, `$WORKSPACE`, etc.) are gait-controlled, never untrusted, and stay unquoted.
+A turn without a `prompt` pauses the run. Gait does not yet have a way to give such a
+step its input, so `continue` pauses at the same step again. Use `gate` to wait for a
+person.
 
-## Node options
+### `shell`
 
-Every node supports:
-
-```yaml
-- id: my-node
-  depends_on: [other-node]    # wait for these nodes first
-  on_error:                   # failure handling
-      retry_times: 3            # retry up to N times before continue/abort applies
-    delay: 1000               # ms between retries
-    backoff: linear           # linear | exponential
-    context: carry            # carry (keep context) | fresh (new session)
-    continue: true             # otherwise abort after retries are exhausted
-  hooks:
-    before: "echo starting $NODE_ID"
-    after:  "echo done"
-    error:  "echo failed"
+```js
+await gait.wf.shell({ id: "status", argv: ["git", "-C", gait.wf.run.codebase, "status"] });
+await gait.wf.shell({ id: "build", script: 'cd "$CODEBASE" && make' });
 ```
 
-`on_error.continue` is the only non-aborting error policy. It marks the failed
-node terminal after retries are exhausted, allowing nodes whose prerequisites
-are otherwise satisfied to continue. Recovery is expressed with forward branch
-nodes; retries never re-enqueue a completed node.
+Give exactly one of `argv` (run directly) or `script` (run with `sh -c`). Other fields:
+`env`, `timeout` (milliseconds, default 120000), `outputSchema` (the command's stdout
+must be JSON matching it), `retry`, `onFail`, `hooks`.
 
-## DAG semantics
+The working directory is a private worktree belonging to the run,
+`workflow-runs/<run-id>/worktree`, **not** your codebase. Use `"$CODEBASE"` to work on
+the code.
 
-`depends_on` edges are unconditional prerequisites. A branch node contributes
-conditional edges to its `then`, `else`, or `cases` targets; exactly one
-conditional path is selected. Unselected descendants are skipped transitively
-and each skip is recorded in the run log. The union of prerequisite and
-conditional edges must be acyclic, and the scheduler never re-enqueues a
-terminal node.
+A non-zero exit status is a result, not a failure: check `exit` yourself.
 
-## Resume after gate or crash
+Shell steps, hooks and record commands run as ordinary processes of your user, with no
+permission prompt and no sandbox. Read a script before you run it.
 
-Workflow state is fully reconstructed from the run log. Three exit modes:
+Their environment is cleared. Only `PATH`, `HOME`, `SSH_AUTH_SOCK`, `GH_TOKEN`,
+`CARGO_HOME`, `RUSTUP_HOME`, `TMPDIR` and `LANG` are passed through. Steps also get
+`WORKFLOW_ID`, `SESSION_ID`, `NODE_ID`, `CODEBASE`, `WORKSPACE` and `ARGS`; hooks get
+`FAILED_NODE` as well. A step's `env` cannot override these or set `GAIT_*` names.
 
-```bash
-gait workflow continue <run-id> --gait-dir <path>                    # resume a paused/gated run
-gait workflow continue <run-id> --force --gait-dir <path>            # resume the ORIGINAL graph, ignoring on-disk YAML edits
-gait workflow continue <run-id> --force-rerun <node-id> --gait-dir <path>  # accept re-running a shell node left "Running" by a crash
+To pass a value into a command safely, use the `sh` template. Values travel as
+environment variables and are never pasted into the command text:
+
+```js
+const branch = gait.wf.run.args[0];
+await gait.wf.shell({
+  id: "checkout",
+  ...gait.wf.sh`cd "$CODEBASE" && git checkout ${branch}`,
+});
 ```
 
-`--force` is meaningful when you've edited the YAML since the run started. Without it, drift between the on-disk YAML and the originally logged graph is a hard error (never a silent divergence).
+### Results
 
-`--force-rerun` is the answer to a `SandboxError: <node-id> was still running`. Side effects that node already ran before the crash are **not** undone — this is detect-and-refuse, not detect-and-undo.
+`turn` and `shell` resolve to:
 
-## Validation
+| Field | Meaning |
+|---|---|
+| `output` | The turn's reply, or the command's stdout followed by its stderr |
+| `exit` | Exit status, or `null` |
+| `json` | The structured result when `outputSchema` was given |
+| `sessionId` | The turn's session, or `null` |
+| `error` | Set when the step failed and the script was allowed to go on |
 
-```bash
-gait workflow validate <name> --gait-dir <path>
+### `gate`
+
+```js
+await gait.wf.gate({ id: "ship", message: "OK to ship?" });
 ```
 
-Runs the graph validator (duplicate node ids, dangling `depends_on`/`branch`
-references, and cycles across the complete edge union) without creating a run,
-touching the worktree, or writing to the run log. Exits 0 on a valid graph, 1
-with a list of every problem found on an invalid one.
+The run pauses with exit status 2. `gait workflow continue <run-id>` passes the gate
+and the call resolves to `null`.
 
-Source: `crates/gait-workflow/src/validate.rs`.
+### `now` and `random`
 
-## What graphs are NOT validated
+`Date.now()`, `new Date()` without arguments and `Math.random()` throw inside a
+workflow, because a continued run must see the same values. Use
+`await gait.wf.now()` (Unix time in milliseconds) and `await gait.wf.random()`.
 
-- **Branch-condition semantics.** Branch conditions are evaluated at runtime, not at load time. An unresolvable `$node.*` reference in a branch `on:` expression fails the branch node at runtime (not a silent truthy fall-through — that was the historical bug).
-- **Per-tool floor / sandbox config compatibility.** The sandbox check happens at hand execution time, not graph-load time.
+## Failures, retries and hooks
 
-## Subagents
+A step fails when its turn errors, when its command cannot run or times out, when
+`outputSchema` does not match, or when a `before` hook exits non-zero.
 
-The `prompt` node is itself a spawned child session. Inside a `prompt` node, the agent can use the `spawn_agent` builtin tool to delegate work to a fresh grandchild session, with its own branch and log.
+- `retry: { times, delay, backoff }` tries the turn or command again up to `times` more
+  times, waiting `delay` milliseconds between tries. `backoff` is `"linear"` (the same
+  wait each time, the default) or `"exponential"` (doubling).
+- `onFail: "throw"` (the default) throws in the script. Uncaught, it fails the run.
+- `onFail: "continue"` resolves the step with `error` set.
+- `hooks: { before, after, error }` are shell commands run around the step.
 
-When a child (`spawn_agent`) or grandchild (workflow → prompt → spawn_agent) session completes, it writes an `agent_update` event to the parent's transcript, which the parent picks up on its next turn.
+Await every step. A script that ends with a step still running, or with an unhandled
+promise rejection, fails the run.
+
+## Continuing a run
+
+`gait workflow continue <run-id>` runs the script again from the top. A step that
+already finished returns its logged result without running again. A step that had
+failed returns a result with `error` set and is not run again. Steps with no logged
+outcome run live.
+
+The script that runs is the one saved in the run log. If the file on disk has changed,
+`continue` refuses; `--force` resumes the saved script anyway. Edits take effect only
+in a new run.
+
+If gait was interrupted while a step was running, that step may have partly or fully
+happened, so `continue` refuses and names it. `--force-rerun <step-id>` (repeatable)
+accepts running it again. Effects it already had are **not** undone.
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| Script file size | 1 MiB |
+| Script CPU time (waiting for steps does not count) | 60 s |
+| Script memory | 256 MiB |
+| Script output | 8 MiB |
+| Steps per run | `maxSteps`, default 1000 |

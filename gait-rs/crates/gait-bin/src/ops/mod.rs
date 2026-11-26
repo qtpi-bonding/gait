@@ -377,14 +377,18 @@ pub fn registry_with(repl: Repl) -> op_registry::Registry<GaitContext> {
 #[cfg(feature = "workflow")]
 fn workflow_command() -> clap::Command {
     clap::Command::new("workflow")
-        .about("Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate, types)")
-        .arg(clap::Arg::new("action")
+        .about(
+            "Run, continue, inspect or abort a workflow (list, run, continue, log, abort, types)",
+        )
+        .arg(
+            clap::Arg::new("action")
                 .value_name("ACTION")
-                .help("What to do: list, run, continue, log, abort, validate or types."))
+                .help("What to do: list, run, continue, log, abort or types."),
+        )
         .arg(
             clap::Arg::new("rest")
                 .value_name("ARGS")
-                .help("The workflow id or file and any options the action takes.")
+                .help("The workflow name or run id and any options the action takes.")
                 .num_args(0..)
                 .trailing_var_arg(true)
                 .allow_hyphen_values(true),

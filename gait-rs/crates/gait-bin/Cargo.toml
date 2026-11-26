@@ -25,7 +25,7 @@ path = "src/lib.rs"
 [features]
 default = ["full"]
 # Today's full `gait` binary: the themed rich-TUI REPL, the real `gait
-# workflow`/`/workflow` YAML DAG runner, and gait-core's optional MCP client
+# workflow`/`/workflow` JavaScript workflow runner, and gait-core's optional MCP client
 # / code-mode surfaces. Deliberately does NOT include `local` — see the
 # round-7 correction below.
 full = [
@@ -43,7 +43,7 @@ min = []
 schema = ["op-registry/schema", "dep:schemars_v1"]
 secrets = ["op-registry/secrets", "op-registry/prompt"]
 telemetry = ["dep:concord-telemetry", "dep:tracing", "gait-core/telemetry"]
-# `gait workflow` / REPL `/workflow` (real YAML DAG runs). Forwards into
+# `gait workflow` / REPL `/workflow` (real JavaScript workflow runs). Forwards into
 # `gait-cli`'s and `gait-repl`'s own `workflow` features, which gate
 # `dep:gait-workflow` there.
 workflow = ["dep:gait-workflow", "gait-core/code-mode", "gait-cli/workflow", "gait-repl/workflow"]

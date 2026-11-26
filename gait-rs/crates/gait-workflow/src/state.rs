@@ -42,7 +42,7 @@ impl WorkflowState {
     }
 
     /// Returns the node_id of the last node that was started but not yet
-    /// completed, skipped, or errored — i.e. the node that was in-flight when
+    /// completed or errored — i.e. the node that was in-flight when
     /// the workflow was interrupted.
     pub fn open_node(&self) -> Option<&str> {
         // Find the last Running entry (insertion order is preserved in HashMap

@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::future::pending;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::mpsc::channel as workflow_channel;
 
 use async_trait::async_trait;
 use gait_codemode::{CapabilityHost, HostError};
@@ -173,9 +172,6 @@ pub struct StepEngine<'a> {
     /// CLI args joined by spaces (the `$ARGS` value shell steps see), owned
     /// here so a `NodeContext` can borrow it.
     args_joined: String,
-    /// Live sink channel for shell/sub-turn frames. The receiver lives with
-    /// the engine's owner; frames are currently discarded.
-    _sink_tx: tokio::sync::mpsc::UnboundedSender<gait_core::embed::SinkFrame>,
 }
 
 impl Drop for StepEngine<'_> {
@@ -239,7 +235,6 @@ impl<'a> StepEngine<'a> {
     ) -> Self {
         let run_dir = run_dir.into();
         let run_worktree = run_dir.join("worktree");
-        let (sink_tx, _sink_rx) = tokio::sync::mpsc::unbounded_channel();
         let args_joined = args.join(" ");
         Self {
             run_id: run_id.into(),
@@ -269,7 +264,6 @@ impl<'a> StepEngine<'a> {
             record: RefCell::new(None),
             worktree_ready: Cell::new(false),
             args_joined,
-            _sink_tx: sink_tx,
         }
     }
 
@@ -1427,7 +1421,7 @@ pub struct WorkflowHost {
 impl WorkflowHost {
     /// Create a host handle paired with the receiver that will execute steps.
     pub fn channel() -> (WorkflowHost, tokio::sync::mpsc::Receiver<StepRequest>) {
-        let (tx, rx) = workflow_channel(1024);
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
         (WorkflowHost { tx }, rx)
     }
 }

@@ -466,7 +466,7 @@ async fn run_sealed_turn(
     // Calling `resolve_checked()` on the bare disk config first — the old
     // (buggy) order in this crate — hard-errors whenever `gait.jsonc` sets no
     // default inference, even when the caller supplies one (e.g. `--inference
-    // <name>`, or a workflow YAML `inference:`).
+    // <name>`, or a workflow script's turn `model`).
     let inference_layer = gait_core::config::resolver::Overrides {
         inference: ov.and_then(|p| p.inference.clone()),
         ..gait_core::config::resolver::Overrides::empty()

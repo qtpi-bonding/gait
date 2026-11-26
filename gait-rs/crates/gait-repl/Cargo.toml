@@ -72,7 +72,7 @@ rich-tui = ["dep:termimad", "dep:termbg", "dep:syntect", "dep:unicode-width", "d
 # gated separately below on `all(dev-harness, rich-tui)`, since it drives the
 # themed `ReplBuilder`/`ReplSource`/`ReplSink` stack directly.
 dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2", "dep:gait-testkit"]
-# `/workflow` REPL command (real YAML DAG runs). Ordinary REPL turns
+# `/workflow` REPL command (real JavaScript workflow runs). Ordinary REPL turns
 # (`chat.rs`) no longer need `gait-workflow` at all (Task 3) — only
 # `repl::driver::run_named_workflow` does. Default-on so today's full `gait`
 # binary is unaffected; a future minimal build can opt out.

@@ -224,13 +224,18 @@ be enabled for a session when they are available in the configured Gait director
 plugins are registered and toggled but not executed today: the manifest loads and
 there is no execution path, so treat plugins as scaffolding.
 
-`gait workflow continue --force` resumes the originally logged graph even if the YAML
-on disk has changed; without it an edited YAML is a hard error. `--force-rerun
-<node-id>` accepts re-running a shell node that an interrupted run left `Running`;
-its earlier side effects are not undone. `gait workflow list` and `log` only see runs
-started by `gait workflow run`, never ordinary tasks or REPL turns. `gait workflow
-run` exits 2 when paused at a gate node and 0 when paused at an interactive prompt
-node.
+A workflow is a JavaScript file at `workflows/<name>.js` in the gait directory.
+`gait workflow types` writes the type declarations for the script API. A step's
+`model` names a gait inference (an entry under `inferences/`); an unknown name fails
+the step. Shell steps run in a private worktree of the run, not the codebase (use
+`$CODEBASE`), with no permission prompt and no sandbox.
+
+`gait workflow continue --force` resumes the script saved in the run log even if the
+file on disk has changed; without it an edited script is a hard error.
+`--force-rerun <step-id>` accepts re-running a step that was still running when the
+run was interrupted; its earlier side effects are not undone. `gait workflow list`
+and `log` only see workflow runs, never ordinary tasks or REPL turns. `gait workflow
+run` exits 2 when paused at a gate and 0 when paused at a turn without a prompt.
 
 `enable`/`disable`/`register`/`unregister`/`load`/`unload` also accept a `skill` kind —
 that usage works in every Gait build (see the Skills guide), since skills are not part of
@@ -239,16 +244,16 @@ this extensions capability.
 #### `gait workflow`
 
 ```text
-Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
+Run, continue, inspect or abort a workflow (list, run, continue, log, abort, types)
 
 Usage: gait workflow [OPTIONS] [ACTION] [ARGS]...
 
 Arguments:
   [ACTION]
-          What to do: list, run, continue, log, abort or validate.
+          What to do: list, run, continue, log, abort or types.
 
   [ARGS]...
-          The workflow id or file and any options the action takes.
+          The workflow name or run id and any options the action takes.
 
 Options:
       --pretty
@@ -487,16 +492,16 @@ These run from the command line only. They are not ops: no JSON, MCP or typed ca
 CLI only, not an op.
 
 ```text
-Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
+Run, continue, inspect or abort a workflow (list, run, continue, log, abort, types)
 
 Usage: gait workflow [OPTIONS] [ACTION] [ARGS]...
 
 Arguments:
   [ACTION]
-          What to do: list, run, continue, log, abort or validate.
+          What to do: list, run, continue, log, abort or types.
 
   [ARGS]...
-          The workflow id or file and any options the action takes.
+          The workflow name or run id and any options the action takes.
 
 Options:
       --pretty

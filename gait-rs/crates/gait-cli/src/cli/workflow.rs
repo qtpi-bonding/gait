@@ -279,21 +279,19 @@ pub fn workflow_list_json(gait_dir: &Path) -> serde_json::Value {
     serde_json::json!({"runs": runs})
 }
 
-/// `gait workflow continue <run-id> [--force] [--force-rerun <node-id>]...`
+/// `gait workflow continue <run-id> [--force] [--force-rerun <step-id>]...`
 #[derive(clap::Parser, Debug)]
 #[command(no_binary_name = true)]
 struct ContinueArgs {
     /// Workflow run id to resume.
     run_id: String,
-    /// Resume the ORIGINAL logged script or YAML graph even if the on-disk
-    /// file changed. Without this, an edited script or YAML is a hard error
-    /// (never a silent divergence).
+    /// Resume the script saved in the run log even if the file on disk
+    /// changed. Without this, an edited script is a hard error.
     #[arg(long)]
     force: bool,
-    /// Accept the risk of re-running a shell node that was still executing when
-    /// this workflow was interrupted (its prior side effects, if any, are NOT
-    /// undone). Must name the exact node id reported in the resume-guard error.
-    /// Repeatable — pass once per stuck node.
+    /// Accept re-running a step that was still running when this workflow was
+    /// interrupted (its earlier side effects are not undone). Must name the
+    /// exact step id reported by the error. Repeatable, once per step.
     #[arg(long)]
     force_rerun: Vec<String>,
 }

@@ -4,7 +4,7 @@
 `gait` binary, compiled with a smaller Cargo feature set. It is not a
 different codebase, a fork, or a runtime mode switch — it's a compile-time
 composition of the same source tree that leaves out entire dependency
-subtrees (workflow DAG runner, MCP client, plugin/Code Mode sandboxes, rich
+subtrees (workflow script runner, MCP client, plugin/Code Mode sandboxes, rich
 terminal renderer) so the resulting binary is smaller and its build pulls in
 fewer crates.
 
@@ -71,10 +71,10 @@ These are genuinely absent from `gait-min`'s dependency tree, not merely
 disabled at runtime — `cargo tree -p gait-bin -e normal --no-default-features
 --features min` shows none of them:
 
-- **Workflows** — the `gait-workflow` YAML DAG runner. `gait-min` has no
+- **Workflows** — the `gait-workflow` script runner. `gait-min` has no
   `workflow` subcommand at all (see `gait-min --help`), no `/workflow` REPL
   command, and `gait-workflow` itself is not a linked dependency. Running a
-  workflow DAG requires the full `gait workflow run` — there is no
+  workflow requires the full `gait workflow run` — there is no
   `gait-min workflow run` equivalent, and Min never creates a
   `workflow-runs/` directory for any reason, since it has no workflow support
   to create one with.
@@ -107,7 +107,7 @@ compatibility this plan introduces: none, because none is required.
 ## Side effect affecting both builds: `workflow-runs/` bookkeeping
 
 As part of moving ordinary (non-`gait workflow run`) CLI, REPL, and ACP turns
-off the `gait-workflow` DAG runner and onto the shared `gait-turn-runner`
+off the `gait-workflow` runner and onto the shared `gait-turn-runner`
 crate, `workflow-runs/<run_id>/log.jsonl` is **no longer written for ordinary
 turns** — in *either* build, full `gait` included. This is not Min-specific
 and not gated by any feature flag; it falls directly out of the runner

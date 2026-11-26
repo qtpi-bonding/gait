@@ -198,7 +198,7 @@ options. Scope options are `global`, `agent`, and `session`.
 
 ```bash
 gait workflow list
-gait workflow validate <workflow-name>
+gait workflow types
 gait workflow run <workflow-name>
 gait workflow continue <run-id>
 gait workflow abort <run-id>

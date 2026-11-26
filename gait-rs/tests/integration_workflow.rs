@@ -6,9 +6,9 @@
 mod common;
 
 use gait_workflow::{
-    gait_workflow::outcome::WorkflowOutcome,
     launch::{run_named, LaunchEnv},
     observer::{CliObserver, NullObserver},
+    outcome::WorkflowOutcome,
     run_log::WorkflowRunLog,
     state::{reconstruct_state, NodeStatus},
 };

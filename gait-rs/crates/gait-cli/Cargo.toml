@@ -33,7 +33,7 @@ git2 = "0.20"
 default = ["workflow"]
 local = ["dep:gait-local"]
 dev-harness = []
-# `gait workflow` subcommand (real YAML DAG runs). Ordinary CLI turns
+# `gait workflow` subcommand (real JavaScript workflow runs). Ordinary CLI turns
 # (`cli::run::cmd_run`) no longer need `gait-workflow` at all (Task 3) — only
 # `cli::workflow` does. Default-on so today's full `gait` binary (which builds
 # gait-cli with default features) is unaffected; a future minimal build can
