@@ -279,15 +279,12 @@ pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) -
     Ok(())
 }
 
-/// One per-run summary for `workflow_list_json`. `legacy` is set when the
-/// run's log predates the current format; such runs get `status: "legacy"`
-/// and an extra `"legacy": true` key instead of being silently skipped.
+/// One per-run summary for `workflow_list_json`.
 #[derive(Debug, PartialEq)]
 struct RunSummary {
     run_id: String,
     name: String,
     status: String,
-    legacy: bool,
 }
 
 fn collect_workflow_summaries(workflow_runs_dir: &Path) -> Vec<RunSummary> {
@@ -302,22 +299,14 @@ fn collect_workflow_summaries(workflow_runs_dir: &Path) -> Vec<RunSummary> {
         let Some(run_id) = entry.file_name().to_str().map(|s| s.to_string()) else {
             continue;
         };
-        // A legacy (pre-current-format) log is not readable, but it must still
-        // be listed — marked as legacy — rather than silently skipped. Any
-        // other open/read failure keeps today's skip behaviour.
+        // A run whose log cannot be opened or read is skipped.
         let log = match WorkflowRunLog::open(workflow_runs_dir, &run_id) {
             Ok(l) => l,
-            Err(e) => {
-                out.extend(legacy_summary(&run_id, &e));
-                continue;
-            }
+            Err(_) => continue,
         };
         let events = match log.read_events() {
             Ok(ev) => ev,
-            Err(e) => {
-                out.extend(legacy_summary(&run_id, &e));
-                continue;
-            }
+            Err(_) => continue,
         };
         if events.is_empty() {
             continue;
@@ -327,91 +316,26 @@ fn collect_workflow_summaries(workflow_runs_dir: &Path) -> Vec<RunSummary> {
             run_id,
             name: state.workflow_name.clone(),
             status: state.workflow_status().to_string(),
-            legacy: false,
         });
     }
     out
 }
 
-/// True when the anyhow error wraps a `LogError::Legacy { .. }` (a run log
-/// written by a format older than the current one).
-fn is_legacy_log_error(err: &anyhow::Error) -> bool {
-    matches!(
-        err.downcast_ref::<gait_workflow::run_log::LogError>(),
-        Some(gait_workflow::run_log::LogError::Legacy { .. })
-    )
+/// Why `open` failed for `workflow_id`: "not found".
+fn open_failure(workflow_id: &str) -> anyhow::Error {
+    CliError::not_found(format!(
+        "[gait] no run log found for workflow {}",
+        workflow_id
+    ))
 }
 
-/// Extract the legacy format version from a `LogError::Legacy` anyhow error.
-fn legacy_log_version(err: &anyhow::Error) -> u32 {
-    match err.downcast_ref::<gait_workflow::run_log::LogError>() {
-        Some(gait_workflow::run_log::LogError::Legacy { version }) => *version,
-        _ => 0,
-    }
-}
-
-/// The list entry for a run whose log is legacy, or `None` for any other
-/// open/read error (those runs stay skipped, as before).
-fn legacy_summary(run_id: &str, err: &anyhow::Error) -> Option<RunSummary> {
-    if !is_legacy_log_error(err) {
-        return None;
-    }
-    Some(RunSummary {
-        run_id: run_id.to_string(),
-        name: String::new(),
-        status: "legacy".to_string(),
-        legacy: true,
-    })
-}
-
-/// The refusal for `action` (`"continued"` / `"aborted"`) when `err` says the
-/// run's log is legacy; `None` for any other error.
-fn legacy_refusal(workflow_id: &str, err: &anyhow::Error, action: &str) -> Option<anyhow::Error> {
-    if !is_legacy_log_error(err) {
-        return None;
-    }
-    Some(CliError::invalid_input(format!(
-        "[gait] workflow {} is a legacy log (format version {}); it cannot be {}",
-        workflow_id,
-        legacy_log_version(err),
-        action
-    )))
-}
-
-/// Why `open` failed for `workflow_id`: a legacy refusal, else "not found".
-fn open_failure(workflow_id: &str, err: &anyhow::Error, action: &str) -> anyhow::Error {
-    legacy_refusal(workflow_id, err, action).unwrap_or_else(|| {
-        CliError::not_found(format!(
-            "[gait] no run log found for workflow {}",
-            workflow_id
-        ))
-    })
-}
-
-/// Why `read_events` failed for `workflow_id`: a legacy refusal, else the
-/// read error itself (never swallowed, nothing is written).
-fn read_failure(workflow_id: &str, err: &anyhow::Error, action: &str) -> anyhow::Error {
-    legacy_refusal(workflow_id, err, action).unwrap_or_else(|| {
-        CliError::failed(format!(
-            "[gait] workflow {}: failed to read its run log: {}",
-            workflow_id, err
-        ))
-    })
-}
-
-/// The single marker line `workflow log` prints for a legacy run.
-fn legacy_marker_line(run_id: &str, err: &anyhow::Error) -> Option<String> {
-    if !is_legacy_log_error(err) {
-        return None;
-    }
-    Some(
-        serde_json::json!({
-            "run_id": run_id,
-            "legacy": true,
-            "version": legacy_log_version(err)
-        })
-        .to_string(),
-    )
+/// Why `read_events` failed for `workflow_id`: the read error itself (never
+/// swallowed, nothing is written).
+fn read_failure(workflow_id: &str, err: &anyhow::Error) -> anyhow::Error {
+    CliError::failed(format!(
+        "[gait] workflow {}: failed to read its run log: {}",
+        workflow_id, err
+    ))
 }
 
 pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf, pretty: bool) -> CliResult {
@@ -427,20 +351,11 @@ pub fn workflow_list_json(gait_dir: &Path) -> serde_json::Value {
     let runs: Vec<serde_json::Value> = summaries
         .into_iter()
         .map(|summary| {
-            if summary.legacy {
-                serde_json::json!({
-                    "run_id": summary.run_id,
-                    "name": "",
-                    "status": "legacy",
-                    "legacy": true
-                })
-            } else {
-                serde_json::json!({
-                    "run_id": summary.run_id,
-                    "name": summary.name,
-                    "status": summary.status
-                })
-            }
+            serde_json::json!({
+                "run_id": summary.run_id,
+                "name": summary.name,
+                "status": summary.status
+            })
         })
         .collect();
     serde_json::json!({"runs": runs})
@@ -478,17 +393,17 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow
     };
     let workflow_id = parsed.run_id;
 
-    // The legacy-log refusals stay here (the log must be openable BEFORE the
-    // engine is chosen); the engine decision lives in launch.rs.
+    // The log must be openable BEFORE the engine is chosen; the engine
+    // decision lives in launch.rs.
     let run_log = match gait_workflow::run_log::WorkflowRunLog::open(
         &gait_dir.join("workflow-runs"),
         &workflow_id,
     ) {
         Ok(l) => l,
-        Err(e) => return Err(open_failure(&workflow_id, &e, "continued")),
+        Err(_) => return Err(open_failure(&workflow_id)),
     };
     if let Err(e) = run_log.read_events() {
-        return Err(read_failure(&workflow_id, &e, "continued"));
+        return Err(read_failure(&workflow_id, &e));
     }
 
     let mut sink = gait_core::embed::CliSink::stdio(false);
@@ -537,7 +452,7 @@ pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) -> C
     let workflow_runs_dir = gait_dir.join("workflow-runs");
     let run_log = match WorkflowRunLog::open(&workflow_runs_dir, &workflow_id) {
         Ok(l) => l,
-        Err(e) => return Err(open_failure(&workflow_id, &e, "aborted")),
+        Err(_) => return Err(open_failure(&workflow_id)),
     };
     // Best-effort: record the node that was in flight (if any) for context.
     let failed_node = match run_log.read_events() {
@@ -545,7 +460,7 @@ pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) -> C
             .open_node()
             .map(|s| s.to_string())
             .unwrap_or_default(),
-        Err(e) => return Err(read_failure(&workflow_id, &e, "aborted")),
+        Err(e) => return Err(read_failure(&workflow_id, &e)),
     };
     if let Err(e) = run_log.workflow_error(&workflow_id, &failed_node, "aborted by user") {
         return Err(CliError::failed(format!(
@@ -583,19 +498,16 @@ pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) -> CliResult {
 /// object per event in `<gait_dir>/workflow-runs/<run_id>/log.jsonl`.
 pub fn workflow_log_lines(gait_dir: &Path, run_id: &str) -> Vec<String> {
     let workflow_runs_dir = gait_dir.join("workflow-runs");
-    let opened = gait_workflow::run_log::WorkflowRunLog::open(&workflow_runs_dir, run_id);
-    let events = match opened {
-        Ok(log) => log.read_events(),
-        Err(e) => Err(e),
-    };
-    // A legacy log prints exactly one marker line naming its format version;
-    // every other open/read failure keeps today's behaviour (no lines).
-    match events {
-        Ok(ev) => ev
-            .iter()
-            .map(|event| serde_json::to_string(event).unwrap_or_default())
-            .collect(),
-        Err(e) => legacy_marker_line(run_id, &e).into_iter().collect(),
+    match gait_workflow::run_log::WorkflowRunLog::open(&workflow_runs_dir, run_id) {
+        Ok(log) => log
+            .read_events()
+            .map(|ev| {
+                ev.iter()
+                    .map(|event| serde_json::to_string(event).unwrap_or_default())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -767,7 +679,6 @@ mod list_tests {
                 run_id: "deploy-1-2-3".to_string(),
                 name: "deploy".to_string(),
                 status: "done".to_string(),
-                legacy: false,
             }]
         );
     }

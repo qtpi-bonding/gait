@@ -46,6 +46,37 @@ fn run_ids(gait_dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// A corrupt (non-tail) line hard-errors the abort instead of being
+/// swallowed, and the corrupt log file is left byte-identical.
+#[test]
+fn read_errors_are_not_swallowed_by_abort() {
+    let td = tempfile::TempDir::new().unwrap();
+    let gait_dir = td.path().to_path_buf();
+    let run_dir = gait_dir.join("workflow-runs").join("mid-corrupt-run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    // Line 1 is corrupt garbage; line 2 is a valid-looking event. Because the
+    // corrupt line is NOT last, read_events must hard-error (not self-heal).
+    std::fs::write(
+        run_dir.join("log.jsonl"),
+        "{\"version\":1,garbage\n{\"version\":1,\"id\":\"b\",\"seq\":2,\"kind\":null}\n",
+    )
+    .unwrap();
+
+    let before = std::fs::read(run_dir.join("log.jsonl")).unwrap();
+    let err = cmd_workflow_abort(&["mid-corrupt-run".to_string()], gait_dir.clone(), false)
+        .expect_err("abort of a corrupt (non-tail) log must be an error, not Ok");
+    assert_eq!(
+        std::fs::read(run_dir.join("log.jsonl")).unwrap(),
+        before,
+        "a failed abort must leave the corrupt log byte-identical (no error event appended)"
+    );
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("corrupt workflow run log"),
+        "abort surfaces the read error instead of swallowing it, got: {message}"
+    );
+}
+
 fn write_script(gait_dir: &Path, name: &str, marker_file: &Path, marker_text: &str) {
     std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
     // `script` runs as `sh -c <script>`, so write the marker from there. The

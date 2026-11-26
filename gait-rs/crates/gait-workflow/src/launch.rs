@@ -220,8 +220,6 @@ pub async fn continue_run(
     force_rerun: Vec<String>,
     env: LaunchEnv<'_, '_>,
 ) -> Result<WorkflowOutcome, LaunchError> {
-    // The legacy-log refusals stay in the CLI: this read only decides which
-    // engine resumes.
     let run_log = crate::run_log::WorkflowRunLog::open(&env.gait_dir.join("workflow-runs"), run_id)
         .map_err(LaunchError::Failed)?;
     let events = run_log.read_events().map_err(LaunchError::Failed)?;

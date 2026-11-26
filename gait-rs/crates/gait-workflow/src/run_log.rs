@@ -9,11 +9,6 @@
 //! `content_hash`) minted via `workflow_envelope::mint`; hashes are recorded,
 //! not verified on read (matches the session log).
 //!
-//! Logs whose format `version` is below [`LEGACY_BELOW_VERSION`] predate the
-//! current format: they are refused with [`LogError::Legacy`] by every entry
-//! point ([`WorkflowRunLog::open`], [`WorkflowRunLog::read_events`], and
-//! therefore `emit`) and are never parsed, self-healed, or rewritten on disk.
-//!
 //! Appends are serialized by an advisory lock on a dedicated sibling lock
 //! file (`log.jsonl.lock`), so separate handles — and separate processes —
 //! can never mint the same `seq` or interleave torn writes.
@@ -29,23 +24,6 @@ use gait_core::proto::gait::workflow::v1::{
 /// Current format generation for the workflow run log. Mirrors the contract
 /// used by `gait.log.v1` (bump on breaking schema changes).
 pub const WORKFLOW_LOG_VERSION: u32 = 1;
-
-/// The first log format generation that is still readable. Logs with a
-/// `version` below this value predate the current format and are refused.
-pub const LEGACY_BELOW_VERSION: u32 = 1;
-
-/// Typed errors for the workflow run log. Returned to callers wrapped in
-/// `anyhow::Error` — use `err.downcast_ref::<LogError>()` to inspect them.
-#[derive(Debug, thiserror::Error)]
-pub enum LogError {
-    /// The log was written by a format older than [`LEGACY_BELOW_VERSION`].
-    /// Such a log cannot be read, resumed, or aborted; it is left untouched.
-    #[error(
-        "legacy workflow log (format version {version}): this log predates the \
-         current format and cannot be read, resumed, or aborted"
-    )]
-    Legacy { version: u32 },
-}
 
 /// A handle to an open workflow-run log file. Use [`WorkflowRunLog::create`]
 /// to start a new run, or [`WorkflowRunLog::open`] to attach to an existing
@@ -82,17 +60,10 @@ impl WorkflowRunLog {
     /// Open an existing workflow-run log at `{workflow_runs_dir}/{run_id}/log.jsonl`
     /// for append-only writes. The file must already exist; use [`create`] to
     /// start a new run.
-    ///
-    /// Refuses a legacy (pre-[`LEGACY_BELOW_VERSION`]) log with
-    /// [`LogError::Legacy`] and does not touch the file.
     pub fn open(workflow_runs_dir: &Path, run_id: &str) -> anyhow::Result<Self> {
         let path = workflow_runs_dir.join(run_id).join("log.jsonl");
         if !path.exists() {
             anyhow::bail!("workflow run log not found: {}", path.display());
-        }
-        let text = std::fs::read_to_string(&path)?;
-        if let Some(version) = legacy_version(&text) {
-            return Err(LogError::Legacy { version }.into());
         }
         Ok(Self { path })
     }
@@ -104,33 +75,30 @@ impl WorkflowRunLog {
 
     /// Read all events from the log. Blank lines are skipped.
     ///
-    /// Refuses a legacy (pre-[`LEGACY_BELOW_VERSION`]) log with
-    /// [`LogError::Legacy`] before any parsing happens: the raw bytes are
-    /// checked for a legacy format `version` first, so a legacy log is never
-    /// parsed, never self-healed, and left byte-identical on disk.
-    ///
     /// Tail-tolerant: because writes are append-only, a crash mid-`writeln!`
     /// can only ever tear the LAST line. If the last non-blank line fails to
-    /// parse, it's treated as a torn write — logged, dropped, and the file is
-    /// rewritten on disk to just the good events, so the torn tail doesn't
+    /// parse as JSON at all (`serde_json::from_str::<serde_json::Value>`
+    /// fails), it's treated as a torn write — logged, dropped, and the file
+    /// is rewritten on disk to just the good events, so the torn tail doesn't
     /// persist and corrupt the next read/write cycle (`emit` calls
-    /// `read_events` on every append to find its parent event). A parse
-    /// failure on any EARLIER line is real corruption, not a crash artifact,
-    /// and still hard-errors.
+    /// `read_events` on every append to find its parent event). A last line
+    /// that IS valid JSON but does not parse as a [`WorkflowEvent`], or a
+    /// parse failure on any EARLIER line, is real corruption, not a crash
+    /// artifact, and hard-errors — the file is left byte-identical on disk.
     pub fn read_events(&self) -> anyhow::Result<Vec<WorkflowEvent>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
         let text = std::fs::read_to_string(&self.path)?;
-        if let Some(version) = legacy_version(&text) {
-            return Err(LogError::Legacy { version }.into());
-        }
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         let mut events = Vec::with_capacity(lines.len());
         for (i, line) in lines.iter().enumerate() {
             match serde_json::from_str::<WorkflowEvent>(line) {
                 Ok(ev) => events.push(ev),
-                Err(e) if i == lines.len() - 1 => {
+                Err(e)
+                    if i == lines.len() - 1
+                        && serde_json::from_str::<serde_json::Value>(line).is_err() =>
+                {
                     eprintln!(
                         "[gait workflow] {}: dropping unparseable trailing line (torn write from a mid-write crash): {}",
                         self.path.display(),
@@ -407,7 +375,7 @@ impl WorkflowRunLog {
     /// (`log.jsonl.lock`, via stable `File::lock`), so separate handles and
     /// separate processes can never read the same tail and mint the same
     /// `seq`, nor interleave torn writes. The lock is held across the
-    /// `read_events()` call — including if it errors (e.g. a legacy log) —
+    /// `read_events()` call — including if it errors —
     /// and released when the lock file handle drops.
     fn emit(
         &self,
@@ -443,34 +411,6 @@ impl WorkflowRunLog {
         writeln!(file, "{}", serde_json::to_string(&ev)?)?;
         Ok(ev)
     }
-}
-
-/// Detect a legacy workflow log by reading the RAW JSON of the log's lines
-/// (before any pbjson parse, so unknown keys in a legacy log don't matter).
-///
-/// For every non-blank line that parses as a JSON object, take its `version`
-/// field (a missing key means 0 — pbjson omits zero values). A line whose
-/// JSON does not parse at all (e.g. a torn/garbage tail) is ignored and left
-/// to the normal path. Returns `Some(version)` for the first line whose
-/// version is below [`LEGACY_BELOW_VERSION`], or `None` if no legacy line is
-/// found. The version field is present in every line, so in practice the
-/// first line decides; checking every parseable line is a safety net.
-fn legacy_version(text: &str) -> Option<u32> {
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            // Torn/garbage line: not a version signal; the normal path will
-            // handle it (as a torn tail, or as real corruption).
-            continue;
-        };
-        let version = value.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        if version < LEGACY_BELOW_VERSION {
-            return Some(version);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -732,6 +672,43 @@ mod tests {
         assert!(
             result.is_err(),
             "corruption that is NOT the last line must hard-error, not self-heal"
+        );
+    }
+
+    #[test]
+    fn schema_mismatch_last_line_is_an_error_and_file_is_untouched() {
+        let dir = TempDir::new().unwrap();
+        let log = WorkflowRunLog::create(dir.path(), "run-schema-mismatch").unwrap();
+        log.node_start("a", "shell", 1, "sa").unwrap();
+
+        // Append a complete, valid JSON line with an unknown field: it parses
+        // as JSON but NOT as a WorkflowEvent. That is corruption, not a torn
+        // write — read_events must hard-error and leave the file untouched.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(log.path())
+                .unwrap();
+            writeln!(
+                f,
+                r#"{{"version":1,"id":"b","seq":2,"ts":0,"contentHash":"","parents":[],"totallyUnknownField":true}}"#
+            )
+            .unwrap();
+        }
+
+        let before = std::fs::read(log.path()).unwrap();
+        let err = log
+            .read_events()
+            .expect_err("a valid-JSON last line that is not a WorkflowEvent must hard-error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("corrupt workflow run log"),
+            "error must name corruption, got: {message}"
+        );
+        assert_eq!(
+            std::fs::read(log.path()).unwrap(),
+            before,
+            "the corrupt log file must be left byte-identical"
         );
     }
 }

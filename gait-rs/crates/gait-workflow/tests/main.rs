@@ -14,7 +14,6 @@ mod graph_validation;
 mod hook_concurrency;
 mod interactive_suspension;
 mod lazy_run_infra;
-mod legacy_log;
 mod no_daemon_threads;
 mod no_progress_yaml;
 mod observer_parity;

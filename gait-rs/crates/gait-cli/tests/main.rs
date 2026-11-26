@@ -4,6 +4,5 @@
 //! The integration tests that cannot share this process keep their own
 //! [[test]] target, listed in Cargo.toml with their reasons.
 
-mod legacy_log_cli;
 mod reply;
 mod workflow_cli;

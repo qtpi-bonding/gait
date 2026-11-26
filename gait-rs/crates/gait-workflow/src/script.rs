@@ -63,8 +63,8 @@ pub enum ScriptContinueError {
         /// The sha256 of the script file currently on disk.
         disk: String,
     },
-    /// The run log has no script WorkflowStart (or a legacy YAML one with an
-    /// empty script source), so it cannot be resumed as a script run.
+    /// The run log has no script WorkflowStart with a script source, so it
+    /// cannot be resumed as a script run.
     #[error("run is not a script workflow run (no logged script source)")]
     NotAScriptRun,
 }
@@ -75,9 +75,8 @@ pub enum ScriptContinueError {
 /// The returned source, sha, path, and args are ALWAYS the logged values,
 /// never the disk file's. If `disk` is `Some` and its sha256 differs from the
 /// logged sha and `force` is false, the run is refused with
-/// [`ScriptContinueError::Drift`]. A log without a script WorkflowStart (no
-/// WorkflowStart at all, or a legacy YAML log whose script source is empty)
-/// is refused with [`ScriptContinueError::NotAScriptRun`].
+/// [`ScriptContinueError::Drift`]. A log without a WorkflowStart carrying a
+/// non-empty script source is refused with [`ScriptContinueError::NotAScriptRun`].
 pub fn resolve_script_continue(
     events: &[WorkflowEvent],
     disk: Option<&LoadedScript>,
@@ -93,8 +92,7 @@ pub fn resolve_script_continue(
     let Some(start) = start else {
         return Err(ScriptContinueError::NotAScriptRun);
     };
-    // A legacy YAML log carries a WorkflowStart but no script source (the
-    // definition lives in `def` instead).
+    // A WorkflowStart without a script source is not a script run.
     if start.script_source.is_empty() {
         return Err(ScriptContinueError::NotAScriptRun);
     }
@@ -729,10 +727,10 @@ mod tests {
         );
     }
 
-    /// A legacy YAML log carries a WorkflowStart with an empty script source
-    /// (the definition lives in `def`); it is refused as not-a-script-run.
+    /// A log with a WorkflowStart but no script source (the definition lives
+    /// in `def`) is refused as not-a-script-run.
     #[test]
-    fn resolve_continue_refuses_legacy_yaml_log() {
+    fn resolve_continue_refuses_a_log_without_script_source() {
         let dir = tempfile::tempdir().expect("tempdir should work");
         let runs_dir = dir.path().join("workflow-runs");
         let log = WorkflowRunLog::create(&runs_dir, "run-yaml").expect("create should work");
