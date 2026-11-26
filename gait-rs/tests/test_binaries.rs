@@ -126,6 +126,10 @@ const SEPARATE_TARGETS: &[(&str, &str)] = &[
         "crates/gait-cli/tests/exec_no_gait_dir.rs",
         "sets process-global env via set_var and reads the cwd",
     ),
+    (
+        "crates/gait-codemode/tests/signal_interrupt.rs",
+        "sends real signals to the process and relies on process-global trap handler state, so it must not share a binary",
+    ),
 ];
 
 /// The quoted strings of the workspace manifest's `members = [ ... ]` list.
