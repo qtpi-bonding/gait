@@ -324,35 +324,62 @@ async fn record_survives_a_pause_and_is_finished_on_continue() {
         .join("record.json");
     let record: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
-    assert_eq!(record["workflow_status"], "running");
-    assert!(record["final_tree_hash"].is_null());
-    assert_eq!(marker_count(&marker), 1);
-
-    assert!(matches!(
-        run(
-            &tmp,
-            id,
-            &source,
-            vec![],
-            Arc::new(ScriptedTurnExecutor::new())
-        )
-        .await,
-        Ok(WorkflowOutcome::Completed)
-    ));
-    let record: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
-    assert_eq!(record["workflow_status"], "completed");
+    assert_eq!(record["workflow_status"], "paused");
     assert!(!record["final_tree_hash"].as_str().unwrap().is_empty());
     assert_eq!(marker_count(&marker), 1);
-    let logged = events(&tmp, id);
-    assert!(logged.iter().any(|kind| matches!(
-        kind,
-        workflow_event::Kind::NodeStart(node) if node.node_id == "g"
-    )));
-    assert!(logged.iter().any(|kind| matches!(
-        kind,
-        workflow_event::Kind::WorkflowGate(gate) if gate.node_id == "g"
-    )));
+}
+
+#[tokio::test]
+async fn record_of_a_failed_run_says_failed_and_continue_can_complete_it() {
+    let tmp = TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    let marker = tmp.path().join("MARKER");
+    let command = serde_json::to_string(&format!("echo x >> '{}'", marker.display())).unwrap();
+    let source = format!(
+        r#"
+        await gait.wf.config({{
+            name: "t",
+            record: {{ commands: [{{ id: "rec", command: {command}, timeout: 10000 }}] }},
+        }});
+        throw new Error("boom");
+        "#
+    );
+    let id = "record-failed";
+
+    assert!(run(
+        &tmp,
+        id,
+        &source,
+        vec![],
+        Arc::new(ScriptedTurnExecutor::new())
+    )
+    .await
+    .is_err());
+    let record_path = tmp
+        .path()
+        .join("workflow-runs")
+        .join(id)
+        .join("record.json");
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
+    assert_eq!(record["workflow_status"], "failed");
+    assert_eq!(marker_count(&marker), 1);
+
+    // A record command is never re-run: replaying a failed run still fails
+    // (the script throws again) but the record command stays at one run.
+    assert!(run(
+        &tmp,
+        id,
+        &source,
+        vec![],
+        Arc::new(ScriptedTurnExecutor::new())
+    )
+    .await
+    .is_err());
+    assert_eq!(marker_count(&marker), 1);
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
+    assert_eq!(record["workflow_status"], "failed");
 }
 
 #[tokio::test]

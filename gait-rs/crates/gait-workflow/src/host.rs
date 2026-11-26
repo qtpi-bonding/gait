@@ -63,6 +63,8 @@ enum StepError {
         id: String,
         source: serde_json::Error,
     },
+    #[error("step '{id}': retry, onFail and hooks do not apply to a turn without a prompt")]
+    InteractiveTurnOpts { id: String },
     #[error("gait.wf.shell step '{id}': {source}")]
     ShellArgs {
         id: String,
@@ -837,6 +839,12 @@ impl<'a> StepEngine<'a> {
         id: &str,
         opts: &TurnOpts,
     ) -> Result<serde_json::Value, StepError> {
+        // Retry, onFail and hooks are defined against a turn's execution;
+        // a promptless (interactive) turn never executes, so they would be
+        // silently ignored — refuse them instead, before anything is logged.
+        if opts.retry.is_some() || opts.on_fail.is_some() || opts.hooks.is_some() {
+            return Err(StepError::InteractiveTurnOpts { id: id.to_string() });
+        }
         let entry = self.journal.get(id);
         match entry {
             Some(entry) if entry.state != JournalState::Cancelled => {
@@ -2370,6 +2378,52 @@ mod tests {
                 .count(),
             1,
             "the re-call must NOT write a second NodeStart"
+        );
+    }
+
+    /// A promptless (interactive) turn rejects `retry`, `onFail` and `hooks`
+    /// instead of silently ignoring them, and before anything is logged.
+    #[tokio::test]
+    async fn interactive_turn_rejects_retry_on_fail_and_hooks() {
+        let mut script = ScriptedTurnExecutor::new();
+        script.script_text("unused");
+        let (_dir, engine) = make_engine(script, None);
+        engine
+            .handle("config", json!({ "name": "test-wf" }))
+            .await
+            .unwrap();
+
+        let err = engine
+            .handle(
+                "turn",
+                json!({ "id": "chat", "hooks": { "before": "true" } }),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("do not apply to a turn without a prompt"),
+            "hooks must be rejected: {err}"
+        );
+
+        let err = engine
+            .handle("turn", json!({ "id": "chat", "retry": { "times": 1 } }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("do not apply to a turn without a prompt"),
+            "retry must be rejected: {err}"
+        );
+
+        let err = engine
+            .handle("turn", json!({ "id": "chat", "onFail": "continue" }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("do not apply to a turn without a prompt"),
+            "onFail must be rejected: {err}"
         );
     }
 

@@ -394,7 +394,7 @@ async fn node_start_type_is_turn_and_carries_session_id() {
         if let workflow_event::Kind::NodeStart(ns) = k {
             assert_eq!(ns.node_type, "turn", "node_type for {}", ns.node_id);
             if ns.node_id == "t1" {
-                assert_eq!(ns.session_id, "");
+                assert!(!ns.session_id.is_empty());
             }
             if ns.node_id == "t2" {
                 assert_eq!(ns.session_id, "prev-sess");

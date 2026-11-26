@@ -512,7 +512,16 @@ pub async fn run_script(
         frame.replay(sink);
     }
 
-    // (5) Result handling.
+    // (5) Result handling. Every arm first finishes the evidence record with
+    // the real run status (a record already "completed" stays untouched on
+    // replay).
+    finish_record(
+        started,
+        workflow_record.take(),
+        &outcome,
+        &record::record_path(&run_dir),
+        &run_worktree,
+    )?;
     match outcome {
         RunEnd::Paused { gate } => match gate {
             None => Ok(WorkflowOutcome::NodeOpen),
@@ -523,31 +532,12 @@ pub async fn run_script(
             }
         },
         RunEnd::Completed => {
-            if started {
-                if workflow_record.is_none() {
-                    let path = record::record_path(&run_dir);
-                    if path.exists() {
-                        let existing = record::read(&path)?;
-                        if existing.workflow_status == "running" {
-                            workflow_record = Some(existing);
-                        }
-                    }
-                }
-                if let Some(record) = workflow_record.as_mut() {
-                    record::finish(
-                        record,
-                        &record::record_path(&run_dir),
-                        "completed",
-                        &run_worktree,
-                    )?;
-                }
-                // A completed run is replayed from its existing journal.  Do
-                // not append another terminal event (or notify observers of
-                // one) when continuing it.
-                if !workflow_complete {
-                    let ev = run_log.workflow_complete(&run_id)?;
-                    observer.on_event(&ev);
-                }
+            // A completed run is replayed from its existing journal.  Do
+            // not append another terminal event (or notify observers of
+            // one) when continuing it.
+            if started && !workflow_complete {
+                let ev = run_log.workflow_complete(&run_id)?;
+                observer.on_event(&ev);
             }
             Ok(WorkflowOutcome::Completed)
         }
@@ -555,6 +545,39 @@ pub async fn run_script(
             finish_with_error(&run_log, &run_id, started, &message, observer)
         }
     }
+}
+
+/// Finish the evidence record for the run's actual end status. When the run
+/// started, take the engine's record (or, if the engine kept none, the
+/// existing record.json whose status is not yet "completed") and write the
+/// matching terminal status. A record already "completed" is left untouched
+/// so replaying a finished run never rewrites it.
+fn finish_record(
+    started: bool,
+    mut record: Option<record::WorkflowRecord>,
+    outcome: &RunEnd,
+    record_path: &Path,
+    run_worktree: &Path,
+) -> Result<()> {
+    if !started {
+        return Ok(());
+    }
+    if record.is_none() && record_path.exists() {
+        let existing = record::read(record_path)?;
+        if existing.workflow_status != "completed" {
+            record = Some(existing);
+        }
+    }
+    let status = match outcome {
+        RunEnd::Completed => "completed",
+        RunEnd::Paused { gate: Some(_) } => "paused",
+        RunEnd::Paused { gate: None } => "open",
+        RunEnd::Failed { .. } => "failed",
+    };
+    if let Some(record) = record.as_mut() {
+        record::finish(record, record_path, status, run_worktree)?;
+    }
+    Ok(())
 }
 
 /// How the script loop ended, decided inside the engine's scope.

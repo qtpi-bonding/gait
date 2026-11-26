@@ -49,12 +49,18 @@ impl ScriptTurnExecutor {
     ) -> anyhow::Result<gait_turn_runner::TurnRunOpts> {
         // The host chooses the step's session id once (`req.session_id`,
         // `continueSession` or a fresh id) so retries reuse it; when the
-        // request carries none (a direct executor call), fall back to a fresh
-        // id here.
-        let session_id = if req.session_id.is_empty() {
-            gait_core::session::new_session_id()
-        } else {
+        // request carries none (a direct executor call), fall back to the
+        // continue marker or a fresh id here.
+        let session_id = if !req.session_id.is_empty() {
             req.session_id.clone()
+        } else if let Some(cs) = &req.continue_session {
+            if !cs.is_empty() {
+                cs.clone()
+            } else {
+                gait_core::session::new_session_id()
+            }
+        } else {
+            gait_core::session::new_session_id()
         };
         let continue_session = match &req.continue_session {
             Some(cs) if !cs.is_empty() => cs.clone(),
@@ -239,6 +245,7 @@ mod tests {
         req.continue_session = Some("prior".to_string());
         let opts = ex.opts_for(&req).unwrap();
         assert_eq!(opts.continue_session, "prior");
+        assert_eq!(opts.session_id, "prior");
 
         // The request's session id (chosen once by the host) is the session.
         let mut req = base_req();
