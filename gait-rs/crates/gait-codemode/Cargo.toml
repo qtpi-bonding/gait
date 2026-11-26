@@ -20,7 +20,10 @@ futures = "0.3"
 tokio = { version = "1", features = ["time", "macros"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc = "0.2"
 
 # The gait-codemode integration tests that share no process-global state are
 # modules of this one program (tests/main.rs): one binary instead of many
@@ -28,3 +31,9 @@ tokio = { version = "1", features = ["macros", "rt", "time"] }
 [[test]]
 name = "tests"
 path = "tests/main.rs"
+
+# Installs process-global signal state (wasmtime's trap handler interacting
+# with SIGCHLD), so it must not be a module of tests/main.rs.
+[[test]]
+name = "signal_interrupt"
+path = "tests/signal_interrupt.rs"

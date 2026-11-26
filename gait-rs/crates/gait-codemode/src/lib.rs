@@ -181,7 +181,7 @@ impl GuestArtifact {
         wasmtime::Module::new(engine, self.bytes)
     }
     pub fn imports(&self) -> Result<Vec<(String, String)>, wasmtime::Error> {
-        let engine = wasmtime::Engine::default();
+        let engine = wasmtime::Engine::new(&quickjs::engine_config())?;
         Ok(self
             .module(&engine)?
             .imports()

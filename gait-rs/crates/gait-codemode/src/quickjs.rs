@@ -44,9 +44,19 @@ use wasmtime::{
 /// (and everything reachable from `HostState`) is created fresh per call.
 static COMPILED_GUEST: OnceLock<Result<(Engine, Module), String>> = OnceLock::new();
 
+/// Build the wasmtime engine config for this process.
+pub(crate) fn engine_config() -> Config {
+    // Unix signals, not Mach ports, for guest traps on macOS: wasmtime's Mach-port
+    // handler thread aborts the whole process when any signal (e.g. SIGCHLD from a
+    // shell step) interrupts it, and Mach ports do not survive fork().
+    let mut config = Config::new();
+    config.macos_use_mach_ports(false);
+    config
+}
+
 fn compiled_guest(artifact: &[u8]) -> Result<(&'static Engine, &'static Module), CodeModeError> {
     let result = COMPILED_GUEST.get_or_init(|| {
-        let config = Config::new();
+        let config = engine_config();
         let engine = Engine::new(&config).map_err(|e| e.to_string())?;
         let module = Module::new(&engine, artifact).map_err(|e| e.to_string())?;
         Ok((engine, module))
