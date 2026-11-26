@@ -25,6 +25,10 @@ use crate::exec_shell::NodeContext;
 #[derive(Debug, Clone, Default)]
 pub struct TurnRequest {
     pub id: String,
+    /// The session id this turn runs in: `continue_session` when given, else
+    /// the freshly generated id the host chose for this step (chosen once,
+    /// before any retry attempt, so retries reuse it).
+    pub session_id: String,
     pub prompt: Option<String>,
     pub model: Option<String>,
     pub auto: Option<bool>,

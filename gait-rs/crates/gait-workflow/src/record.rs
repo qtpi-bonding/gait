@@ -2,11 +2,13 @@
 
 use gait_core::proto::gait::workflow::v1::{RecordCommand, Workflow};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use walkdir::WalkDir;
 
 use crate::convert::def_content_hash;
+use crate::step::build_shell_env;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecordCommandResult {
@@ -94,9 +96,13 @@ async fn run_command(command: &RecordCommand, worktree: &Path) -> RecordCommandR
     let timeout_ms = command.timeout_ms;
     let start = Instant::now();
     let mut child = tokio::process::Command::new("sh");
+    let env = build_shell_env(&BTreeMap::new(), &BTreeMap::new(), &[])
+        .expect("empty record environment cannot contain a reserved key");
     child
         .arg("-c")
         .arg(&command.command)
+        .env_clear()
+        .envs(env)
         .current_dir(worktree)
         .kill_on_drop(true);
     let result =

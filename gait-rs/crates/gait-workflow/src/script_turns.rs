@@ -47,9 +47,18 @@ impl ScriptTurnExecutor {
         &self,
         req: &TurnRequest,
     ) -> anyhow::Result<gait_turn_runner::TurnRunOpts> {
+        // The host chooses the step's session id once (`req.session_id`,
+        // `continueSession` or a fresh id) so retries reuse it; when the
+        // request carries none (a direct executor call), fall back to a fresh
+        // id here.
+        let session_id = if req.session_id.is_empty() {
+            gait_core::session::new_session_id()
+        } else {
+            req.session_id.clone()
+        };
         let continue_session = match &req.continue_session {
-            Some(cs) if !cs.is_empty() => (cs.clone(), cs.clone()),
-            _ => (gait_core::session::new_session_id(), String::new()),
+            Some(cs) if !cs.is_empty() => cs.clone(),
+            _ => String::new(),
         };
         // A script's `model` names a gait inference: resolution is checked, so
         // an unknown name fails with the resolver's error rather than being
@@ -74,8 +83,8 @@ impl ScriptTurnExecutor {
             auto: req.auto.unwrap_or(false),
             result_schema: req.output_schema.clone(),
             codebase,
-            session_id: continue_session.0,
-            continue_session: continue_session.1,
+            session_id,
+            continue_session,
             run_id: self.run_id.clone(),
             gait_dir: self.gait_dir.clone(),
             // No CLI profile layer for a script run.
@@ -225,12 +234,18 @@ mod tests {
         let ws = setup_gait_dir();
         let ex = executor(ws.path());
 
-        // With a continue_session, both session id and continue marker are it.
+        // With a continue_session, the continue marker is it.
         let mut req = base_req();
         req.continue_session = Some("prior".to_string());
         let opts = ex.opts_for(&req).unwrap();
-        assert_eq!(opts.session_id, "prior");
         assert_eq!(opts.continue_session, "prior");
+
+        // The request's session id (chosen once by the host) is the session.
+        let mut req = base_req();
+        req.session_id = "host-chosen".to_string();
+        let opts = ex.opts_for(&req).unwrap();
+        assert_eq!(opts.session_id, "host-chosen");
+        assert_eq!(opts.continue_session, "");
 
         // Without one: a fresh session id, empty continue marker.
         let req = base_req();

@@ -23,6 +23,7 @@ mod resume_guard;
 mod run_lock;
 mod script_basic;
 mod script_gate;
+mod script_gate_edges;
 mod script_replay;
 mod script_resume_edges;
 mod script_retry;

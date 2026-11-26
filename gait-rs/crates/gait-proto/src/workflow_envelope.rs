@@ -74,6 +74,7 @@ mod tests {
                 node_type: "shell".into(),
                 attempt: 1,
                 session_id: "s".into(),
+                ..Default::default()
             })
         };
         let root = mint(1, mk("a"), None);

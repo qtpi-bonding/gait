@@ -13,6 +13,7 @@ use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
 use crate::host::{PauseKind, StepEngine, StepRequest, WorkflowHost};
 use crate::observer::WorkflowObserver;
+use crate::record;
 use crate::run_log::WorkflowRunLog;
 use crate::runner::WorkflowOutcome;
 use crate::state::ScriptJournal;
@@ -215,7 +216,7 @@ type StepFuture<'a> = Pin<
 /// futures are not `Send`, so nothing may be `tokio::spawn`ed).
 pub async fn run_script(
     opts: ScriptRunOpts,
-    _sink: &mut dyn gait_core::embed::TurnSink,
+    sink: &mut dyn gait_core::embed::TurnSink,
     observer: &mut dyn WorkflowObserver,
 ) -> Result<WorkflowOutcome> {
     let ScriptRunOpts {
@@ -245,7 +246,8 @@ pub async fn run_script(
     std::fs::create_dir_all(&run_dir)?;
     // The run lock is held until run_script returns (dropped at function end).
     let _run_lock = gait_core::session::SessionLock::acquire(&run_dir)?;
-    let (run_log, script, args, journal) = if run_dir.join("log.jsonl").exists() {
+    let (run_log, script, args, journal, workflow_complete) = if run_dir.join("log.jsonl").exists()
+    {
         let run_log = WorkflowRunLog::open(&workflow_runs_dir, &run_id)?;
         let events = run_log.read_events()?;
         let journal = ScriptJournal::from_events(&events);
@@ -263,7 +265,7 @@ pub async fn run_script(
             // is caught there instead of here.
             .filter(|id| {
                 let entry = journal.get(id).expect("open id must have an entry");
-                let exempt = entry.kind == "gate" || entry.kind == "turn";
+                let exempt = entry.kind == "gate" || entry.interactive;
                 !exempt && !opts.force_rerun_nodes.contains(id)
             })
             .cloned()
@@ -278,17 +280,37 @@ pub async fn run_script(
             );
         }
 
-        let resolved = resolve_script_continue(&events, script.as_ref(), opts.force)?;
-        (
-            run_log,
-            LoadedScript {
-                path: script_path.clone(),
-                source: resolved.source,
-                sha256: resolved.sha256,
-            },
-            resolved.args,
-            journal,
-        )
+        // A log can exist even though the script failed before config was
+        // called.  Such a log is not a resume of a workflow identity: retain
+        // it, but resolve the script and arguments exactly as for a fresh
+        // run.  In particular, the disk script must still be loaded and
+        // size-checked (rather than silently using a missing/invalid source).
+        if !journal.has_workflow_start() {
+            let script = match script {
+                Some(script) => script,
+                None => load_script(&script_path)?,
+            };
+            let workflow_complete = events
+                .iter()
+                .any(|event| matches!(event.kind, Some(workflow_event::Kind::WorkflowComplete(_))));
+            (run_log, script, args, journal, workflow_complete)
+        } else {
+            let resolved = resolve_script_continue(&events, script.as_ref(), opts.force)?;
+            let workflow_complete = events
+                .iter()
+                .any(|event| matches!(event.kind, Some(workflow_event::Kind::WorkflowComplete(_))));
+            (
+                run_log,
+                LoadedScript {
+                    path: script_path.clone(),
+                    source: resolved.source,
+                    sha256: resolved.sha256,
+                },
+                resolved.args,
+                journal,
+                workflow_complete,
+            )
+        }
     } else {
         let script = match script {
             Some(script) => script,
@@ -299,6 +321,7 @@ pub async fn run_script(
             script,
             args,
             ScriptJournal::from_events(&[]),
+            false,
         )
     };
 
@@ -307,8 +330,15 @@ pub async fn run_script(
     let prelude = build_prelude(&run_object(&run_id, &args, &codebase, &run_worktree));
     let engine_log = WorkflowRunLog::open(&workflow_runs_dir, &run_id)?;
     let (host, mut rx) = WorkflowHost::channel();
+    // Turn output frames flow from the executor through this channel; they are
+    // replayed onto the run's sink inside the step loop below (same task, no
+    // spawn: the executor's futures are not Send).
+    let (frame_tx, mut frame_rx) =
+        tokio::sync::mpsc::unbounded_channel::<gait_core::embed::SinkFrame>();
+    turns.attach_output(frame_tx);
 
     let started;
+    let mut workflow_record;
     let mut finished: Option<Result<gait_codemode::RunReport, CodeModeError>> = None;
     let mut paused = false;
     let outcome;
@@ -387,6 +417,9 @@ pub async fn run_script(
                         let result = engine_ref.handle(&method, args).await;
                         (reply, result)
                     }));
+                }
+                Some(frame) = frame_rx.recv() => {
+                    frame.replay(sink);
                 }
                 item = in_flight.next(), if !in_flight.is_empty() => {
                     match item {
@@ -469,6 +502,14 @@ pub async fn run_script(
             }
         };
         started = engine.started();
+        workflow_record = engine.take_record();
+    }
+
+    // The run future can finish in the same poll in which a turn executor
+    // sends its final output frame. Drain frames already queued before
+    // returning so output is not lost, without timing-dependent polling.
+    while let Ok(frame) = frame_rx.try_recv() {
+        frame.replay(sink);
     }
 
     // (5) Result handling.
@@ -483,8 +524,30 @@ pub async fn run_script(
         },
         RunEnd::Completed => {
             if started {
-                let ev = run_log.workflow_complete(&run_id)?;
-                observer.on_event(&ev);
+                if workflow_record.is_none() {
+                    let path = record::record_path(&run_dir);
+                    if path.exists() {
+                        let existing = record::read(&path)?;
+                        if existing.workflow_status == "running" {
+                            workflow_record = Some(existing);
+                        }
+                    }
+                }
+                if let Some(record) = workflow_record.as_mut() {
+                    record::finish(
+                        record,
+                        &record::record_path(&run_dir),
+                        "completed",
+                        &run_worktree,
+                    )?;
+                }
+                // A completed run is replayed from its existing journal.  Do
+                // not append another terminal event (or notify observers of
+                // one) when continuing it.
+                if !workflow_complete {
+                    let ev = run_log.workflow_complete(&run_id)?;
+                    observer.on_event(&ev);
+                }
             }
             Ok(WorkflowOutcome::Completed)
         }

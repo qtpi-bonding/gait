@@ -114,6 +114,7 @@ message NodeStart {
   string node_type  = 2;  // "shell" | "prompt" | "branch" | "gate"
   uint32 attempt    = 3;  // 1-based; >1 on retries
   string session_id = 4;  // gait session ID for this node's turn (empty for shell-only nodes)
+  bool interactive = 5;   // true for a promptless interactive turn; keep node_type "turn"
 }
 
 message NodeComplete {
