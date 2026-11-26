@@ -17,11 +17,10 @@ const FAKE_PROVIDER_KEY: &str = "FAKE_PROVIDER_KEY_JS3";
 fn set_fake_key() {
     // Unique name shared by no other test in this binary; set for the process
     // so the "gait's own environment" being leaked is real, not simulated.
-    unsafe { std::env::set_var(FAKE_PROVIDER_KEY, "sk-super-secret") };
-}
-
-fn unset_fake_key() {
-    unsafe { std::env::remove_var(FAKE_PROVIDER_KEY) };
+    // Set once and never removed: tests run in parallel in one process and
+    // removing the var races with other tests still reading it.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe { std::env::set_var(FAKE_PROVIDER_KEY, "sk-super-secret") });
 }
 
 fn ctx(ws: &std::path::Path) -> NodeContext<'static> {
@@ -74,7 +73,6 @@ async fn shell_step_does_not_see_provider_key() {
         hooks: None,
     };
     let res = exec_shell_opts(&opts, &ctx(dir.path()), &[]).await.unwrap();
-    unset_fake_key();
     assert_eq!(
         res.output.trim(),
         "",
@@ -140,7 +138,6 @@ async fn hook_does_not_see_provider_key() {
         Some(dir.path()),
     )
     .await;
-    unset_fake_key();
     assert_eq!(exit, 0);
     assert_eq!(out.trim(), "[]", "provider key must not reach a hook");
 }
@@ -157,7 +154,6 @@ fn passthrough_list_adds_named_vars() {
         &[FAKE_PROVIDER_KEY.to_string()],
     )
     .unwrap();
-    unset_fake_key();
     assert_eq!(
         env.get(FAKE_PROVIDER_KEY).map(String::as_str),
         Some("sk-super-secret"),
