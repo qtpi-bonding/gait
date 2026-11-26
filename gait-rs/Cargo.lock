@@ -2277,11 +2277,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasip2",
  "wasip3",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2721,7 +2723,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "identity-crypto"
 version = "0.12.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=b4b3da5d857e0311798e843f433d9177ca7f7c7a#b4b3da5d857e0311798e843f433d9177ca7f7c7a"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=ea31314b3af842ce97b6ba0d7d6649c632a72291#ea31314b3af842ce97b6ba0d7d6649c632a72291"
 dependencies = [
  "chrono",
  "hex",
@@ -2739,7 +2741,7 @@ dependencies = [
 [[package]]
 name = "identity-keyfile"
 version = "0.12.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=b4b3da5d857e0311798e843f433d9177ca7f7c7a#b4b3da5d857e0311798e843f433d9177ca7f7c7a"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=ea31314b3af842ce97b6ba0d7d6649c632a72291#ea31314b3af842ce97b6ba0d7d6649c632a72291"
 dependencies = [
  "identity-crypto",
  "libc",
@@ -3259,7 +3261,7 @@ dependencies = [
 [[package]]
 name = "message-attestation"
 version = "0.6.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=b2008d828100b81525a0bc4d85a0a2d3c8c8c9d2#b2008d828100b81525a0bc4d85a0a2d3c8c8c9d2"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=f44d7d012740ce3c5a3ec7273ff4c3e636fb26d2#f44d7d012740ce3c5a3ec7273ff4c3e636fb26d2"
 dependencies = [
  "coded-error",
  "getrandom 0.4.2",
@@ -4568,7 +4570,7 @@ dependencies = [
 [[package]]
 name = "rust_jwk_duo"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding-org/rust_jwk_duo.git?rev=58d11e887afeff427084dab9007665ceef6fa507#58d11e887afeff427084dab9007665ceef6fa507"
+source = "git+https://github.com/qtpi-bonding-org/rust_jwk_duo.git?rev=28521fab1bbc68ec051269ff0ea09b2b3766c4e3#28521fab1bbc68ec051269ff0ea09b2b3766c4e3"
 dependencies = [
  "aes-gcm",
  "base64ct",
