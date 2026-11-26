@@ -46,7 +46,7 @@
 39	crates/gait-ops/src/extension.rs: ratchet.error_to_string: error formatted as string
 2	crates/gait-ops/src/mode.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-ops/src/session.rs: ratchet.error_to_string: error converted to string
-2	crates/gait-ops/src/session.rs: ratchet.error_to_string: error formatted as string
+3	crates/gait-ops/src/session.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-ops/src/workspace.rs: ratchet.dropped_result: result is discarded
 1	crates/gait-ops/src/workspace.rs: ratchet.error_to_string: error formatted as string
 1	crates/gait-proto/src/textproto.rs: ratchet.error_to_string: error converted to string

@@ -980,10 +980,6 @@ pub fn classify_one(gait_dir: &Path, id: &str) -> anyhow::Result<Verdict> {
     })
 }
 
-fn unreadable_reason(code: &'static str) -> String {
-    format!("unreadable: {code}")
-}
-
 fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
     let sessions_dir = gait_dir.join(".active");
     let mut eligible: Vec<String> = Vec::new();
@@ -1009,7 +1005,7 @@ fn classify_bulk_targets(gait_dir: &Path) -> anyhow::Result<BulkTargets> {
             Ok(v) => v,
             Err(e) => {
                 let code = coded_error::facts_anyhow(&e).code;
-                skipped.push((id, unreadable_reason(code)));
+                skipped.push((id, format!("unreadable: {code}")));
                 continue;
             }
         };
