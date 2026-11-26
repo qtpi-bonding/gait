@@ -5,7 +5,8 @@
 use std::path::Path;
 
 use gait_cli::cli::workflow::{
-    cmd_workflow_abort, cmd_workflow_continue, cmd_workflow_run, workflow_list_json,
+    cmd_workflow_abort, cmd_workflow_continue, cmd_workflow_run, cmd_workflow_types,
+    workflow_list_json,
 };
 
 /// A temp gait_dir with a git repo (main branch, one empty commit) — copied
@@ -64,6 +65,22 @@ fn write_script(gait_dir: &Path, name: &str, marker_file: &Path, marker_text: &s
         ),
     )
     .unwrap();
+}
+
+/// `gait workflow types` writes the generated `gait.d.ts` into
+/// `<gait_dir>/workflows/` (creating the directory on a fresh gait dir) and
+/// the file matches `render_dts()` exactly.
+#[test]
+fn workflow_types_writes_dts_into_workflows_dir() {
+    let td = tempfile::TempDir::new().unwrap();
+    let gait_dir = td.path().to_path_buf();
+    assert!(!gait_dir.join("workflows").exists(), "fresh gait dir");
+
+    cmd_workflow_types(&[], gait_dir.clone(), false).expect("types succeeds");
+
+    let written = std::fs::read_to_string(gait_dir.join("workflows").join("gait.d.ts"))
+        .expect("gait.d.ts written");
+    assert_eq!(written, gait_workflow::types::render_dts());
 }
 
 /// The script engine is chosen whenever `<name>.js` exists — even when a

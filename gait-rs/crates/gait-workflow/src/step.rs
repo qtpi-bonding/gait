@@ -8,12 +8,13 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Workflow-level config step (the `config`/`workflow` step of a script
 /// workflow).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ConfigOpts {
     pub name: String,
@@ -34,14 +35,14 @@ pub struct ConfigOpts {
 }
 
 /// Evidence-record commands, declared at workflow level.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RecordOpts {
     pub commands: Vec<RecordCommandOpts>,
 }
 
 /// One developer-declared evidence command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RecordCommandOpts {
     pub id: String,
@@ -51,7 +52,7 @@ pub struct RecordCommandOpts {
 }
 
 /// Retry policy for a step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RetryOpts {
     pub times: u32,
@@ -62,7 +63,7 @@ pub struct RetryOpts {
 }
 
 /// Retry backoff curve.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Backoff {
     #[default]
@@ -71,7 +72,7 @@ pub enum Backoff {
 }
 
 /// What a step's failure does to the workflow.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum OnFail {
     #[default]
@@ -80,7 +81,7 @@ pub enum OnFail {
 }
 
 /// Per-step hooks (workflow-level hooks are dropped per the spec; these stay).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StepHooks {
     #[serde(default)]
@@ -92,7 +93,7 @@ pub struct StepHooks {
 }
 
 /// A prompt (model turn) step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TurnOpts {
     pub id: String,
@@ -122,7 +123,7 @@ pub struct TurnOpts {
 
 /// A shell step. Either `argv` (executed directly, no shell) or a literal
 /// `script` run via `sh -c`; never both, never neither.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ShellOpts {
     pub id: String,
@@ -165,7 +166,7 @@ impl ShellOpts {
 }
 
 /// A gate (human approval) step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GateOpts {
     pub id: String,
@@ -173,7 +174,7 @@ pub struct GateOpts {
 }
 
 /// The outcome of one completed step, regardless of step kind.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StepResult {
     pub output: String,

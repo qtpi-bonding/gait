@@ -7,6 +7,7 @@
 mod branch_condition_errors;
 mod continue_resume;
 mod cross_consumer;
+mod dts_golden;
 mod emit_lock;
 mod failed_run_pinned;
 mod graph_validation;

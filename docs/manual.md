@@ -239,13 +239,13 @@ this extensions capability.
 #### `gait workflow`
 
 ```text
-Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
+Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate, types)
 
 Usage: gait workflow [OPTIONS] [ACTION] [ARGS]...
 
 Arguments:
   [ACTION]
-          What to do: list, run, continue, log, abort or validate.
+          What to do: list, run, continue, log, abort, validate or types.
 
   [ARGS]...
           The workflow id or file and any options the action takes.
@@ -487,13 +487,13 @@ These run from the command line only. They are not ops: no JSON, MCP or typed ca
 CLI only, not an op.
 
 ```text
-Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate)
+Run, continue, inspect or abort a workflow (list, run, continue, log, abort, validate, types)
 
 Usage: gait workflow [OPTIONS] [ACTION] [ARGS]...
 
 Arguments:
   [ACTION]
-          What to do: list, run, continue, log, abort or validate.
+          What to do: list, run, continue, log, abort, validate or types.
 
   [ARGS]...
           The workflow id or file and any options the action takes.

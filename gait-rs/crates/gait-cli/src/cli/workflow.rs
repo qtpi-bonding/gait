@@ -9,6 +9,7 @@ use gait_workflow::observer::CliObserver;
 use gait_workflow::run_log::WorkflowRunLog;
 use gait_workflow::schema::WorkflowDef;
 use gait_workflow::state::reconstruct_state;
+use gait_workflow::types::{render_dts, DTS_FILE_NAME};
 use gait_workflow::WorkflowOutcome;
 
 /// `gait workflow <run|list|continue|abort|log>` subcommand.
@@ -115,10 +116,42 @@ pub async fn cmd_workflow(args: WorkflowArgs) -> anyhow::Result<u8> {
         "abort" => cmd_workflow_abort(&rest, gait_dir, pretty).map(|()| 0u8),
         "log" => cmd_workflow_log(&rest, gait_dir).map(|()| 0u8),
         "validate" => cmd_workflow_validate(&rest, gait_dir, pretty).map(|()| 0u8),
+        "types" => cmd_workflow_types(&rest, gait_dir, pretty).map(|()| 0u8),
         _ => Err(CliError::usage(
-            "[gait] usage: gait workflow <run|list|continue|abort|log|validate>",
+            "[gait] usage: gait workflow <run|list|continue|abort|log|validate|types>",
         )),
     }
+}
+
+/// `gait workflow types`: write the generated TypeScript declarations for
+/// workflow scripts (`gait.d.ts`) into `<gait_dir>/workflows/` and print the
+/// written path as the JSON result. An unexpected extra argument is a usage
+/// error.
+pub fn cmd_workflow_types(argv: &[String], gait_dir: PathBuf, pretty: bool) -> CliResult {
+    if let Some(extra) = argv.first() {
+        return Err(CliError::usage(format!(
+            "[gait] usage: gait workflow types (unexpected argument: {extra})"
+        )));
+    }
+    let workflows_dir = gait_dir.join("workflows");
+    std::fs::create_dir_all(&workflows_dir).map_err(|e| {
+        CliError::failed(format!(
+            "[gait] cannot create {}: {}",
+            workflows_dir.display(),
+            e
+        ))
+    })?;
+    let path = workflows_dir.join(DTS_FILE_NAME);
+    std::fs::write(&path, render_dts())
+        .map_err(|e| CliError::failed(format!("[gait] cannot write {}: {}", path.display(), e)))?;
+    println!(
+        "{}",
+        gait_ops::render_json(
+            &serde_json::json!({"path": path.display().to_string()}),
+            pretty
+        )
+    );
+    Ok(())
 }
 
 pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Result<u8> {

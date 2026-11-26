@@ -24,6 +24,7 @@ pub mod script;
 pub mod script_turns;
 pub mod step;
 pub mod turn_exec;
+pub mod types;
 
 pub mod status;
 
