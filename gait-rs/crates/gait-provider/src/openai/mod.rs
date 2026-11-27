@@ -640,18 +640,31 @@ fn usage_server_ttft_ms(chunk: &StreamChunkData) -> Option<f64> {
 const TRAILER_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A chunk that does not parse is skipped, but never silently: a usage chunk
-/// in an unexpected shape would otherwise vanish without a trace.
+/// in an unexpected shape would otherwise vanish without a trace. Neither the
+/// chunk's text nor the serde error's own text (which quotes the chunk) is
+/// logged — only the error's kind, place, and the chunk's byte length.
 fn log_unparsed_chunk(data: &str, error: &serde_json::Error) {
     #[cfg(feature = "telemetry")]
     {
-        let end = (0..=data.len().min(200))
-            .rev()
-            .find(|i| data.is_char_boundary(*i))
-            .unwrap_or(0);
-        tracing::warn!(reason = %format!("{error}: {}", &data[..end]), "unparsed chat stream chunk");
+        tracing::warn!(
+            reason = %unparsed_chunk_reason(data, error),
+            "unparsed chat stream chunk"
+        );
     }
     #[cfg(not(feature = "telemetry"))]
     let _ = (data, error);
+}
+
+/// Why a chunk was skipped, naming none of its text.
+#[cfg(feature = "telemetry")]
+fn unparsed_chunk_reason(data: &str, error: &serde_json::Error) -> String {
+    format!(
+        "{:?} error at line {} column {} in a {}-byte chunk",
+        error.classify(),
+        error.line(),
+        error.column(),
+        data.len()
+    )
 }
 
 #[cfg(test)]

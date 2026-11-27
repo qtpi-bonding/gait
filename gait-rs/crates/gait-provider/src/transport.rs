@@ -156,14 +156,14 @@ impl ProviderTransport {
             let body = bounded_error_body(response).await;
             return Err(ProviderError::Http {
                 status,
-                body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES),
+                body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES).into(),
                 retry_after,
                 request_id,
             });
         }
 
         let body = bounded_success_body(response, MAX_JSON_RESPONSE_BYTES).await?;
-        serde_json::from_slice(&body).map_err(ProviderError::Json)
+        serde_json::from_slice(&body).map_err(ProviderError::from)
     }
 
     /// Execute a replayable request and return a stream that has already crossed
@@ -200,7 +200,7 @@ impl ProviderTransport {
             let body = bounded_error_body(response).await;
             return Err(ProviderError::Http {
                 status,
-                body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES),
+                body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES).into(),
                 retry_after,
                 request_id,
             });
@@ -266,6 +266,21 @@ fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
     }
     value.truncate(end);
     value
+}
+
+/// A stream reading failure. A parser error carries the unread stream, which is
+/// reply text, so only its length is kept.
+fn sse_failure<E: std::fmt::Display>(
+    error: eventsource_stream::EventStreamError<E>,
+) -> ProviderError {
+    match error {
+        eventsource_stream::EventStreamError::Parser(inner) => ProviderError::Sse(format!(
+            "parse error ({:?}) with {} bytes unread",
+            inner.code,
+            inner.input.len()
+        )),
+        other => ProviderError::Sse(other.to_string()),
+    }
 }
 
 async fn bounded_error_body(response: reqwest::Response) -> String {
@@ -403,7 +418,7 @@ where
     Ok(None)       => { gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::StreamEnd); return; }
     Ok(Some(item)) => match item {
     Ok(event) => { yield Ok(event); }
-    Err(e) => { yield Err(ProviderError::Sse(e.to_string())); return; }
+    Err(e) => { yield Err(sse_failure(e)); return; }
     },
     },
     }
@@ -490,7 +505,7 @@ where
                 result = tokio::time::timeout(cfg.ttfb_timeout, stream.next()) => match result {
                     Err(_) => Err(ProviderError::Timeout { phase: TimeoutPhase::Ttfb }),
                     Ok(None) => Ok((None, stream)),
-                    Ok(Some(Err(e))) => Err(ProviderError::Sse(e.to_string())),
+                    Ok(Some(Err(e))) => Err(sse_failure(e)),
                     Ok(Some(Ok(first))) => Ok((Some(first), stream)),
                 }
             }

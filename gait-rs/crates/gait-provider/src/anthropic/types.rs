@@ -262,7 +262,6 @@ pub struct DeltaUsage {
 #[derive(Debug, Deserialize)]
 pub struct AnthropicErrorData {
     #[serde(rename = "type")]
-    #[allow(dead_code)] // wire-format mirror; not consumed
     pub kind: String,
     pub message: String,
 }

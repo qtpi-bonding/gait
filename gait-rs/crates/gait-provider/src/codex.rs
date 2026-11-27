@@ -214,7 +214,7 @@ fn expired_credential_error(error: ProviderError) -> ProviderError {
     else {
         return error;
     };
-    let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let value: Value = serde_json::from_str(body.raw()).unwrap_or(Value::Null);
     let code = value
         .get("error")
         .and_then(|inner| inner.get("code").or(Some(inner)))

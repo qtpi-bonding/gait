@@ -1,8 +1,142 @@
 use coded_error::ErrorClass;
 use futures_util::Stream;
 use gait_types::types::{Message, Tool, Usage};
+use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
+
+/// The most of a provider's error message that becomes part of an error's text.
+const ERROR_MESSAGE_MAX_BYTES: usize = 512;
+/// The most of a provider's error type, code or parameter name that does.
+const ERROR_LABEL_MAX_BYTES: usize = 128;
+
+/// `text`, cut to at most ERROR_MESSAGE_MAX_BYTES; a cut text ends with `…`.
+pub(crate) fn short_message(text: &str) -> String {
+    short_text(text, ERROR_MESSAGE_MAX_BYTES)
+}
+
+/// The same, with ERROR_LABEL_MAX_BYTES.
+pub(crate) fn short_label(text: &str) -> String {
+    short_text(text, ERROR_LABEL_MAX_BYTES)
+}
+
+fn short_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\u{2026}", &text[..end])
+}
+
+/// `type=K code=C: message`, each part capped, absent parts left out.
+/// None when all three are absent.
+pub(crate) fn error_summary(
+    kind: Option<&str>,
+    code: Option<&str>,
+    message: Option<&str>,
+) -> Option<String> {
+    let mut parts = String::new();
+    if let Some(kind) = kind {
+        parts.push_str(&format!("type={}", short_label(kind)));
+    }
+    if let Some(code) = code {
+        if !parts.is_empty() {
+            parts.push(' ');
+        }
+        parts.push_str(&format!("code={}", short_label(code)));
+    }
+    if let Some(message) = message {
+        if !parts.is_empty() {
+            parts.push_str(": ");
+        }
+        parts.push_str(&short_message(message));
+    }
+    (!parts.is_empty()).then_some(parts)
+}
+
+/// A provider's error response body. Its Display and Debug show only a short
+/// summary, because the body can quote the request and this text reaches logs
+/// and telemetry. `raw` is for reading fields out of it.
+#[derive(Clone)]
+pub struct ErrorBody {
+    raw: String,
+    summary: String,
+}
+
+impl ErrorBody {
+    fn new(raw: String) -> Self {
+        let summary = summary_for(&raw);
+        Self { raw, summary }
+    }
+
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// Replaces the summary with `message`, cut to at most 1024 bytes the
+    /// same way as the built-in summary.
+    pub fn with_message(self, message: &str) -> Self {
+        Self {
+            summary: short_text(message, 1024),
+            ..self
+        }
+    }
+}
+
+fn summary_for(raw: &str) -> String {
+    let value: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let error = value.get("error").unwrap_or(&Value::Null);
+    let (kind, code, message) = if error.is_string() {
+        (None, None, error.as_str())
+    } else {
+        let source = if error.is_object() { error } else { &value };
+        let kind = source.get("type").and_then(Value::as_str);
+        let code = source
+            .get("code")
+            .map(|code| {
+                code.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| code.as_u64().map(|n| n.to_string()))
+                    .unwrap_or_default()
+            })
+            .filter(|code| !code.is_empty());
+        let message = source
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("detail").and_then(Value::as_str))
+            .or_else(|| value.get("message").and_then(Value::as_str));
+        (kind, code, message)
+    };
+    error_summary(kind, code.as_deref(), message)
+        .unwrap_or_else(|| format!("no error message in a {}-byte body", raw.len()))
+}
+
+impl From<String> for ErrorBody {
+    fn from(raw: String) -> Self {
+        Self::new(raw)
+    }
+}
+
+impl From<&str> for ErrorBody {
+    fn from(raw: &str) -> Self {
+        Self::new(raw.to_owned())
+    }
+}
+
+impl std::fmt::Display for ErrorBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.summary)
+    }
+}
+
+impl std::fmt::Debug for ErrorBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.summary)
+    }
+}
 
 // A chunk of streaming output from the LLM
 #[derive(Debug, Clone)]
@@ -100,7 +234,7 @@ pub enum ProviderError {
     #[coded(code = "http", class_with = provider_class)]
     Http {
         status: u16,
-        body: String,
+        body: ErrorBody,
         retry_after: Option<std::time::Duration>,
         request_id: Option<String>,
     },
@@ -118,7 +252,7 @@ pub enum ProviderError {
     ResponseTooLarge { max_bytes: usize },
     #[error("Serialization error: {0}")]
     #[coded(code = "json", class_with = provider_class)]
-    Json(#[from] serde_json::Error),
+    Json(serde_json::Error),
     #[error("{0}")]
     #[coded(code = "other", class_with = provider_class)]
     Other(String),
@@ -178,6 +312,19 @@ impl ProviderError {
         } else {
             None
         }
+    }
+}
+
+/// A serde error's own text quotes the value it rejected, which can be reply
+/// text, so only its kind and place are kept.
+impl From<serde_json::Error> for ProviderError {
+    fn from(error: serde_json::Error) -> Self {
+        ProviderError::Json(<serde_json::Error as serde::de::Error>::custom(format!(
+            "{:?} error at line {} column {}",
+            error.classify(),
+            error.line(),
+            error.column()
+        )))
     }
 }
 
@@ -329,25 +476,25 @@ mod tests {
             },
             ProviderError::Http {
                 status: 429,
-                body: String::new(),
+                body: String::new().into(),
                 retry_after: None,
                 request_id: None,
             },
             ProviderError::Http {
                 status: 500,
-                body: String::new(),
+                body: String::new().into(),
                 retry_after: None,
                 request_id: None,
             },
             ProviderError::Http {
                 status: 400,
-                body: String::new(),
+                body: String::new().into(),
                 retry_after: None,
                 request_id: None,
             },
             ProviderError::Http {
                 status: 505,
-                body: String::new(),
+                body: String::new().into(),
                 retry_after: None,
                 request_id: None,
             },
@@ -507,7 +654,7 @@ mod tests {
         for status in [400u16, 401, 403, 404, 422] {
             let e = ProviderError::Http {
                 status,
-                body: String::new(),
+                body: String::new().into(),
                 retry_after: None,
                 request_id: None,
             };

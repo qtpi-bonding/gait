@@ -468,8 +468,8 @@ async fn json_transport_preserves_http_error_and_redacts_credentials_without_ret
         } => {
             assert_eq!(status, 503);
             assert_eq!(retry_after, Some(Duration::from_secs(7)));
-            assert!(body.contains("[REDACTED]"));
-            assert!(!body.contains(SECRET));
+            assert!(body.raw().contains("[REDACTED]"));
+            assert!(!body.raw().contains(SECRET));
         }
         other => panic!("expected HTTP error, got {other:?}"),
     }
@@ -723,7 +723,8 @@ async fn every_production_sse_wire_obeys_transport_contract() {
         let ProviderError::Http { body, .. } = error else {
             panic!("expected HTTP error")
         };
-        assert!(body.len() <= 64 * 1024, "error body must be bounded");
+        assert!(body.raw().len() <= 64 * 1024, "error body must be bounded");
+        assert!(!body.raw().contains(SECRET), "{wire:?}: credential kept");
         let requests = server.captured_requests();
         assert_eq!(requests.len(), 1);
         assert!(

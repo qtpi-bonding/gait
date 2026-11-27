@@ -1,5 +1,5 @@
 use crate::anthropic::types::{AnthropicEvent, ContentBlock, ContentDelta};
-use crate::provider::{ProviderError, StreamChunk};
+use crate::provider::{error_summary, ProviderError, StreamChunk};
 use futures_util::{Stream, StreamExt};
 use gait_types::types::Usage;
 use std::collections::HashMap;
@@ -171,7 +171,10 @@ pub(crate) fn body_stream(
                     let e = if error.kind == "overloaded_error" {
                         ProviderError::Overloaded
                     } else {
-                        ProviderError::Sse(error.message)
+                        ProviderError::Sse(
+                            error_summary(Some(&error.kind), None, Some(&error.message))
+                                .unwrap_or_default(),
+                        )
                     };
                     call.fail(&e);
                     Err(e)?;

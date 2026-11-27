@@ -1,4 +1,4 @@
-use crate::provider::{ProviderError, RequestKind, StreamChunk};
+use crate::provider::{short_label, short_message, ProviderError, RequestKind, StreamChunk};
 use futures_util::StreamExt;
 use gait_types::config::LlmParamsConfig;
 use gait_types::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
@@ -188,7 +188,7 @@ pub fn response_stream(
                         .and_then(|response| response.get("incomplete_details"))
                         .and_then(|details| details.get("reason"))
                         .and_then(Value::as_str)
-                        .unwrap_or("unknown");
+                        .map_or_else(|| "unknown".into(), short_label);
                     let e = ProviderError::Other(format!("Responses request incomplete: {reason}"));
                     call.fail(&e);
                     Err(e)?;
@@ -215,15 +215,12 @@ pub(crate) fn failure_from_value(value: &Value, top_level_error: bool) -> Respon
             .unwrap_or(&Value::Null)
     };
     ResponsesFailure {
-        code: error.get("code").and_then(Value::as_str).map(str::to_owned),
-        param: error
-            .get("param")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        code: error.get("code").and_then(Value::as_str).map(short_label),
+        param: error.get("param").and_then(Value::as_str).map(short_label),
         message: error
             .get("message")
             .and_then(Value::as_str)
-            .map(str::to_owned),
+            .map(short_message),
     }
 }
 

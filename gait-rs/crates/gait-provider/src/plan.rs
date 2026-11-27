@@ -1,4 +1,6 @@
-use crate::provider::{ChunkStream, Provider, ProviderError, RequestKind};
+use crate::provider::{
+    short_label, short_message, ChunkStream, Provider, ProviderError, RequestKind,
+};
 use gait_auth::signin::{BrainSecret, SIGNIN_PROVIDER_ID};
 use gait_auth::SubscriptionCredential;
 use gait_types::types::{Message, Tool};
@@ -151,7 +153,11 @@ impl Provider for PlanResponsesProvider {
                     request_id,
                 } => ProviderError::Http {
                     status,
-                    body: map_http_error(status, &body, request_id.as_deref()),
+                    body: body.with_message(&map_http_error(
+                        status,
+                        body.raw(),
+                        request_id.as_deref(),
+                    )),
                     retry_after,
                     request_id,
                 },
@@ -189,7 +195,10 @@ pub fn map_plan_error(
             "plan service temporarily unavailable; retry".into()
         }
         Some("subscription_sharing_unsupported_capability") => {
-            format!("unsupported capability: {}", param.unwrap_or("unknown"))
+            format!(
+                "unsupported capability: {}",
+                param.map_or_else(|| "unknown".into(), short_label)
+            )
         }
         Some("subscription_sharing_route_not_supported") => {
             "configuration error: route not supported".into()
@@ -206,8 +215,11 @@ pub fn map_plan_error(
         }
         _ if status == Some(503) => "plan service temporarily unavailable; retry".into(),
         _ => {
-            let text = detail.or(code).unwrap_or("request failed");
-            format_request_id(text, request_id)
+            let text = detail
+                .map(short_message)
+                .or_else(|| code.map(short_message))
+                .unwrap_or_else(|| "request failed".into());
+            format_request_id(&text, request_id)
         }
     }
 }
