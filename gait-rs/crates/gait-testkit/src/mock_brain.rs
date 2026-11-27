@@ -131,4 +131,17 @@ pub fn run() {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
     }
+    // mock_stderr: text the brain writes to its own stderr before it ends.
+    if let Ok(text) = std::fs::read(dir.join("mock_stderr")) {
+        let _ = std::io::stderr().write_all(&text);
+    }
+    // mock_exit: how the brain ends, "abort" (a signal) or an exit status.
+    if let Ok(how) = std::fs::read_to_string(dir.join("mock_exit")) {
+        if how.trim() == "abort" {
+            std::process::abort();
+        }
+        if let Ok(code) = how.trim().parse() {
+            std::process::exit(code);
+        }
+    }
 }

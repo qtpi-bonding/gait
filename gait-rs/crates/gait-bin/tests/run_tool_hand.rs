@@ -428,3 +428,30 @@ fn the_hand_accepts_the_cascade_group_flag_the_spine_passes_it() {
     };
     assert!(text.contains("hi from a grouped hand"), "got: {text:?}");
 }
+
+/// A hand whose reader is gone (both reply pipes closed) ends with its own
+/// exit status, not a panic from printing to the closed stderr.
+#[test]
+fn run_tool_with_its_reader_gone_exits_with_status_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gait"))
+        .args(["__run-tool", "--session", "sgone", "--tool", "read"])
+        .arg("--gait-dir")
+        .arg(dir.path())
+        .arg("--codebase")
+        .arg(dir.path())
+        .args(["--seal", "false"])
+        .env_clear()
+        .env("HOME", dir.path())
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    drop(child.stderr.take());
+    // Closing stdin lets the hand answer, with nowhere left to answer to.
+    drop(child.stdin.take());
+    assert_eq!(child.wait().unwrap().code(), Some(1));
+}
