@@ -651,7 +651,11 @@ fn detach_runner_stdio(
     command: &mut std::process::Command,
     log: &std::path::Path,
 ) -> std::io::Result<()> {
-    let log_file = std::fs::File::create(log)?;
+    // Appended, so a second starter never overwrites what the first wrote.
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)?;
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::null());
     command.stderr(std::process::Stdio::from(log_file));

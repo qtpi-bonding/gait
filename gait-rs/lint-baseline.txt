@@ -38,7 +38,7 @@
 68	crates/gait-codemode/src/quickjs.rs: ratchet.error_to_string: error converted to string
 3	crates/gait-codemode/src/quickjs.rs: ratchet.error_to_string: error formatted as string
 11	crates/gait-llama-cpp/src/lib.rs: ratchet.dropped_result: result is discarded
-26	crates/gait-llama-cpp/src/lib.rs: ratchet.error_to_string: error formatted as string
+27	crates/gait-llama-cpp/src/lib.rs: ratchet.error_to_string: error formatted as string
 2	crates/gait-llama-cpp/src/lib.rs: ratchet.raw_channel: raw tokio channel
 1	crates/gait-llama-cpp/src/lib.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
 4	crates/gait-ops/src/config.rs: ratchet.error_to_string: error formatted as string

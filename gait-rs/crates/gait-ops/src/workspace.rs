@@ -168,7 +168,7 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     // .gitignore — merge required entries, no duplicates
     let gi_path = gait_dir.join(".gitignore");
     let mut gi = std::fs::read_to_string(&gi_path).unwrap_or_default();
-    let required = [".active/", "USER.md", ".gait-ws.lock"];
+    let required = [".active/", "USER.md", ".gait-ws.lock", "local-runners/"];
     let mut changed = false;
     for entry in &required {
         if !gi.lines().any(|l| l.trim() == *entry) {
