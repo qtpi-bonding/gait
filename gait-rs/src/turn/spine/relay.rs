@@ -667,10 +667,10 @@ async fn relay_brain_turn_inner(
                         &mut state.brain_failed,
                         state.watchdog.phase(),
                         &format!(
-                            "{class} brain_pid={brain_pid} phase={:?} error={error} brain_exit={brain_exit} stderr_tail={:?}",
-                            state.watchdog.phase(),
-                            stderr_tail.text()
+                            "{class} brain_pid={brain_pid} phase={:?} error={error} brain_exit={brain_exit}",
+                            state.watchdog.phase()
                         ),
+                        &format!(" stderr_tail={:?}", stderr_tail.text()),
                     );
                 }
                 break;
@@ -684,6 +684,7 @@ async fn relay_brain_turn_inner(
                         &mut state.brain_failed,
                         state.watchdog.phase(),
                         reason,
+                        "",
                     );
                     let _ = group.kill_all();
                     break;
@@ -959,6 +960,7 @@ async fn relay_brain_turn_inner(
                 &mut state.brain_failed,
                 state.watchdog.phase(),
                 reason,
+                "",
             );
             let _ = group.kill_all();
             break;

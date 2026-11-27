@@ -9,7 +9,11 @@
 //!   `diagnostic.jsonl` stream minimal.
 //!
 //! - **`terminal`** writes a terminal-failure record, also gated on
-//!   `GAIT_DEBUG`. All diagnostic output follows one visibility rule.
+//!   `GAIT_DEBUG`.
+//!
+//! - **`keep`** writes a terminal-failure record holding text that is kept
+//!   nowhere else (the brain's stderr tail), so it is written even without
+//!   `GAIT_DEBUG`. `keep` is the one exception to that gate.
 //!
 //! Best-effort: an IO error is logged once to stderr and dropped. Diagnostics
 //! must never fail a run or interfere with `log.jsonl`.
@@ -54,6 +58,12 @@ impl DiagnosticSink {
     /// and the failed `Terminated` arm.
     pub(crate) fn terminal(&self, record_json: &str) {
         self.debug(record_json);
+    }
+
+    /// A terminal-failure record holding text that is kept nowhere else (the
+    /// brain's stderr tail), so it is written even without `GAIT_DEBUG`.
+    pub(crate) fn keep(&self, record_json: &str) {
+        self.write_line(record_json);
     }
 
     /// Debug-only lifecycle record. Keep operational tracing behind the same

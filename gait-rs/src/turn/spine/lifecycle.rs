@@ -264,12 +264,15 @@ async fn reap_brain(
 /// parity via `brain_failed`), the DiagRecord in diagnostic.jsonl SECOND
 /// (best-effort). Single-threaded sole writer ⇒ back-to-back.
 /// Mirrors the orphan-tool repair append at spine.rs:631-636.
+/// `local_only` is text that stays on this machine: it goes to
+/// diagnostic.jsonl only, never to the log (the model reads it) or telemetry.
 pub(crate) fn emit_terminal_failure(
     log: &crate::turn::SessionLog,
     diag: &crate::turn::DiagnosticSink,
     brain_failed: &mut bool,
     phase: crate::diagnostic::Phase,
     detail: &str,
+    local_only: &str,
 ) {
     // 1) Error event → log.jsonl FIRST (also sets brain_failed for exit parity).
     // Always use ErrorPhase::Llm and a descriptive prefix so the transcript
@@ -293,9 +296,19 @@ pub(crate) fn emit_terminal_failure(
     );
     *brain_failed = true;
 
-    // 2) DiagRecord → diagnostic.jsonl SECOND (gated by DiagnosticSink).
-    let rec = crate::diagnostic::DiagRecord::terminal(diag.session_id(), phase, detail);
-    diag.terminal(&rec.to_json_line());
+    // 2) DiagRecord → diagnostic.jsonl SECOND (gated on GAIT_DEBUG unless it
+    // carries `local_only` text, which is kept nowhere else).
+    if local_only.is_empty() {
+        let rec = crate::diagnostic::DiagRecord::terminal(diag.session_id(), phase, detail);
+        diag.terminal(&rec.to_json_line());
+    } else {
+        let rec = crate::diagnostic::DiagRecord::terminal(
+            diag.session_id(),
+            phase,
+            &format!("{detail}{local_only}"),
+        );
+        diag.keep(&rec.to_json_line());
+    }
 }
 
 fn scope_of_previous_event(
@@ -1063,6 +1076,7 @@ mod tests {
             &mut failed,
             crate::diagnostic::Phase::Streaming,
             "absolute backstop exceeded",
+            "",
         );
 
         assert!(failed, "brain_failed flag set for exit parity");
