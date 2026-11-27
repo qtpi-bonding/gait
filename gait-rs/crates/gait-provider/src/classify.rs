@@ -214,7 +214,7 @@ mod tests {
 
         let logical = ClassifyError::Transport(crate::provider::ProviderError::Http {
             status: 401,
-            body: String::new(),
+            body: String::new().into(),
             retry_after: None,
             request_id: None,
         });

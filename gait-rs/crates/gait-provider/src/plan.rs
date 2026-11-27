@@ -151,16 +151,15 @@ impl Provider for PlanResponsesProvider {
                     body,
                     retry_after,
                     request_id,
-                } => ProviderError::Http {
-                    status,
-                    body: body.with_message(&map_http_error(
+                } => {
+                    let message = map_http_error(status, body.raw(), request_id.as_deref());
+                    ProviderError::Http {
                         status,
-                        body.raw(),
-                        request_id.as_deref(),
-                    )),
-                    retry_after,
-                    request_id,
-                },
+                        body: body.with_message(&message),
+                        retry_after,
+                        request_id,
+                    }
+                }
                 error => error,
             })
             .inspect_err(|error| call.fail(error))?;

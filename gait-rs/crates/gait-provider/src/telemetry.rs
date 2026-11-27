@@ -454,7 +454,7 @@ mod call_span_tests {
             &span,
             &ProviderError::Http {
                 status: 429,
-                body: String::new(),
+                body: String::new().into(),
                 retry_after: None,
                 request_id: None,
             },
