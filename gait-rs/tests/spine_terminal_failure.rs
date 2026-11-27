@@ -40,6 +40,8 @@ async fn failed_terminated_sets_error_without_debug_log() {
 struct DeadBrain {
     /// The session log's read-error line.
     line: String,
+    /// The whole session log.
+    log: String,
     /// The transcript the model reads on the next turn.
     transcript: String,
     /// diagnostic.jsonl, which stays on this machine.
@@ -48,6 +50,10 @@ struct DeadBrain {
 
 /// Runs one turn whose brain pings, writes `stderr`, then ends as `how` says.
 async fn dead_brain(session: &str, stderr: &str, how: &str) -> DeadBrain {
+    assert!(
+        std::env::var_os("GAIT_DEBUG").is_none(),
+        "these tests prove what is kept without GAIT_DEBUG"
+    );
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("mock_stderr"), stderr).unwrap();
     std::fs::write(tmp.path().join("mock_exit"), how).unwrap();
@@ -72,6 +78,7 @@ async fn dead_brain(session: &str, stderr: &str, how: &str) -> DeadBrain {
     let diag_path = gait_core::session::live::diagnostic_path(tmp.path(), session);
     DeadBrain {
         line,
+        log,
         transcript: format!("{messages:?}"),
         diagnostic: std::fs::read_to_string(diag_path).unwrap_or_default(),
     }
@@ -117,7 +124,7 @@ async fn brain_stderr_stays_out_of_the_transcript() {
         "the model still learns how the brain ended: {}",
         dead.transcript
     );
-    for kept in [&dead.transcript, &dead.line] {
+    for kept in [&dead.transcript, &dead.log] {
         assert!(!kept.contains("hunter2-private"), "{kept}");
         assert!(!kept.contains("stderr_tail"), "{kept}");
     }
