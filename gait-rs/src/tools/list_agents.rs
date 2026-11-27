@@ -128,7 +128,12 @@ impl Tool for ListAgentsTool {
                 .filter_map(|l| {
                     serde_json::from_str::<Event>(l)
                         .map_err(|e| {
-                            eprintln!("[gait] warning: skipping malformed event in agent log: {e}")
+                            let _ = std::io::Write::write_fmt(
+                                &mut std::io::stderr(),
+                                format_args!(
+                                    "[gait] warning: skipping malformed event in agent log: {e}\n"
+                                ),
+                            );
                         })
                         .ok()
                 })

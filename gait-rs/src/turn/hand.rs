@@ -36,11 +36,11 @@ fn respond(outcome: hand_response::Outcome) -> ! {
     let bytes = resp.encode_to_vec();
     if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &bytes) {
         // stdout is gone — nothing more we can do; the spine's crash fallback handles it.
-        #[allow(clippy::print_stderr)]
-        // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
-        {
-            eprintln!("[hand] stdout write failed: {e}");
-        }
+        // stderr may be closed too (the reader process is gone), so ignore any write failure.
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("[hand] stdout write failed: {e}\n"),
+        );
         crate::trace::exit(1);
     }
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -438,12 +438,12 @@ async fn hand_body(config: HandConfig) -> hand_response::Outcome {
     // Convert serde_json::Value → pbjson_types::Value for that hand→spine hop.
     let result_proto: pbjson_types::Value = serde_json::from_value(result_json.clone())
         .unwrap_or_else(|e| {
-            #[allow(clippy::print_stderr)] // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
-            {
-                eprintln!(
-                    "[hand] result→proto conversion failed ({e}); returning null. raw: {result_json}"
-                );
-            }
+            let _ = std::io::Write::write_fmt(
+                &mut std::io::stderr(),
+                format_args!(
+                    "[hand] result→proto conversion failed ({e}); returning null. raw: {result_json}\n"
+                ),
+            );
             pbjson_types::Value { kind: None }
         });
 

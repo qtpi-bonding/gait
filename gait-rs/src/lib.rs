@@ -240,7 +240,10 @@ pub async fn __dispatch_role(argv: &[String]) {
                 // A miss is harmless (the spine still reaps this hand); the note
                 // reaches the spine's stderr capture only if the hand later dies.
                 if crate::process::join_cascade_group(group).is_err() {
-                    eprintln!("[gait] __run-tool: could not join the cascade group");
+                    let _ = std::io::Write::write_fmt(
+                        &mut std::io::stderr(),
+                        format_args!("[gait] __run-tool: could not join the cascade group\n"),
+                    );
                 }
             }
             let config = HandConfig {
