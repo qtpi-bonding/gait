@@ -502,6 +502,10 @@ mod tests {
             gi.lines().any(|l| l.trim() == "USER.md"),
             "USER.md gitignored: {gi}"
         );
+        assert!(
+            gi.lines().any(|l| l.trim() == "local-runners/"),
+            "the local runner's log and socket gitignored: {gi}"
+        );
         // Idempotent + non-clobbering:
         std::fs::write(dir.path().join("USER.md"), "mine").unwrap();
         scaffold_gait_dir(dir.path()).unwrap();

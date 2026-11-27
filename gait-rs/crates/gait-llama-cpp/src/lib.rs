@@ -878,13 +878,27 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gait-runner-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("runner.log");
-        let mut command = std::process::Command::new("sh");
-        command.args(["-c", "cat; echo to-stdout; echo to-stderr >&2"]);
-        detach_runner_stdio(&mut command, &log).unwrap();
-        let output = command.output().unwrap();
-        assert!(output.status.success());
-        assert!(output.stdout.is_empty() && output.stderr.is_empty());
-        assert_eq!(std::fs::read_to_string(&log).unwrap(), "to-stderr\n");
+        let fed = dir.join("stdin");
+        std::fs::write(&fed, "from-stdin\n").unwrap();
+        // Two starts: the second must keep what the first wrote.
+        for _ in 0..2 {
+            let mut command = std::process::Command::new("sh");
+            // Anything read from stdin would show up in the log.
+            command.args(["-c", "cat >&2; echo to-stdout; echo to-stderr >&2"]);
+            // What the runner must not be left holding.
+            command
+                .stdin(std::fs::File::open(&fed).unwrap())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            detach_runner_stdio(&mut command, &log).unwrap();
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        }
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "to-stderr\nto-stderr\n"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
