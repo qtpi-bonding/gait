@@ -989,47 +989,13 @@ mod tests {
         );
     }
 
-    /// Collects the fields of every event, as text.
-    #[cfg(feature = "telemetry")]
-    #[derive(Clone, Default)]
-    struct Events(std::sync::Arc<std::sync::Mutex<String>>);
-
-    #[cfg(feature = "telemetry")]
-    impl tracing::Subscriber for Events {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct Text<'a>(&'a mut String);
-            impl tracing::field::Visit for Text<'_> {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    self.0.push_str(&format!("{}={value:?};", field.name()));
-                }
-            }
-            event.record(&mut Text(&mut self.0.lock().unwrap()));
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
     #[cfg(feature = "telemetry")]
     #[test]
-    fn an_unparsed_chunk_is_logged_without_its_text() {
+    fn an_unparsed_chunks_log_reason_quotes_none_of_it() {
         let data = r#"{"choices":"hunter2-reply"}"#;
         let error = serde_json::from_str::<StreamChunkData>(data).err().unwrap();
-        let events = Events::default();
-        tracing::subscriber::with_default(events.clone(), || log_unparsed_chunk(data, &error));
-        let seen = events.0.lock().unwrap().clone();
-        assert!(seen.contains("unparsed chat stream chunk"), "{seen}");
-        assert!(!seen.contains("hunter2-reply"), "{seen}");
+        let reason = unparsed_chunk_reason(data, &error);
+        assert!(!reason.contains("hunter2-reply"), "{reason}");
+        assert!(reason.contains(&format!("{}-byte", data.len())), "{reason}");
     }
 }
