@@ -30,7 +30,7 @@ pub fn log_path(gait_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 /// Same shape as `log_path`, for `diagnostic.jsonl` (present when
-/// `GAIT_DEBUG` was set, or after a brain died mid-turn).
+/// `GAIT_DEBUG` was set, or after a brain died).
 pub fn diagnostic_path(gait_dir: &Path, session_id: &str) -> PathBuf {
     worktree_dir(gait_dir, session_id)
         .join("sessions")

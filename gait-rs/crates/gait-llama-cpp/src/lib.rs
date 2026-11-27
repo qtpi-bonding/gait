@@ -613,7 +613,8 @@ impl RunnerGenerator {
             .expect("socket has local-runners parent");
         std::fs::create_dir_all(parent)
             .map_err(|e| GenerationError::Engine(format!("create runner directory: {e}")))?;
-        let _ = std::process::Command::new(executable)
+        let mut command = std::process::Command::new(executable);
+        command
             .arg("__local-runner")
             .arg("--socket")
             .arg(&self.socket)
@@ -624,7 +625,10 @@ impl RunnerGenerator {
             .arg("--tool-protocol")
             .arg(self.config.tool_protocol.as_str())
             .arg("--gpu-layers")
-            .arg(self.config.gpu_layers.unwrap_or(0).to_string())
+            .arg(self.config.gpu_layers.unwrap_or(0).to_string());
+        detach_runner_stdio(&mut command, &self.socket.with_extension("log"))
+            .map_err(|e| GenerationError::Engine(format!("open local runner log: {e}")))?;
+        let _ = command
             .spawn()
             .map_err(|e| GenerationError::Engine(format!("start local runner: {e}")))?;
         for _ in 0..100 {
@@ -633,10 +637,25 @@ impl RunnerGenerator {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        Err(GenerationError::Unavailable(
-            "local runner did not become ready within 5 seconds".into(),
-        ))
+        Err(GenerationError::Unavailable(format!(
+            "local runner did not become ready within 5 seconds; see {}",
+            self.socket.with_extension("log").display()
+        )))
     }
+}
+
+/// The runner outlives the brain that starts it, so it takes none of the
+/// brain's pipes: no stdin or stdout, and stderr goes to `log`.
+#[cfg(any(feature = "native", test))]
+fn detach_runner_stdio(
+    command: &mut std::process::Command,
+    log: &std::path::Path,
+) -> std::io::Result<()> {
+    let log_file = std::fs::File::create(log)?;
+    command.stdin(std::process::Stdio::null());
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::from(log_file));
+    Ok(())
 }
 
 #[cfg(feature = "native")]

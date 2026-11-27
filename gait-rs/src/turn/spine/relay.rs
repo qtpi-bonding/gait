@@ -615,13 +615,23 @@ async fn relay_brain_turn_inner(
     .await;
     // A brain that died starting up explains itself on stderr: forward that first.
     if let Err(error) = sent {
-        super::brain_exit::settle(&mut stderr_copy).await;
-        return Err(error);
+        let brain_exit = super::brain_exit::name_early_exit(
+            &mut child,
+            &mut stderr_copy,
+            &stderr_tail,
+            &diag,
+            brain_pid,
+        )
+        .await;
+        return Err(error.context(format!(
+            "the brain did not take its init (brain_exit={brain_exit})"
+        )));
     }
 
     let mut state = RelayState::new();
 
     sink.begin_turn();
+    let mut early_exit: Option<String> = None;
     loop {
         let read = nerve_reader.read_signal();
         let timed = tokio::time::timeout(
@@ -638,14 +648,15 @@ async fn relay_brain_turn_inner(
             Ok(Err(e)) => {
                 // Pipe closed without a Terminated signal. If the brain never got
                 // going at all (cold start — see `silent_brain_runs_to_process_
-                // exit_not_watchdog_kill`), this is a benign empty turn: keep the
-                // old silent `break`. But if it was genuinely mid-turn (pinged,
-                // called a tool, streamed something) and then vanished — crash,
-                // OOM-kill, any other unexpected exit — that must go through
-                // emit_terminal_failure (not a bare `break`) so brain_failed=true
-                // and teardown's synthesize_aborted_if_missing has something to
-                // synthesize from; otherwise a real failure silently vanishes as
-                // a false "success".
+                // exit_not_watchdog_kill`), only its exit is named (`else`
+                // below) and teardown closes the turn as aborted. But if
+                // it was genuinely mid-turn (pinged, called a tool, streamed
+                // something) and then vanished — crash, OOM-kill, any other
+                // unexpected exit — that must go through emit_terminal_failure
+                // (not a bare `break`) so brain_failed=true and teardown's
+                // synthesize_aborted_if_missing has something to synthesize
+                // from; otherwise a real failure silently vanishes as a false
+                // "success".
                 if state.ever_active {
                     let brain_exit = super::brain_exit::describe_exit(&mut child).await;
                     super::brain_exit::settle(&mut stderr_copy).await;
@@ -671,6 +682,17 @@ async fn relay_brain_turn_inner(
                             state.watchdog.phase()
                         ),
                         &format!(" stderr_tail={:?}", stderr_tail.text()),
+                    );
+                } else {
+                    early_exit = Some(
+                        super::brain_exit::name_early_exit(
+                            &mut child,
+                            &mut stderr_copy,
+                            &stderr_tail,
+                            &diag,
+                            brain_pid,
+                        )
+                        .await,
                     );
                 }
                 break;
@@ -983,6 +1005,7 @@ async fn relay_brain_turn_inner(
         &started,
         state.finalized_turn,
         state.brain_failed,
+        early_exit,
     )
     .await;
     super::brain_exit::settle(&mut stderr_copy).await;

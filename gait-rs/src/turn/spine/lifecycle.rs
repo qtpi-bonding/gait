@@ -392,6 +392,7 @@ pub(crate) async fn teardown(
     started: &crate::turn::run_lifecycle::StartedTurn,
     finalized_turn: Option<crate::proto::gait::sandbox::v1::FinalizedTurn>,
     brain_failed: bool,
+    early_exit: Option<String>,
 ) -> anyhow::Result<crate::proto::gait::log::v1::RunResult> {
     sink.end_turn();
 
@@ -422,7 +423,12 @@ pub(crate) async fn teardown(
     // A brain the spine already reported as failed (a stall, a brain-reported
     // error) has its own record; only an unexplained death gets this one.
     if finalized_turn.is_none() && !brain_failed {
-        super::error::record(super::error::SpineError::BrainDied, session_id);
+        super::error::record(
+            super::error::SpineError::BrainDied(
+                early_exit.clone().unwrap_or_else(|| "not read".into()),
+            ),
+            session_id,
+        );
     }
     #[cfg(not(feature = "telemetry"))]
     let _ = (brain_pid, turn_id, model);
@@ -444,11 +450,19 @@ pub(crate) async fn teardown(
         anyhow::bail!("orphan repair failed: {repair_errors:?}");
     }
 
-    let draft = finalized_turn.unwrap_or_else(|| crate::proto::gait::sandbox::v1::FinalizedTurn {
-        outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
-        failure_reason: "aborted".into(),
-        message: "brain exited without a finalized turn".into(),
-        ..Default::default()
+    let draft = finalized_turn.unwrap_or_else(|| {
+        let message = match &early_exit {
+            Some(brain_exit) => {
+                format!("brain exited without a finalized turn (brain_exit={brain_exit})")
+            }
+            None => "brain exited without a finalized turn".into(),
+        };
+        crate::proto::gait::sandbox::v1::FinalizedTurn {
+            outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
+            failure_reason: "aborted".into(),
+            message,
+            ..Default::default()
+        }
     });
     #[cfg(feature = "telemetry")]
     let draft_for_event = draft.clone();

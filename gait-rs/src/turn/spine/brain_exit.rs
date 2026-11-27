@@ -81,6 +81,30 @@ pub(super) async fn settle(copy: &mut Option<tokio::task::JoinHandle<()>>) {
     }
 }
 
+/// How a brain that sent no signal ended. Its stderr tail is kept in
+/// diagnostic.jsonl only.
+pub(super) async fn name_early_exit(
+    child: &mut tokio::process::Child,
+    copy: &mut Option<tokio::task::JoinHandle<()>>,
+    tail: &StderrTail,
+    diag: &crate::turn::DiagnosticSink,
+    brain_pid: u32,
+) -> String {
+    let brain_exit = describe_exit(child).await;
+    settle(copy).await;
+    let detail = format!(
+        "brain_died_early brain_pid={brain_pid} brain_exit={brain_exit} stderr_tail={:?}",
+        tail.text()
+    );
+    let rec = crate::diagnostic::DiagRecord::terminal(
+        diag.session_id(),
+        crate::diagnostic::Phase::TurnBegin,
+        &detail,
+    );
+    diag.keep(&rec.to_json_line());
+    brain_exit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

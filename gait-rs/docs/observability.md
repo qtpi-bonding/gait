@@ -48,10 +48,11 @@ is set — this is deliberate. It's a per-session file inside gait's own
 workspace, not a live stream; leaving it on unconditionally would mean
 creating and growing a file per session forever.
 
-One record is written even without `GAIT_DEBUG`: when reading from the brain
-fails mid-turn, it holds the end of the brain's stderr. That text can contain
-secrets, so it is kept only here, never in the session log (the model reads
-the log back) or in telemetry.
+One record is written even without `GAIT_DEBUG`: when the brain dies, or the
+spine can no longer read from it, it holds the end of the brain's stderr. That
+text can contain secrets, so it is kept only here, never in the session log
+(the model reads the log back) or in telemetry, which name only how the brain
+exited.
 
 ## Why gait-acp never logs to stdout
 

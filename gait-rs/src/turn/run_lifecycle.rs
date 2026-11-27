@@ -850,7 +850,9 @@ mod tests {
     fn a_turn_that_failed_before_its_brain_ran_is_closed_with_the_errors_code() {
         let log = log_with_started_turn();
         let codebase = TempDir::new().unwrap();
-        let error = coded_error::into_anyhow(crate::turn::spine::error::SpineError::BrainDied);
+        let error = coded_error::into_anyhow(crate::turn::spine::error::SpineError::BrainDied(
+            String::new(),
+        ));
         let started = fail_open_turn(
             &log,
             &crate::turn::SessionGit::null(),

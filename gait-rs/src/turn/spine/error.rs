@@ -9,9 +9,9 @@ pub enum SpineError {
     #[error("failed to spawn __brain: {0}")]
     #[coded(code = "brain_spawn_failed", class = Infrastructure)]
     BrainSpawnFailed(#[source] std::io::Error),
-    #[error("the brain exited without finishing its turn")]
+    #[error("the brain exited without finishing its turn: brain_exit={0}")]
     #[coded(code = "brain_died", class = Infrastructure)]
-    BrainDied,
+    BrainDied(String),
     #[error("the brain's process group could not be killed: {0}")]
     #[coded(code = "brain_kill_failed", class = Infrastructure)]
     BrainKillFailed(#[source] BoxError),
@@ -61,9 +61,12 @@ mod tests {
             coded_error::ErrorClass::Transient
         );
         assert_eq!(
-            SpineError::BrainDied.class(),
+            SpineError::BrainDied(String::new()).class(),
             coded_error::ErrorClass::Infrastructure
         );
-        assert_eq!(SpineError::BrainDied.code(), "gait.spine.brain_died");
+        assert_eq!(
+            SpineError::BrainDied(String::new()).code(),
+            "gait.spine.brain_died"
+        );
     }
 }
