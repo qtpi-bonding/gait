@@ -77,3 +77,23 @@ async fn dead_brain_error_names_the_signal() {
     let line = dead_brain_error_line("tf_signal", "", "abort").await;
     assert!(line.contains("brain_exit=signal: 6"), "{line}");
 }
+
+/// What the brain printed stays on the machine: the telemetry error names how
+/// it ended and carries none of its stderr.
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn brain_stderr_stays_out_of_telemetry() {
+    let capture = concord_telemetry::testing::capture_exclusive();
+    let line = dead_brain_error_line("tf_private", "token=hunter2-private", "7").await;
+    assert!(
+        line.contains("hunter2-private"),
+        "the session log keeps it: {line}"
+    );
+    let errors = format!("{:?}", capture.errors_where(|_| true));
+    assert!(errors.contains("brain_exit=exit status: 7"), "{errors}");
+    let spans = format!("{:?}", concord_telemetry::testing::spans());
+    for sent in [errors, spans] {
+        assert!(!sent.contains("hunter2-private"), "{sent}");
+        assert!(!sent.contains("stderr_tail"), "{sent}");
+    }
+}
