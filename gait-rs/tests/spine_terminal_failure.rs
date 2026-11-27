@@ -212,6 +212,8 @@ async fn brain_died_telemetry_names_the_exit_and_no_stderr() {
 async fn a_brain_gone_before_its_init_names_its_exit() {
     let tmp = doomed_brain("token=hunter2-init");
     std::fs::write(tmp.path().join("mock_exit_before_init"), "").unwrap();
+    // Also writes the inference profile the turn resolves.
+    write_frames(tmp.path(), &[]);
     let calls = Calls::default();
     let session = std::sync::Arc::new(gait_core::Session {
         id: "tf_init".into(),
