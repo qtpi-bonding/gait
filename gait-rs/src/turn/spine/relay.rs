@@ -524,7 +524,7 @@ async fn relay_brain_turn_inner(
             .args(&brain_args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit());
+            .stderr(std::process::Stdio::piped());
         // The brain continues this turn's trace (TRACEPARENT/BAGGAGE).
         crate::launch::with_trace_env(&mut std_cmd);
         std_cmd.env(crate::trace::TURN_ID_ENV, &turn_id);
@@ -549,7 +549,7 @@ async fn relay_brain_turn_inner(
             crate::diagnostic::Phase::TurnBegin,
             crate::diagnostic::PhaseEvent::Start,
             &format!(
-                "brain_spawned pid={} sandbox_on={} stdout=nerve stderr=inherited",
+                "brain_spawned pid={} sandbox_on={} stdout=nerve stderr=forwarded",
                 child.id().unwrap_or(0),
                 sandbox_on
             ),
@@ -565,6 +565,15 @@ async fn relay_brain_turn_inner(
 
     let child_stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
     let child_stdout = child.stdout.take().expect("piped stdout");
+    // Forward the brain's stderr to our stderr while keeping its tail for the
+    // nerve-read-error diagnostic.
+    let stderr_tail = super::brain_exit::StderrTail::default();
+    let mut stderr_copy = child.stderr.take().map(|stderr| {
+        let tail = stderr_tail.clone();
+        tokio::spawn(async move {
+            super::brain_exit::copy_keeping_tail(stderr, tokio::io::stderr(), &tail).await;
+        })
+    });
     let mut nerve_reader = nerve::NerveReader::new(child_stdout);
 
     // ── BrainInit: push config + full log + git so the brain reads zero disk. ──
@@ -631,6 +640,8 @@ async fn relay_brain_turn_inner(
                 // synthesize from; otherwise a real failure silently vanishes as
                 // a false "success".
                 if state.ever_active {
+                    let brain_exit = super::brain_exit::describe_exit(&mut child).await;
+                    super::brain_exit::settle(&mut stderr_copy).await;
                     let error = e.to_string();
                     let class = if error.contains("nerve: unsupported version") {
                         "nerve_protocol_error"
@@ -649,8 +660,9 @@ async fn relay_brain_turn_inner(
                         &mut state.brain_failed,
                         state.watchdog.phase(),
                         &format!(
-                            "{class} brain_pid={brain_pid} phase={:?} error={error}",
-                            state.watchdog.phase()
+                            "{class} brain_pid={brain_pid} phase={:?} error={error} brain_exit={brain_exit} stderr_tail={:?}",
+                            state.watchdog.phase(),
+                            stderr_tail.text()
                         ),
                     );
                 }
@@ -945,13 +957,14 @@ async fn relay_brain_turn_inner(
             break;
         }
     }
-    lifecycle::teardown(
+    let result = lifecycle::teardown(
         sink,
         state.inflight,
         state.pending_calls,
         child_stdin,
         group,
         child,
+        brain_pid,
         git,
         codebase,
         session_id,
@@ -962,7 +975,9 @@ async fn relay_brain_turn_inner(
         state.finalized_turn,
         state.brain_failed,
     )
-    .await
+    .await;
+    super::brain_exit::settle(&mut stderr_copy).await;
+    result
 }
 
 #[cfg(feature = "telemetry")]

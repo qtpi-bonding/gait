@@ -25,6 +25,7 @@ mod util;
 pub(crate) use util::finalized_turn;
 pub use util::strip_task_from_args;
 
+mod brain_exit;
 mod lifecycle;
 #[allow(unused_imports)] // path-stable facade re-export; no in-crate caller yet
 pub(crate) use lifecycle::brain_argv;

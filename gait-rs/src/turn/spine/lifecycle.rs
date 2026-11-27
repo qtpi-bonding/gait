@@ -369,6 +369,7 @@ pub(crate) async fn teardown(
     child_stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
     group: Arc<dyn crate::process::Containment>,
     child: tokio::process::Child,
+    brain_pid: u32,
     git: crate::turn::SessionGit,
     codebase: &Path,
     session_id: &str,
@@ -396,7 +397,6 @@ pub(crate) async fn teardown(
     // Single authoritative reap for EVERY exit path (EOF / Terminated / watchdog).
     // Reaps via kill_all() + Child drop — never tokio's child.wait(), which is
     // fatal on macOS (see `reap_brain`).
-    let brain_pid = child.id().unwrap_or(0);
     reap_brain(group, child, session_id).await;
     #[cfg(feature = "telemetry")]
     concord_telemetry::event!(gait_events::gait::events::v1::BrainExited {
