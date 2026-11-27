@@ -579,7 +579,7 @@ async fn relay_brain_turn_inner(
     // ── BrainInit: push config + full log + git so the brain reads zero disk. ──
     // The caller appended this turn's user input before relay_brain_turn, and the
     // SessionStart write above ran, so `events` is complete.
-    {
+    let sent = async {
         use crate::proto::gait::sandbox::v1::{signal, BrainInit, GitStatus, Signal};
         use tokio::io::AsyncWriteExt;
         let cfg = crate::config::load_config(gait_dir);
@@ -610,6 +610,13 @@ async fn relay_brain_turn_inner(
         let mut w = child_stdin.lock().await;
         nerve::write_signal(&mut *w, &sig).await?;
         w.flush().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    // A brain that died starting up explains itself on stderr: forward that first.
+    if let Err(error) = sent {
+        super::brain_exit::settle(&mut stderr_copy).await;
+        return Err(error);
     }
 
     let mut state = RelayState::new();
