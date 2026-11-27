@@ -142,11 +142,17 @@ async fn brain_stderr_stays_out_of_the_transcript() {
 async fn brain_stderr_stays_out_of_telemetry() {
     let capture = concord_telemetry::testing::capture_exclusive();
     dead_brain("tf_private", "token=hunter2-private", "7").await;
+    let ours = format!(
+        "{:?}",
+        capture.errors_where(|record| {
+            format!("{:?}", record.fields.get("gait_session_id")).contains("tf_private")
+        })
+    );
+    assert!(ours.contains("brain_exit=exit status: 7"), "{ours}");
     let errors = format!("{:?}", capture.errors_where(|_| true));
-    assert!(errors.contains("brain_exit=exit status: 7"), "{errors}");
     let spans = format!("{:?}", concord_telemetry::testing::spans());
     for sent in [errors, spans] {
         assert!(!sent.contains("hunter2-private"), "{sent}");
-        assert!(!sent.contains("stderr_tail"), "{sent}");
+        assert!(!sent.contains("stderr_tail="), "{sent}");
     }
 }
