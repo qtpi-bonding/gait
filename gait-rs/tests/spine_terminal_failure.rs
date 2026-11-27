@@ -36,9 +36,18 @@ async fn failed_terminated_sets_error_without_debug_log() {
     );
 }
 
-/// Runs one turn whose brain pings, writes `stderr`, then ends as `how` says,
-/// and returns the transcript line carrying the spine's read error.
-async fn dead_brain_error_line(session: &str, stderr: &str, how: &str) -> String {
+/// What a brain that died mid-turn leaves behind.
+struct DeadBrain {
+    /// The session log's read-error line.
+    line: String,
+    /// The transcript the model reads on the next turn.
+    transcript: String,
+    /// diagnostic.jsonl, which stays on this machine.
+    diagnostic: String,
+}
+
+/// Runs one turn whose brain pings, writes `stderr`, then ends as `how` says.
+async fn dead_brain(session: &str, stderr: &str, how: &str) -> DeadBrain {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("mock_stderr"), stderr).unwrap();
     std::fs::write(tmp.path().join("mock_exit"), how).unwrap();
@@ -52,30 +61,71 @@ async fn dead_brain_error_line(session: &str, stderr: &str, how: &str) -> String
         })),
     };
     run_one(tmp.path(), session, &[ping]).await;
-    let log = std::fs::read_to_string(gait_core::session::live::log_path(tmp.path(), session))
-        .expect("session log");
-    log.lines()
+    let log_path = gait_core::session::live::log_path(tmp.path(), session);
+    let log = std::fs::read_to_string(&log_path).expect("session log");
+    let line = log
+        .lines()
         .find(|line| line.contains("nerve_read_error"))
-        .unwrap_or_else(|| panic!("no read error in the transcript:\n{log}"))
-        .to_owned()
+        .unwrap_or_else(|| panic!("no read error in the session log:\n{log}"))
+        .to_owned();
+    let messages = gait_core::session::messages_from_path(&log_path).expect("transcript");
+    let diag_path = gait_core::session::live::diagnostic_path(tmp.path(), session);
+    DeadBrain {
+        line,
+        transcript: format!("{messages:?}"),
+        diagnostic: std::fs::read_to_string(diag_path).unwrap_or_default(),
+    }
 }
 
 /// A brain that dies mid-turn names its cause: the error carries its exit
-/// status and the end of its stderr, and only the end.
+/// status, and diagnostic.jsonl keeps the end of its stderr, only the end.
 #[tokio::test]
-async fn dead_brain_error_names_exit_status_and_stderr_tail() {
+async fn dead_brain_error_names_exit_status_and_keeps_the_stderr_tail() {
     let stderr = format!("{}brain-last-words", "x".repeat(5000));
-    let line = dead_brain_error_line("tf_exit", &stderr, "7").await;
-    assert!(line.contains("brain_exit=exit status: 7"), "{line}");
-    assert!(line.contains("brain-last-words"), "{line}");
-    assert!(line.len() < 4500, "only the tail travels: {}", line.len());
+    let dead = dead_brain("tf_exit", &stderr, "7").await;
+    assert!(
+        dead.line.contains("brain_exit=exit status: 7"),
+        "{}",
+        dead.line
+    );
+    assert!(
+        dead.diagnostic.contains("brain-last-words"),
+        "the tail is kept without GAIT_DEBUG: {}",
+        dead.diagnostic
+    );
+    assert!(
+        dead.diagnostic.len() < 4500,
+        "only the tail is kept: {}",
+        dead.diagnostic.len()
+    );
 }
 
 /// A brain ended by a signal names the signal.
 #[tokio::test]
 async fn dead_brain_error_names_the_signal() {
-    let line = dead_brain_error_line("tf_signal", "", "abort").await;
-    assert!(line.contains("brain_exit=signal: 6"), "{line}");
+    let dead = dead_brain("tf_signal", "", "abort").await;
+    assert!(dead.line.contains("brain_exit=signal: 6"), "{}", dead.line);
+}
+
+/// The session log is read back to the model, so it carries none of the
+/// brain's stderr.
+#[tokio::test]
+async fn brain_stderr_stays_out_of_the_transcript() {
+    let dead = dead_brain("tf_replay", "token=hunter2-private", "7").await;
+    assert!(
+        dead.transcript.contains("brain_exit=exit status: 7"),
+        "the model still learns how the brain ended: {}",
+        dead.transcript
+    );
+    for kept in [&dead.line, &dead.transcript] {
+        assert!(!kept.contains("hunter2-private"), "{kept}");
+        assert!(!kept.contains("stderr_tail"), "{kept}");
+    }
+    assert!(
+        dead.diagnostic.contains("hunter2-private"),
+        "{}",
+        dead.diagnostic
+    );
 }
 
 /// What the brain printed stays on the machine: the telemetry error names how
@@ -84,11 +134,7 @@ async fn dead_brain_error_names_the_signal() {
 #[tokio::test]
 async fn brain_stderr_stays_out_of_telemetry() {
     let capture = concord_telemetry::testing::capture_exclusive();
-    let line = dead_brain_error_line("tf_private", "token=hunter2-private", "7").await;
-    assert!(
-        line.contains("hunter2-private"),
-        "the session log keeps it: {line}"
-    );
+    dead_brain("tf_private", "token=hunter2-private", "7").await;
     let errors = format!("{:?}", capture.errors_where(|_| true));
     assert!(errors.contains("brain_exit=exit status: 7"), "{errors}");
     let spans = format!("{:?}", concord_telemetry::testing::spans());
