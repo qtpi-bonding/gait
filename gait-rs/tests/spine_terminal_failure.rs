@@ -117,7 +117,7 @@ async fn brain_stderr_stays_out_of_the_transcript() {
         "the model still learns how the brain ended: {}",
         dead.transcript
     );
-    for kept in [&dead.line, &dead.transcript] {
+    for kept in [&dead.transcript, &dead.line] {
         assert!(!kept.contains("hunter2-private"), "{kept}");
         assert!(!kept.contains("stderr_tail"), "{kept}");
     }
