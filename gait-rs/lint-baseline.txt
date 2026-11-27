@@ -107,6 +107,7 @@
 1	src/harness.rs: ratchet.dropped_result: result is discarded
 2	src/input/expand.rs: ratchet.error_to_string: error formatted as string
 3	src/input/pty.rs: ratchet.dropped_result: result is discarded
+1	src/lib.rs: ratchet.dropped_result: result is discarded
 3	src/prompt.rs: ratchet.dropped_result: result is discarded
 1	src/send.rs: ratchet.dropped_result: result is discarded
 1	src/tools/apply_patch.rs: ratchet.error_to_string: error converted to string
@@ -115,6 +116,7 @@
 1	src/tools/glob.rs: ratchet.error_to_string: error converted to string
 2	src/tools/glob.rs: ratchet.error_to_string: error formatted as string
 1	src/tools/grep.rs: ratchet.error_to_string: error converted to string
+1	src/tools/list_agents.rs: ratchet.dropped_result: result is discarded
 1	src/tools/ls.rs: ratchet.error_to_string: error converted to string
 3	src/tools/prune.rs: ratchet.error_to_string: error formatted as string
 2	src/tools/read.rs: ratchet.error_to_string: error converted to string
@@ -140,7 +142,7 @@
 2	src/turn/execute.rs: ratchet.error_to_string: error formatted as string
 1	src/turn/finalize.rs: ratchet.dropped_result: result is discarded
 1	src/turn/golden_tests.rs: ratchet.raw_channel: raw tokio channel
-2	src/turn/hand.rs: ratchet.dropped_result: result is discarded
+4	src/turn/hand.rs: ratchet.dropped_result: result is discarded
 1	src/turn/hand.rs: ratchet.error_to_string: error formatted as string
 1	src/turn/hand.rs: ratchet.untraced_spawn: tokio::spawn without tracing span
 6	src/turn/mod.rs: ratchet.dropped_result: result is discarded
@@ -152,6 +154,7 @@
 1	src/turn/prompt.rs: ratchet.error_to_string: error formatted as string
 1	src/turn/resume.rs: ratchet.error_to_string: error formatted as string
 1	src/turn/setup.rs: ratchet.dropped_result: result is discarded
+1	src/turn/spine/brain_exit.rs: ratchet.error_to_string: error formatted as string
 2	src/turn/spine/handlers/agent.rs: ratchet.error_to_string: error formatted as string
 2	src/turn/spine/handlers/mod.rs: ratchet.dropped_result: result is discarded
 1	src/turn/spine/handlers/output.rs: ratchet.error_to_string: error converted to string
@@ -162,3 +165,4 @@
 6	src/turn/spine/handlers/tool.rs: ratchet.error_to_string: error formatted as string
 1	src/turn/spine/lifecycle.rs: ratchet.dropped_result: result is discarded
 2	src/turn/spine/relay.rs: ratchet.dropped_result: result is discarded
+1	src/turn/spine/relay.rs: ratchet.untraced_spawn: tokio::spawn without tracing span

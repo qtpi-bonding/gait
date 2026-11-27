@@ -133,7 +133,9 @@ pub fn run() {
     }
     // mock_stderr: text the brain writes to its own stderr before it ends.
     if let Ok(text) = std::fs::read(dir.join("mock_stderr")) {
-        let _ = std::io::stderr().write_all(&text);
+        std::io::stderr()
+            .write_all(&text)
+            .expect("write mock stderr");
     }
     // mock_exit: how the brain ends, "abort" (a signal) or an exit status.
     if let Ok(how) = std::fs::read_to_string(dir.join("mock_exit")) {
