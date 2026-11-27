@@ -408,6 +408,100 @@ mod tests {
         }
     }
 
+    fn http_error(status: u16, body: &str) -> ProviderError {
+        ProviderError::Http {
+            status,
+            body: body.into(),
+            retry_after: None,
+            request_id: None,
+        }
+    }
+
+    /// The two ways an error becomes text.
+    fn texts(error: &ProviderError) -> [String; 2] {
+        [error.to_string(), format!("{error:?}")]
+    }
+
+    #[test]
+    fn an_http_errors_text_names_type_code_and_message_not_the_body() {
+        let error = http_error(
+            400,
+            r#"{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"too long"},"request":"hunter2-prompt"}"#,
+        );
+        for text in texts(&error) {
+            for wanted in [
+                "400",
+                "invalid_request_error",
+                "context_length_exceeded",
+                "too long",
+            ] {
+                assert!(text.contains(wanted), "{wanted} missing: {text}");
+            }
+            assert!(!text.contains("hunter2-prompt"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_other_common_error_shapes_keep_their_message() {
+        for (body, wanted) in [
+            (
+                r#"{"detail":"Unsupported model","echo":"hunter2"}"#,
+                "Unsupported model",
+            ),
+            (
+                r#"{"error":"invalid_token","echo":"hunter2"}"#,
+                "invalid_token",
+            ),
+            (r#"{"message":"slow down","echo":"hunter2"}"#, "slow down"),
+            (r#"{"error":{"code":4290,"echo":"hunter2"}}"#, "4290"),
+        ] {
+            for text in texts(&http_error(400, body)) {
+                assert!(text.contains(wanted), "{wanted} missing: {text}");
+                assert!(!text.contains("hunter2"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_that_names_no_error_is_not_shown() {
+        for body in [
+            "<html>hunter2-prompt</html>",
+            r#"{"echo":"hunter2-prompt"}"#,
+            r#""hunter2-prompt""#,
+        ] {
+            for text in texts(&http_error(502, body)) {
+                assert!(text.contains("502"), "{text}");
+                assert!(!text.contains("hunter2-prompt"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_http_errors_message_type_and_code_are_capped() {
+        for filler in ["x", "é"] {
+            let long = format!("{}hunter2-tail", filler.repeat(5000));
+            let body = serde_json::json!({"error":{"type": long, "code": long, "message": long}});
+            for text in texts(&http_error(400, &body.to_string())) {
+                assert!(!text.contains("hunter2-tail"), "{text}");
+                assert!(text.len() < 1000, "{} bytes", text.len());
+            }
+        }
+    }
+
+    #[test]
+    fn a_json_errors_text_quotes_none_of_the_input() {
+        let error =
+            ProviderError::from(serde_json::from_str::<u8>(r#""hunter2-reply""#).unwrap_err());
+        for text in texts(&error) {
+            assert!(!text.contains("hunter2-reply"), "{text}");
+        }
+        let mut source = std::error::Error::source(&error);
+        while let Some(cause) = source {
+            assert!(!cause.to_string().contains("hunter2-reply"), "{cause}");
+            source = cause.source();
+        }
+    }
+
     #[test]
     fn provider_http_4xx_is_logical() {
         for status in [400u16, 401, 403, 404, 422] {

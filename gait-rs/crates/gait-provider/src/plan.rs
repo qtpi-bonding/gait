@@ -472,7 +472,10 @@ mod tests {
             } => {
                 assert_eq!(*status, 429);
                 assert_eq!(request_id.as_deref(), Some("req_429"));
-                assert!(body.contains("ChatGPT Settings > Usage"), "body: {body}");
+                assert!(
+                    body.to_string().contains("ChatGPT Settings > Usage"),
+                    "body: {body}"
+                );
             }
             other => panic!("expected Http error, got {other:?}"),
         }
@@ -630,6 +633,15 @@ mod tests {
             map_plan_error(Some(400), None, None, Some("detail text"), None),
             "detail text"
         );
+    }
+
+    #[test]
+    fn a_long_detail_is_capped_and_keeps_the_request_id() {
+        let long = format!("{}hunter2-tail", "x".repeat(5000));
+        let got = map_plan_error(Some(400), None, None, Some(&long), Some("req_long"));
+        assert!(!got.contains("hunter2-tail"), "{got}");
+        assert!(got.len() < 600, "{} bytes", got.len());
+        assert!(got.ends_with("(request id: req_long)"), "{got}");
     }
 
     #[test]

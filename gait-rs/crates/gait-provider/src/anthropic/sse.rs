@@ -237,4 +237,42 @@ mod tests {
             (10, 7, 900, 50)
         );
     }
+
+    /// The text of the error that ends a stream of these events.
+    async fn failure_text(events: Vec<Result<eventsource_stream::Event, ProviderError>>) -> String {
+        let stream = body_stream(
+            futures_util::stream::iter(events),
+            crate::telemetry::ModelCall::begin(&Default::default()),
+        );
+        tokio::pin!(stream);
+        while let Some(chunk) = stream.next().await {
+            if let Err(error) = chunk {
+                return format!("{error} {error:?}");
+            }
+        }
+        panic!("the stream did not fail");
+    }
+
+    #[tokio::test]
+    async fn a_mid_stream_error_names_its_type_and_caps_its_message() {
+        let long = format!("{}hunter2-tail", "x".repeat(5000));
+        let text = failure_text(vec![ev(
+            "error",
+            serde_json::json!({"type":"error","error":{"type":"invalid_request_error","message": long}}),
+        )])
+        .await;
+        assert!(text.contains("invalid_request_error"), "{text}");
+        assert!(!text.contains("hunter2-tail"), "{text}");
+        assert!(text.len() < 2000, "{} bytes", text.len());
+    }
+
+    #[tokio::test]
+    async fn an_event_that_does_not_parse_is_not_quoted() {
+        let text = failure_text(vec![ev(
+            "message_start",
+            serde_json::json!({"type":"message_start","message":"hunter2-reply"}),
+        )])
+        .await;
+        assert!(!text.contains("hunter2-reply"), "{text}");
+    }
 }

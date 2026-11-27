@@ -497,4 +497,25 @@ mod cache_prefix_tests {
             );
         }
     }
+
+    #[test]
+    fn a_failure_events_fields_are_capped() {
+        for filler in ["x", "é"] {
+            let long = format!("{}hunter2-tail", filler.repeat(5000));
+            let failure = failure_from_value(
+                &json!({"error":{"code": long, "param": long, "message": long}}),
+                true,
+            );
+            for (field, max) in [
+                (failure.code, 128),
+                (failure.param, 128),
+                (failure.message, 512),
+            ] {
+                let field = field.expect("the field is kept");
+                assert!(!field.contains("hunter2-tail"), "{field}");
+                // The cap, plus the mark that says it was cut.
+                assert!(field.len() <= max + '…'.len_utf8(), "{} bytes", field.len());
+            }
+        }
+    }
 }
