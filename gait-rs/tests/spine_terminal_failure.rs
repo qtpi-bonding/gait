@@ -156,3 +156,91 @@ async fn brain_stderr_stays_out_of_telemetry() {
         assert!(!sent.contains("stderr_tail="), "{sent}");
     }
 }
+
+/// A brain whose stderr holds `stderr` and which exits with status 7.
+fn doomed_brain(stderr: &str) -> tempfile::TempDir {
+    assert!(
+        std::env::var_os("GAIT_DEBUG").is_none(),
+        "these tests prove what is kept without GAIT_DEBUG"
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("mock_stderr"), stderr).unwrap();
+    std::fs::write(tmp.path().join("mock_exit"), "7").unwrap();
+    tmp
+}
+
+/// A brain that dies before sending anything names how it ended, and its
+/// stderr is kept only in diagnostic.jsonl.
+#[tokio::test]
+async fn a_brain_dead_before_its_first_signal_names_its_exit() {
+    let tmp = doomed_brain("token=hunter2-early");
+    run_one(tmp.path(), "tf_early", &[]).await;
+    let log_path = gait_core::session::live::log_path(tmp.path(), "tf_early");
+    let log = std::fs::read_to_string(log_path).expect("session log");
+    assert!(log.contains("brain_exit=exit status: 7"), "{log}");
+    assert!(!log.contains("hunter2-early"), "{log}");
+    let diag_path = gait_core::session::live::diagnostic_path(tmp.path(), "tf_early");
+    let diagnostic = std::fs::read_to_string(diag_path).unwrap_or_default();
+    assert!(diagnostic.contains("hunter2-early"), "{diagnostic}");
+}
+
+/// The telemetry record of an early death names the exit and no stderr.
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn brain_died_telemetry_names_the_exit_and_no_stderr() {
+    let capture = concord_telemetry::testing::capture_exclusive();
+    let tmp = doomed_brain("token=hunter2-early");
+    run_one(tmp.path(), "tf_early_private", &[]).await;
+    let ours = format!(
+        "{:?}",
+        capture.errors_where(|record| {
+            record.code == "gait.spine.brain_died"
+                && format!("{:?}", record.fields.get("gait_session_id"))
+                    .contains("tf_early_private")
+        })
+    );
+    assert!(ours.contains("brain_exit=exit status: 7"), "{ours}");
+    let errors = format!("{:?}", capture.errors_where(|_| true));
+    let spans = format!("{:?}", concord_telemetry::testing::spans());
+    for sent in [errors, spans] {
+        assert!(!sent.contains("hunter2-early"), "{sent}");
+    }
+}
+
+/// A brain that ends without reading its init fails the turn and names its exit.
+#[tokio::test]
+async fn a_brain_gone_before_its_init_names_its_exit() {
+    let tmp = doomed_brain("token=hunter2-init");
+    std::fs::write(tmp.path().join("mock_exit_before_init"), "").unwrap();
+    let calls = Calls::default();
+    let session = std::sync::Arc::new(gait_core::Session {
+        id: "tf_init".into(),
+        gait_dir: tmp.path().to_path_buf(),
+        codebase_path: tmp.path().to_path_buf(),
+        assigned_by: None,
+        repos: mock_repos(&calls),
+    });
+    let mut sink = gait_core::embed::RecordingSink::default();
+    let mut driver = MockDriver {
+        codebase: tmp.path().to_path_buf(),
+        gait_bin: std::path::PathBuf::from(env!("CARGO_BIN_EXE_mock_brain")),
+    };
+    // More input than a pipe holds, so writing the init has to fail.
+    let input = gait_core::proto::events::user_text("x".repeat(2 << 20));
+    let result = gait_core::embed::run_loop(
+        gait_core::port::input::ArgSource::new(Some(input)),
+        &mut sink,
+        session,
+        tmp.path(),
+        "tf_init",
+        &mut driver,
+        None,
+    )
+    .await;
+    let shown = format!("{result:?} {:?}", sink.diagnostics);
+    assert!(shown.contains("brain_exit=exit status: 7"), "{shown}");
+    assert!(!shown.contains("hunter2-init"), "{shown}");
+    let diag_path = gait_core::session::live::diagnostic_path(tmp.path(), "tf_init");
+    let diagnostic = std::fs::read_to_string(diag_path).unwrap_or_default();
+    assert!(diagnostic.contains("hunter2-init"), "{diagnostic}");
+}

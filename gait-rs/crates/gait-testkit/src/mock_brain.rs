@@ -44,6 +44,13 @@ pub fn run() {
     let dir = arg_value("--gait-dir").expect("mock_brain: --gait-dir required");
     let dir = std::path::PathBuf::from(dir);
 
+    // mock_exit_before_init: end without reading BrainInit, as a brain that
+    // fails at startup does.
+    if dir.join("mock_exit_before_init").exists() {
+        end(&dir);
+        return;
+    }
+
     let mut stdin = std::io::stdin();
     let init = read_one_frame(&mut stdin).and_then(|signal| match signal.body {
         Some(signal::Body::BrainInit(init)) => Some(init),
@@ -131,6 +138,11 @@ pub fn run() {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
     }
+    end(&dir);
+}
+
+/// Ends the brain the way the `mock_stderr` and `mock_exit` files say.
+fn end(dir: &std::path::Path) {
     // mock_stderr: text the brain writes to its own stderr before it ends.
     if let Ok(text) = std::fs::read(dir.join("mock_stderr")) {
         std::io::stderr()
